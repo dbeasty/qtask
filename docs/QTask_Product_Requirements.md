@@ -175,10 +175,10 @@ The backend exposes an MCP server so that AI clients (local SLM or Claude) conne
 
 ## 5. Delivery Phases
 
-1. **Backend core (current focus):** local Node.js + MongoDB, task/subtask/link CRUD, percent-complete logic, MCP server with core tools, local SLM via Ollama.
+1. **Backend core + conversational UI (current focus):** local Node.js + MongoDB, task/subtask/link CRUD, percent-complete logic, MCP server with core tools, local SLM via Ollama, chat agent API with streaming, early React web client for chat + task verification.
 2. **Cloud account sync:** Google/Microsoft/Apple OAuth, optional sync to provider task/drive APIs.
 3. **Collaboration:** sharer/collaborator lists, email invites, role-based access, real-time updates.
-4. **Clients:** React web app, then React Native iOS/Android, sharing API and component logic.
+4. **Production clients:** polished React web app and React Native iOS/Android, sharing API and component logic (extends the early web client).
 5. **AWS migration:** MongoDB Atlas, S3-compatible storage, containerized deployment.
 6. **Optional:** OpenSearch integration for advanced full-text search at scale.
 

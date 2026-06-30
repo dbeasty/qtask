@@ -81,6 +81,17 @@ export interface UpdateTaskInput {
   assigneeId?: string | null;
 }
 
+export interface UpdateSubtaskInput {
+  title?: string;
+  description?: string;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  dueDate?: Date | string | null;
+  tags?: string[];
+  percentComplete?: number;
+  percentCompleteOverride?: number | null;
+}
+
 export interface TaskSearchFilters {
   status?: TaskStatus | TaskStatus[];
   priority?: TaskPriority | TaskPriority[];

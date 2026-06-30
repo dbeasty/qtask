@@ -5,6 +5,7 @@ import type {
   TaskLink,
   TaskLinkType,
   TaskSearchFilters,
+  UpdateSubtaskInput,
   UpdateTaskInput,
 } from '../types/task.js';
 import { applyPercentComplete } from '../utils/percentComplete.js';
@@ -316,6 +317,110 @@ export class TaskService {
       userId,
       action: 'subtask.added',
       details: { title: input.title, path: subtaskPath },
+    });
+
+    return serializeTask(task.toObject());
+  }
+
+  async updateSubtask(
+    userId: string,
+    taskId: string,
+    subtaskPath: string[],
+    input: UpdateSubtaskInput,
+    source: 'user' | 'ai' = 'user'
+  ) {
+    const task = await TaskModel.findOne({ _id: taskId, userId });
+    if (!task || subtaskPath.length === 0) return null;
+
+    const subtask = this.findSubtaskByPath(task.subtasks, subtaskPath);
+    if (!subtask) return null;
+
+    const changes: Record<string, unknown> = {};
+    const node = subtask as Record<string, unknown>;
+
+    if (input.title !== undefined) {
+      node.title = input.title;
+      changes.title = input.title;
+    }
+    if (input.description !== undefined) {
+      node.description = input.description;
+      changes.description = input.description;
+    }
+    if (input.status !== undefined) {
+      node.status = input.status;
+      changes.status = input.status;
+    }
+    if (input.priority !== undefined) {
+      node.priority = input.priority;
+      changes.priority = input.priority;
+    }
+    if (input.dueDate !== undefined) {
+      node.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
+      changes.dueDate = input.dueDate;
+    }
+    if (input.tags !== undefined) {
+      node.tags = input.tags;
+      changes.tags = input.tags;
+    }
+    if (input.percentComplete !== undefined) {
+      node.percentComplete = input.percentComplete;
+      changes.percentComplete = input.percentComplete;
+    }
+    if (input.percentCompleteOverride !== undefined) {
+      node.percentCompleteOverride =
+        input.percentCompleteOverride === null ? undefined : input.percentCompleteOverride;
+      changes.percentCompleteOverride = input.percentCompleteOverride;
+    }
+
+    const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
+    task.percentComplete = withPercent.percentComplete;
+    task.subtasks = withPercent.subtasks as typeof task.subtasks;
+    await task.save();
+    await enqueueEmbeddingJob(String(task._id));
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'subtask.updated',
+      details: { path: subtaskPath, ...changes },
+      source,
+    });
+
+    return serializeTask(task.toObject());
+  }
+
+  async deleteSubtask(userId: string, taskId: string, subtaskPath: string[]) {
+    const task = await TaskModel.findOne({ _id: taskId, userId });
+    if (!task || subtaskPath.length === 0) return null;
+
+    const subtaskId = subtaskPath[subtaskPath.length - 1]!;
+    let deletedTitle: string | undefined;
+
+    if (subtaskPath.length === 1) {
+      const index = task.subtasks.findIndex((s) => String(s._id) === subtaskId);
+      if (index === -1) return null;
+      deletedTitle = task.subtasks[index]?.title;
+      task.subtasks.splice(index, 1);
+    } else {
+      const parent = this.findSubtaskByPath(task.subtasks, subtaskPath.slice(0, -1));
+      if (!parent) return null;
+      parent.subtasks = parent.subtasks ?? [];
+      const index = parent.subtasks.findIndex((s) => String(s._id) === subtaskId);
+      if (index === -1) return null;
+      deletedTitle = (parent.subtasks[index] as { title?: string })?.title;
+      parent.subtasks.splice(index, 1);
+    }
+
+    const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
+    task.percentComplete = withPercent.percentComplete;
+    task.subtasks = withPercent.subtasks as typeof task.subtasks;
+    await task.save();
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'subtask.deleted',
+      details: { title: deletedTitle, path: subtaskPath },
     });
 
     return serializeTask(task.toObject());

@@ -146,6 +146,44 @@ tasksRouter.post('/:id/subtasks', async (req, res, next) => {
   }
 });
 
+tasksRouter.patch('/:id/subtasks', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const path = (req.query.path as string)?.split(',').filter(Boolean) ?? [];
+    if (path.length === 0) {
+      res.status(400).json({ error: 'path query parameter is required' });
+      return;
+    }
+    const task = await taskService.updateSubtask(userId, req.params.id!, path, req.body);
+    if (!task) {
+      res.status(404).json({ error: 'Task or subtask not found' });
+      return;
+    }
+    res.json({ task });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.delete('/:id/subtasks', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const path = (req.query.path as string)?.split(',').filter(Boolean) ?? [];
+    if (path.length === 0) {
+      res.status(400).json({ error: 'path query parameter is required' });
+      return;
+    }
+    const task = await taskService.deleteSubtask(userId, req.params.id!, path);
+    if (!task) {
+      res.status(404).json({ error: 'Task or subtask not found' });
+      return;
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
 tasksRouter.get('/:id/activity', async (req, res, next) => {
   try {
     const activity = await getActivityForTask(req.params.id!);

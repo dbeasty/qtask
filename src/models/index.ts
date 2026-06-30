@@ -111,3 +111,26 @@ const projectSchema = new Schema(
 );
 
 export const ProjectModel = model('Project', projectSchema);
+
+const conversationMessageSchema = new Schema(
+  {
+    role: { type: String, enum: ['system', 'user', 'assistant', 'tool'], required: true },
+    content: { type: String, default: '' },
+    toolCalls: { type: [Schema.Types.Mixed] },
+    toolName: { type: String },
+  },
+  { _id: false }
+);
+
+const conversationSchema = new Schema(
+  {
+    userId: { type: String, required: true, index: true },
+    title: { type: String, default: 'New conversation' },
+    messages: { type: [conversationMessageSchema], default: [] },
+    pendingProposals: { type: [Schema.Types.Mixed], default: [] },
+    pausedBatch: { type: Schema.Types.Mixed, default: null },
+  },
+  { timestamps: true }
+);
+
+export const ConversationModel = model('Conversation', conversationSchema);
