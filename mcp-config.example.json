@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "qtask": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/Users/davidj/devel/qtask",
+      "env": {
+        "MONGODB_URI": "mongodb://localhost:27017/qtask"
+      }
+    }
+  }
+}

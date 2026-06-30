@@ -1,0 +1,10 @@
+services:
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - qtask_mongo_data:/data/db
+
+volumes:
+  qtask_mongo_data:
