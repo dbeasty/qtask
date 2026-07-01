@@ -7,10 +7,12 @@ import {
   buildSubtaskPath,
   canMoveUp,
   collectAttachTargets,
+  collectProjectAttachTargets,
   countNestedSubtasks,
   getSiblingContext,
   nodeKey,
   type AttachTarget,
+  type ProjectAttachTarget,
 } from '../utils/taskTree';
 import {
   getDropZone,
@@ -41,6 +43,12 @@ interface TaskHierarchyTreeProps {
   onMoveUp: (taskId: string, path: string[]) => void;
   onPromoteSubtask: (taskId: string, path: string[]) => void;
   onMoveTask: (taskId: string, index: number) => void;
+  onAttachTask: (
+    sourceTaskId: string,
+    targetTaskId: string,
+    parentPath: string[],
+    index?: number
+  ) => void;
 }
 
 function isSelectionActive(selection: Selection | null, taskId: string, path: string[]): boolean {
@@ -61,9 +69,10 @@ interface UseTreeDragDropOptions {
   saving: boolean;
   onMoveTask: (taskId: string, index: number) => void;
   onMoveSubtask: TaskHierarchyTreeProps['onMoveSubtask'];
+  onAttachTask: TaskHierarchyTreeProps['onAttachTask'];
 }
 
-function useTreeDragDrop({ saving, onMoveTask, onMoveSubtask }: UseTreeDragDropOptions) {
+function useTreeDragDrop({ saving, onMoveTask, onMoveSubtask, onAttachTask }: UseTreeDragDropOptions) {
   const [dropHint, setDropHint] = useState<{ key: string; zone: DropZone } | null>(null);
   const draggingRef = useRef<DragPayload | null>(null);
 
@@ -126,9 +135,19 @@ function useTreeDragDrop({ saving, onMoveTask, onMoveSubtask }: UseTreeDragDropO
         return;
       }
 
+      if (action.kind === 'attach-task') {
+        onAttachTask(
+          action.sourceTaskId,
+          action.targetTaskId,
+          action.parentPath,
+          action.index
+        );
+        return;
+      }
+
       onMoveSubtask(action.taskId, action.fromPath, action.toParentPath, action.index);
     },
-    [onMoveSubtask, onMoveTask, saving]
+    [onAttachTask, onMoveSubtask, onMoveTask, saving]
   );
 
   const rowDropClass = useCallback(
@@ -334,12 +353,13 @@ export function TaskHierarchyTree({
   onMoveUp,
   onPromoteSubtask,
   onMoveTask,
+  onAttachTask,
 }: TaskHierarchyTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [openMoveMenuKey, setOpenMoveMenuKey] = useState<string | null>(null);
   const moveTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-  const dragHandlers = useTreeDragDrop({ saving, onMoveTask, onMoveSubtask });
+  const dragHandlers = useTreeDragDrop({ saving, onMoveTask, onMoveSubtask, onAttachTask });
 
   useEffect(() => {
     if (!selection) return;
@@ -383,6 +403,7 @@ export function TaskHierarchyTree({
         const isExpanded = expanded.has(taskKey);
         const isActive = isSelectionActive(selection, task._id, []);
         const menuOpen = openMoveMenuKey === rowKey;
+        const attachTargets = collectProjectAttachTargets(tasks, task._id);
 
         const dropTarget: DropTarget = {
           taskId: task._id,
@@ -463,12 +484,15 @@ export function TaskHierarchyTree({
                       canMoveUp={taskIndex > 0}
                       canMoveDown={taskIndex < tasks.length - 1}
                       canOutdent={false}
-                      attachTargets={[]}
+                      attachTargets={attachTargets}
                       onMoveUp={() => onMoveTask(task._id, taskIndex - 1)}
                       onMoveDown={() => onMoveTask(task._id, taskIndex + 1)}
                       onPromote={() => {}}
                       onOutdent={() => {}}
-                      onAttach={() => {}}
+                      onAttach={(target) => {
+                        const projectTarget = target as ProjectAttachTarget;
+                        onAttachTask(task._id, projectTarget.targetTaskId, projectTarget.parentPath);
+                      }}
                       onClose={() => setOpenMoveMenuKey(null)}
                     />
                   )}

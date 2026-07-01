@@ -106,6 +106,12 @@ export interface AttachTarget {
   label: string;
 }
 
+export interface ProjectAttachTarget {
+  targetTaskId: string;
+  parentPath: string[];
+  label: string;
+}
+
 export function collectAttachTargets(task: Task, fromPath: string[]): AttachTarget[] {
   const targets: AttachTarget[] = [{ parentPath: [], label: task.title }];
 
@@ -121,6 +127,40 @@ export function collectAttachTargets(task: Task, fromPath: string[]): AttachTarg
   }
 
   walk(task.subtasks, [], [task.title]);
+  return targets;
+}
+
+export function collectProjectAttachTargets(
+  tasks: Task[],
+  excludeTaskId: string
+): ProjectAttachTarget[] {
+  const targets: ProjectAttachTarget[] = [];
+
+  for (const task of tasks) {
+    if (task._id === excludeTaskId) continue;
+
+    targets.push({
+      targetTaskId: task._id,
+      parentPath: [],
+      label: task.title,
+    });
+
+    function walkSubtasks(subtasks: Subtask[], parentPath: string[], labels: string[]) {
+      for (const subtask of subtasks) {
+        const path = [...parentPath, subtask._id];
+        const label = [...labels, subtask.title].join(' › ');
+        targets.push({
+          targetTaskId: task._id,
+          parentPath: path,
+          label,
+        });
+        walkSubtasks(subtask.subtasks, path, [...labels, subtask.title]);
+      }
+    }
+
+    walkSubtasks(task.subtasks, [], [task.title]);
+  }
+
   return targets;
 }
 

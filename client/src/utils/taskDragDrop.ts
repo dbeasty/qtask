@@ -73,7 +73,8 @@ export interface DropTarget {
 
 export type DropAction =
   | { kind: 'move-task'; taskId: string; index: number }
-  | { kind: 'move-subtask'; taskId: string; fromPath: string[]; toParentPath: string[]; index: number };
+  | { kind: 'move-subtask'; taskId: string; fromPath: string[]; toParentPath: string[]; index: number }
+  | { kind: 'attach-task'; sourceTaskId: string; targetTaskId: string; parentPath: string[]; index: number };
 
 export function resolveDropAction(drag: DragPayload, target: DropTarget): DropAction | null {
   if (isSameNode(drag, target.taskId, target.path) && target.zone !== 'inside') {
@@ -81,6 +82,20 @@ export function resolveDropAction(drag: DragPayload, target: DropTarget): DropAc
   }
 
   if (drag.kind === 'task') {
+    if (drag.taskId === target.taskId && target.path.length === 0 && target.zone !== 'inside') {
+      return null;
+    }
+
+    if (target.zone === 'inside' && drag.taskId !== target.taskId) {
+      return {
+        kind: 'attach-task',
+        sourceTaskId: drag.taskId,
+        targetTaskId: target.taskId,
+        parentPath: target.path,
+        index: target.childCount,
+      };
+    }
+
     if (target.path.length > 0) return null;
     if (target.zone === 'inside') return null;
     if (drag.taskId === target.taskId) return null;

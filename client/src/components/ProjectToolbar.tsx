@@ -10,6 +10,9 @@ interface ProjectToolbarProps {
   loading: boolean;
   creatingProject: boolean;
   newProjectName: string;
+  taskListExpanded: boolean;
+  selectedTaskTitle?: string;
+  onTaskListExpandedChange: (expanded: boolean) => void;
   onSelectProject: (projectId: string) => void;
   onRename: (projectId: string, name: string) => Promise<void>;
   onDeleteProject: () => void;
@@ -29,6 +32,9 @@ export function ProjectToolbar({
   loading,
   creatingProject,
   newProjectName,
+  taskListExpanded,
+  selectedTaskTitle,
+  onTaskListExpandedChange,
   onSelectProject,
   onRename,
   onDeleteProject,
@@ -78,27 +84,51 @@ export function ProjectToolbar({
 
   return (
     <div className="project-toolbar-wrap">
-      <button
-        type="button"
-        className={`project-toolbar-collapsed${expanded ? ' expanded' : ''}`}
-        aria-expanded={expanded}
-        onClick={() => setExpanded((current) => !current)}
-      >
-        <span className={`project-toolbar-chevron${expanded ? ' expanded' : ''}`} aria-hidden="true">
-          ›
-        </span>
-        <span className="project-toolbar-collapsed-label">Project</span>
-        {activeProject && (
-          <>
-            <span className="project-toolbar-collapsed-sep">·</span>
-            <span className="project-toolbar-collapsed-name">{activeProject.name}</span>
-            <span className="project-toolbar-collapsed-meta">({taskCountLabel})</span>
-          </>
-        )}
-        {!activeProject && projects.length === 0 && (
-          <span className="project-toolbar-collapsed-meta">No projects</span>
-        )}
-      </button>
+      <div className="context-bar-row">
+        <button
+          type="button"
+          className={`project-toolbar-collapsed context-bar-tasks-toggle${taskListExpanded ? ' expanded' : ''}`}
+          aria-expanded={taskListExpanded}
+          onClick={() => onTaskListExpandedChange(!taskListExpanded)}
+        >
+          <span
+            className={`project-toolbar-chevron${taskListExpanded ? ' expanded' : ''}`}
+            aria-hidden="true"
+          >
+            ›
+          </span>
+          <span className="project-toolbar-collapsed-label">Tasks</span>
+          {selectedTaskTitle && (
+            <>
+              <span className="project-toolbar-collapsed-sep">·</span>
+              <span className="project-toolbar-collapsed-name">{selectedTaskTitle}</span>
+            </>
+          )}
+          <span className="project-toolbar-collapsed-meta">({taskCountLabel})</span>
+        </button>
+
+        <button
+          type="button"
+          className={`project-toolbar-collapsed context-bar-project-toggle${expanded ? ' expanded' : ''}`}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span className={`project-toolbar-chevron${expanded ? ' expanded' : ''}`} aria-hidden="true">
+            ›
+          </span>
+          <span className="project-toolbar-collapsed-label">Project</span>
+          {activeProject && (
+            <>
+              <span className="project-toolbar-collapsed-sep">·</span>
+              <span className="project-toolbar-collapsed-name">{activeProject.name}</span>
+              <span className="project-toolbar-collapsed-meta">({taskCountLabel})</span>
+            </>
+          )}
+          {!activeProject && projects.length === 0 && (
+            <span className="project-toolbar-collapsed-meta">No projects</span>
+          )}
+        </button>
+      </div>
 
       {expanded && (
         <div className="project-toolbar">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addSubtask,
+  attachTaskAsSubtask,
   createProject,
   createTask,
   deleteProject,
@@ -22,8 +23,8 @@ import {
   TaskForm,
   type TaskFormValues,
 } from '../components/TaskForm';
-import { ProjectSection } from '../components/ProjectSection';
 import { ProjectToolbar } from '../components/ProjectToolbar';
+import { TaskListPanel } from '../components/TaskListPanel';
 import { type Selection } from '../components/TaskHierarchyTree';
 import type { Project, Subtask, Task, UpdateTaskInput } from '../types';
 import {
@@ -181,7 +182,14 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
+  const [taskListExpanded, setTaskListExpanded] = useState(true);
   const lastExternalRefreshKey = useRef(externalRefreshKey);
+
+  useEffect(() => {
+    if (creatingTaskForProjectId || addingSubtask) {
+      setTaskListExpanded(true);
+    }
+  }, [creatingTaskForProjectId, addingSubtask]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -386,6 +394,37 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to move subtask to project');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAttachTask = async (
+    sourceTaskId: string,
+    targetTaskId: string,
+    parentPath: string[],
+    index?: number
+  ) => {
+    setSaving(true);
+    setActionError(null);
+    try {
+      const { targetTask, removedTaskId, subtaskId } = await attachTaskAsSubtask(targetTaskId, {
+        sourceTaskId,
+        parentPath,
+        index,
+      });
+      setTasks((current) =>
+        current
+          .filter((item) => item._id !== removedTaskId)
+          .map((item) => (item._id === targetTaskId ? targetTask : item))
+      );
+      setSelection({
+        kind: 'subtask',
+        taskId: targetTaskId,
+        path: [...parentPath, subtaskId],
+      });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to attach task');
     } finally {
       setSaving(false);
     }
@@ -640,6 +679,9 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             loading={loading}
             creatingProject={creatingProject}
             newProjectName={newProjectName}
+            taskListExpanded={taskListExpanded}
+            selectedTaskTitle={detail?.title}
+            onTaskListExpandedChange={setTaskListExpanded}
             onSelectProject={handleSelectProject}
             onRename={handleRenameProject}
             onDeleteProject={handleDeleteProject}
@@ -656,41 +698,25 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             }}
           />
 
-          <div className="tasks-layout">
-            <aside className="task-list-panel">
-              <header className="task-list-panel-header">
-                <div className="task-list-panel-actions">
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={handleAddClick}
-                    disabled={saving || !resolvedActiveProjectId}
-                  >
-                    {addButtonLabel}
-                  </button>
-                  {hasSelection && (
-                    <button type="button" className="danger-button" onClick={handleDelete} disabled={saving}>
-                      Delete
-                    </button>
-                  )}
-                </div>
-              </header>
-
-              <div className="project-sections">
-                {activeProjectGroup && (
-                  <ProjectSection
-                    tasks={activeProjectGroup.tasks}
-                    selection={selection}
-                    saving={saving}
-                    onSelect={handleSelect}
-                    onMoveSubtask={handleMoveSubtask}
-                    onMoveUp={handleMoveUp}
-                    onPromoteSubtask={handlePromoteSubtask}
-                    onMoveTask={handleMoveTask}
-                  />
-                )}
-              </div>
-            </aside>
+          <div className={`tasks-layout${taskListExpanded ? '' : ' tasks-layout-task-list-collapsed'}`}>
+            {taskListExpanded && activeProjectGroup && (
+              <TaskListPanel
+                tasks={activeProjectGroup.tasks}
+                selection={selection}
+                saving={saving}
+                addButtonLabel={addButtonLabel}
+                hasSelection={hasSelection}
+                addDisabled={!resolvedActiveProjectId}
+                onAddClick={handleAddClick}
+                onDelete={handleDelete}
+                onSelect={handleSelect}
+                onMoveSubtask={handleMoveSubtask}
+                onMoveUp={handleMoveUp}
+                onPromoteSubtask={handlePromoteSubtask}
+                onMoveTask={handleMoveTask}
+                onAttachTask={handleAttachTask}
+              />
+            )}
 
             {creatingTaskForProjectId && activeProjectGroup ? (
               <article className="task-detail-panel">

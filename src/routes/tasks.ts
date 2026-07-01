@@ -185,6 +185,47 @@ tasksRouter.post('/:id/subtasks/promote', async (req, res, next) => {
   }
 });
 
+tasksRouter.post('/:id/subtasks/attach-task', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { sourceTaskId, parentPath, index } = req.body as {
+      sourceTaskId?: string;
+      parentPath?: string[];
+      index?: number;
+    };
+
+    if (!sourceTaskId) {
+      res.status(400).json({ error: 'sourceTaskId is required' });
+      return;
+    }
+    if (!Array.isArray(parentPath)) {
+      res.status(400).json({ error: 'parentPath is required' });
+      return;
+    }
+
+    const result = await taskService.attachTaskAsSubtask(userId, req.params.id!, {
+      sourceTaskId,
+      parentPath,
+      index,
+    });
+    if (!result) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Cannot attach')) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    if (error instanceof Error && error.message.includes('same project')) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
 tasksRouter.post('/:id/subtasks/move', async (req, res, next) => {
   try {
     const userId = getUserId(req);

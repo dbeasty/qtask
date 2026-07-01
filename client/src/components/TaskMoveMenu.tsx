@@ -1,6 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import type { AttachTarget } from '../utils/taskTree';
+import type { AttachTarget, ProjectAttachTarget } from '../utils/taskTree';
+
+type MoveAttachTarget = AttachTarget | ProjectAttachTarget;
+
+function attachTargetLabel(target: MoveAttachTarget): string {
+  return target.label;
+}
 
 interface TaskMoveMenuProps {
   anchorRef: RefObject<HTMLButtonElement | null>;
@@ -9,12 +15,12 @@ interface TaskMoveMenuProps {
   canMoveUp: boolean;
   canMoveDown: boolean;
   canOutdent: boolean;
-  attachTargets: AttachTarget[];
+  attachTargets: MoveAttachTarget[];
   onMoveUp: () => void;
   onMoveDown: () => void;
   onPromote: () => void;
   onOutdent: () => void;
-  onAttach: (target: AttachTarget) => void;
+  onAttach: (target: MoveAttachTarget) => void;
   onClose: () => void;
 }
 
@@ -34,7 +40,6 @@ export function TaskMoveMenu({
   onClose,
 }: TaskMoveMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const [attachLabel, setAttachLabel] = useState('');
   const [menuStyle, setMenuStyle] = useState<{ top: number; left: number; visibility: 'hidden' | 'visible' }>({
     top: 0,
     left: 0,
@@ -65,13 +70,13 @@ export function TaskMoveMenu({
   }, [anchorRef, attachTargets.length, kind]);
 
   useEffect(() => {
-    const handlePointerDown = (event: MouseEvent) => {
+    const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (menuRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
       onClose();
     };
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
   }, [anchorRef, onClose]);
 
   useEffect(() => {
@@ -89,9 +94,7 @@ export function TaskMoveMenu({
     onClose();
   };
 
-  const handleAttach = () => {
-    const target = attachTargets.find((item) => item.label === attachLabel);
-    if (!target) return;
+  const handleAttach = (target: MoveAttachTarget) => {
     onAttach(target);
     onClose();
   };
@@ -142,35 +145,26 @@ export function TaskMoveMenu({
           >
             Move up one level
           </button>
-          {attachTargets.length > 0 && (
-            <div className="task-move-menu-attach">
-              <label className="task-move-menu-attach-label">
-                Attach under
-                <select
-                  className="task-move-menu-attach-select"
-                  value={attachLabel}
-                  onChange={(event) => setAttachLabel(event.target.value)}
-                  disabled={saving}
-                >
-                  <option value="">Choose parent…</option>
-                  {attachTargets.map((target) => (
-                    <option key={target.label} value={target.label}>
-                      {target.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="secondary-button task-move-menu-attach-apply"
-                disabled={saving || !attachLabel}
-                onClick={handleAttach}
-              >
-                Apply
-              </button>
-            </div>
-          )}
         </>
+      )}
+      {attachTargets.length > 0 && (
+        <div className="task-move-menu-attach">
+          <div className="task-move-menu-attach-label">Attach under</div>
+          <div className="task-move-menu-attach-list">
+            {attachTargets.map((target, index) => (
+              <button
+                key={index}
+                type="button"
+                className="task-move-menu-item task-move-menu-attach-option"
+                role="menuitem"
+                disabled={saving}
+                onClick={() => handleAttach(target)}
+              >
+                {attachTargetLabel(target)}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
     </div>,
     document.body

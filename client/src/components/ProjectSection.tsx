@@ -15,6 +15,12 @@ interface ProjectSectionProps {
   onMoveUp: (taskId: string, path: string[]) => void;
   onPromoteSubtask: (taskId: string, path: string[]) => void;
   onMoveTask: (taskId: string, index: number) => void;
+  onAttachTask: (
+    sourceTaskId: string,
+    targetTaskId: string,
+    parentPath: string[],
+    index?: number
+  ) => void;
 }
 
 export function ProjectSection({
@@ -26,6 +32,7 @@ export function ProjectSection({
   onMoveUp,
   onPromoteSubtask,
   onMoveTask,
+  onAttachTask,
 }: ProjectSectionProps) {
   return (
     <div className="project-section">
@@ -39,6 +46,7 @@ export function ProjectSection({
           onMoveUp={onMoveUp}
           onPromoteSubtask={onPromoteSubtask}
           onMoveTask={onMoveTask}
+          onAttachTask={onAttachTask}
         />
       ) : (
         <p className="muted project-section-empty">No tasks in this project yet.</p>

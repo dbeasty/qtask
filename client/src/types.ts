@@ -154,6 +154,12 @@ export interface MoveSubtaskInput {
   index?: number;
 }
 
+export interface AttachTaskAsSubtaskInput {
+  sourceTaskId: string;
+  parentPath: string[];
+  index?: number;
+}
+
 export interface UpdateSubtaskInput {
   title?: string;
   description?: string;

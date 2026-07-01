@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { TaskModel } from '../models/index.js';
 import type {
+  AttachTaskAsSubtaskInput,
   CreateTaskInput,
   MoveSubtaskInput,
   TaskLink,
@@ -578,6 +579,77 @@ export class TaskService {
     };
   }
 
+  async attachTaskAsSubtask(
+    userId: string,
+    targetTaskId: string,
+    input: AttachTaskAsSubtaskInput
+  ) {
+    const { sourceTaskId, parentPath, index } = input;
+
+    if (sourceTaskId === targetTaskId) {
+      throw new Error('Cannot attach a task to itself');
+    }
+
+    const [sourceTask, targetTask] = await Promise.all([
+      TaskModel.findOne({ _id: sourceTaskId, userId }),
+      TaskModel.findOne({ _id: targetTaskId, userId }),
+    ]);
+
+    if (!sourceTask || !targetTask) return null;
+
+    const [sourceProjectId, targetProjectId] = await Promise.all([
+      this.resolveTaskProjectId(userId, sourceTask),
+      this.resolveTaskProjectId(userId, targetTask),
+    ]);
+    if (sourceProjectId !== targetProjectId) {
+      throw new Error('Tasks must belong to the same project');
+    }
+
+    if (!targetTask.projectId) {
+      targetTask.projectId = targetProjectId;
+    }
+
+    const targetParentArray = this.getParentArray(targetTask, parentPath);
+    if (!targetParentArray) return null;
+
+    const sourceObj = sourceTask.toObject() as Record<string, unknown>;
+    const newSubtask = this.taskDocToSubtaskNode(sourceObj);
+    const subtaskId = String((newSubtask as { _id: Types.ObjectId })._id);
+
+    let insertIndex = index ?? targetParentArray.length;
+    insertIndex = Math.max(0, Math.min(insertIndex, targetParentArray.length));
+    targetParentArray.splice(insertIndex, 0, newSubtask as (typeof targetParentArray)[0]);
+
+    if (!targetTask.links.some((l) => l.taskId === sourceTaskId && l.type === 'related')) {
+      targetTask.links.push({ taskId: sourceTaskId, type: 'related' });
+    }
+
+    finalizeTaskProgress(targetTask);
+    targetTask.markModified('subtasks');
+    await targetTask.save();
+    await TaskModel.deleteOne({ _id: sourceTaskId, userId });
+    await enqueueEmbeddingJob(targetTaskId);
+
+    await logActivity({
+      taskId: targetTaskId,
+      userId,
+      action: 'task.attached_as_subtask',
+      details: {
+        sourceTaskId,
+        parentPath,
+        index: insertIndex,
+        subtaskId,
+        title: sourceObj.title,
+      },
+    });
+
+    return {
+      targetTask: serializeTask(targetTask.toObject()),
+      removedTaskId: sourceTaskId,
+      subtaskId,
+    };
+  }
+
   async reorderProjectTask(userId: string, projectId: string, taskId: string, index: number) {
     const tasks = await TaskModel.find({ userId, projectId }).sort({ sortOrder: 1, createdAt: -1 });
     const orderedIds = tasks.map((task) => String(task._id));
@@ -638,6 +710,50 @@ export class TaskService {
     });
 
     return serializeTask(task.toObject());
+  }
+
+  private taskDocToSubtaskNode(source: Record<string, unknown>): Record<string, unknown> {
+    const nested = ((source.subtasks as Record<string, unknown>[]) ?? []).map((subtask) =>
+      this.preserveSubtaskNode(subtask)
+    );
+
+    return {
+      _id: new Types.ObjectId(),
+      title: source.title,
+      description: source.description,
+      status: source.status ?? 'todo',
+      priority: source.priority ?? 'medium',
+      dueDate: source.dueDate,
+      tags: source.tags ?? [],
+      percentComplete: source.percentComplete ?? 0,
+      percentCompleteOverride: source.percentCompleteOverride,
+      progressShare: source.progressShare,
+      hoursSpent: source.hoursSpent,
+      hoursRemaining: source.hoursRemaining,
+      lastProgressField: source.lastProgressField,
+      subtasks: nested,
+      links: source.links ?? [],
+    };
+  }
+
+  private preserveSubtaskNode(subtask: Record<string, unknown>): Record<string, unknown> {
+    const nested = ((subtask.subtasks as Record<string, unknown>[]) ?? []).map((child) =>
+      this.preserveSubtaskNode(child)
+    );
+
+    return {
+      ...subtask,
+      subtasks: nested,
+    };
+  }
+
+  private async resolveTaskProjectId(
+    userId: string,
+    task: { projectId?: unknown }
+  ): Promise<string> {
+    if (task.projectId) return String(task.projectId);
+    const { projectService } = await import('./projectService.js');
+    return projectService.ensureDefaultProject(userId);
   }
 
   private getParentArray(

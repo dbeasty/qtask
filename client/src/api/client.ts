@@ -153,6 +153,20 @@ export async function promoteSubtask(
   });
 }
 
+export async function attachTaskAsSubtask(
+  targetTaskId: string,
+  body: import('../types').AttachTaskAsSubtaskInput
+): Promise<{
+  targetTask: import('../types').Task;
+  removedTaskId: string;
+  subtaskId: string;
+}> {
+  return request(`/api/tasks/${targetTaskId}/subtasks/attach-task`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 export async function reorderProjectTask(
   projectId: string,
   taskId: string,

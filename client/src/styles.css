@@ -481,6 +481,38 @@ main {
   margin-bottom: 0.75rem;
 }
 
+.context-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.context-bar-row .project-toolbar-collapsed {
+  width: auto;
+}
+
+.context-bar-tasks-toggle {
+  max-width: min(420px, 50%);
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.context-bar-tasks-toggle .project-toolbar-collapsed-name {
+  min-width: 0;
+}
+
+.context-bar-project-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: min(420px, 50%);
+  min-width: 0;
+}
+
+.context-bar-project-toggle .project-toolbar-collapsed-name {
+  min-width: 0;
+}
+
 .project-toolbar-collapsed {
   display: flex;
   align-items: center;
@@ -631,6 +663,16 @@ main {
   min-height: 0;
   max-height: calc(100vh - 200px);
   overflow: hidden;
+}
+
+.task-list-panel-collapsed {
+  min-height: auto;
+  max-height: none;
+  padding: 0.5rem;
+}
+
+.tasks-layout-task-list-collapsed {
+  grid-template-columns: 1fr;
 }
 
 .task-list-panel-header {
@@ -920,27 +962,21 @@ main {
 }
 
 .task-move-menu-attach-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
   font-size: 0.75rem;
   color: #94a3b8;
 }
 
-.task-move-menu-attach-select {
-  border: 1px solid #314158;
-  background: #151d29;
-  color: #f8fafc;
-  border-radius: 0.35rem;
-  padding: 0.35rem 0.5rem;
-  font: inherit;
-  font-size: 0.8rem;
+.task-move-menu-attach-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 12rem;
+  overflow-y: auto;
 }
 
-.task-move-menu-attach-apply {
-  align-self: flex-start;
-  font-size: 0.8rem;
-  padding: 0.3rem 0.6rem;
+.task-move-menu-attach-option {
+  text-align: left;
+  white-space: normal;
+  line-height: 1.3;
 }
 
 .task-tree-node.drop-before {
