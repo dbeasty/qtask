@@ -3,13 +3,16 @@ import {
   approveProposal,
   getConversation,
   listConversations,
+  listProjects,
   streamChat,
   submitProposal,
 } from '../api/client';
-import type { ChatStreamEvent, ConversationSummary, StoredMessage, UiMessage, UiProposal } from '../types';
+import type { ChatStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
+import { suggestProjectFromMessages } from '../utils/project';
 
 interface ChatPageProps {
   onTasksChanged: () => void;
+  onProjectSuggested?: (name: string) => void;
 }
 
 function visibleMessages(messages: UiMessage[]) {
@@ -184,8 +187,9 @@ function handleStreamEvent(
   return { toolsTouched };
 }
 
-export function ChatPage({ onTasksChanged }: ChatPageProps) {
+export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState('');
@@ -203,7 +207,19 @@ export function ChatPage({ onTasksChanged }: ChatPageProps) {
     listConversations()
       .then(({ conversations: items }) => setConversations(items))
       .catch((err: Error) => setError(err.message));
+    listProjects()
+      .then(({ projects: items }) => setProjects(items))
+      .catch(() => {
+        // optional for project suggestion
+      });
   }, []);
+
+  useEffect(() => {
+    const suggested = suggestProjectFromMessages(messages, projects);
+    if (suggested) {
+      onProjectSuggested?.(suggested);
+    }
+  }, [messages, projects, onProjectSuggested]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });

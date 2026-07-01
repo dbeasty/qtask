@@ -10,6 +10,10 @@ export function buildSubtaskTree(input: CreateSubtaskInput): Record<string, unkn
     tags: input.tags ?? [],
     percentComplete: input.percentComplete ?? 0,
     percentCompleteOverride: input.percentCompleteOverride,
+    progressShare: input.progressShare,
+    hoursSpent: input.hoursSpent,
+    hoursRemaining: input.hoursRemaining,
+    lastProgressField: input.lastProgressField,
     subtasks: (input.subtasks ?? []).map(buildSubtaskTree),
     links: [],
   };

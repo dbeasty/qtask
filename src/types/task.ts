@@ -1,6 +1,7 @@
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 export type TaskLinkType = 'related' | 'blocking' | 'blocked_by';
+export type ProgressField = 'percent' | 'hoursSpent' | 'hoursRemaining';
 
 export interface TaskLink {
   taskId: string;
@@ -17,6 +18,10 @@ export interface Subtask {
   tags: string[];
   percentComplete: number;
   percentCompleteOverride?: number;
+  progressShare?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  lastProgressField?: ProgressField;
   subtasks: Subtask[];
   links: TaskLink[];
   createdAt: Date;
@@ -35,6 +40,10 @@ export interface Task {
   tags: string[];
   percentComplete: number;
   percentCompleteOverride?: number;
+  progressShare?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  lastProgressField?: ProgressField;
   subtasks: Subtask[];
   links: TaskLink[];
   assigneeId?: string;
@@ -52,6 +61,10 @@ export interface CreateTaskInput {
   tags?: string[];
   percentComplete?: number;
   percentCompleteOverride?: number;
+  progressShare?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  lastProgressField?: ProgressField;
   projectId?: string;
   subtasks?: CreateSubtaskInput[];
 }
@@ -65,6 +78,10 @@ export interface CreateSubtaskInput {
   tags?: string[];
   percentComplete?: number;
   percentCompleteOverride?: number;
+  progressShare?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  lastProgressField?: ProgressField;
   subtasks?: CreateSubtaskInput[];
 }
 
@@ -77,8 +94,18 @@ export interface UpdateTaskInput {
   tags?: string[];
   percentComplete?: number;
   percentCompleteOverride?: number | null;
+  progressShare?: number | null;
+  hoursSpent?: number | null;
+  hoursRemaining?: number | null;
+  lastProgressField?: ProgressField | null;
   projectId?: string | null;
   assigneeId?: string | null;
+}
+
+export interface MoveSubtaskInput {
+  fromPath: string[];
+  toParentPath: string[];
+  index?: number;
 }
 
 export interface UpdateSubtaskInput {
@@ -90,6 +117,10 @@ export interface UpdateSubtaskInput {
   tags?: string[];
   percentComplete?: number;
   percentCompleteOverride?: number | null;
+  progressShare?: number | null;
+  hoursSpent?: number | null;
+  hoursRemaining?: number | null;
+  lastProgressField?: ProgressField | null;
 }
 
 export interface TaskSearchFilters {

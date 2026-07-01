@@ -1,5 +1,6 @@
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
+export type ProgressField = 'percent' | 'hoursSpent' | 'hoursRemaining';
 
 export interface Task {
   _id: string;
@@ -12,7 +13,13 @@ export interface Task {
   dueDate?: string;
   tags: string[];
   percentComplete: number;
+  percentCompleteOverride?: number;
+  progressShare?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  lastProgressField?: ProgressField;
   subtasks: Subtask[];
+  sortOrder?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -24,6 +31,11 @@ export interface Subtask {
   status: TaskStatus;
   priority: TaskPriority;
   percentComplete: number;
+  percentCompleteOverride?: number;
+  progressShare?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  lastProgressField?: ProgressField;
   subtasks: Subtask[];
 }
 
@@ -128,6 +140,18 @@ export interface UpdateTaskInput {
   priority?: TaskPriority;
   tags?: string[];
   projectId?: string | null;
+  percentComplete?: number;
+  percentCompleteOverride?: number | null;
+  progressShare?: number | null;
+  hoursSpent?: number | null;
+  hoursRemaining?: number | null;
+  lastProgressField?: ProgressField | null;
+}
+
+export interface MoveSubtaskInput {
+  fromPath: string[];
+  toParentPath: string[];
+  index?: number;
 }
 
 export interface UpdateSubtaskInput {
@@ -135,4 +159,10 @@ export interface UpdateSubtaskInput {
   description?: string;
   status?: TaskStatus;
   priority?: TaskPriority;
+  percentComplete?: number;
+  percentCompleteOverride?: number | null;
+  progressShare?: number | null;
+  hoursSpent?: number | null;
+  hoursRemaining?: number | null;
+  lastProgressField?: ProgressField | null;
 }

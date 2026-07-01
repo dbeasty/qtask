@@ -68,6 +68,25 @@ export async function listProjects(): Promise<{ projects: import('../types').Pro
   return request('/api/projects');
 }
 
+export async function createProject(
+  body: { name: string; description?: string }
+): Promise<{ project: import('../types').Project }> {
+  return request('/api/projects', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export async function updateProject(
+  id: string,
+  body: { name?: string; description?: string | null }
+): Promise<{ project: import('../types').Project }> {
+  return request(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
+export async function deleteProject(
+  id: string
+): Promise<{ deletedTaskCount: number; nextProjectId: string | null }> {
+  return request(`/api/projects/${id}`, { method: 'DELETE' });
+}
+
 export async function createTask(
   body: import('../types').CreateTaskInput
 ): Promise<{ task: import('../types').Task }> {
@@ -113,6 +132,36 @@ export async function updateSubtask(
 
 export async function deleteSubtask(taskId: string, path: string[]): Promise<void> {
   await request(`/api/tasks/${taskId}/subtasks${subtaskPathQuery(path)}`, { method: 'DELETE' });
+}
+
+export async function moveSubtask(
+  taskId: string,
+  body: import('../types').MoveSubtaskInput
+): Promise<{ task: import('../types').Task }> {
+  return request(`/api/tasks/${taskId}/subtasks/move`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function promoteSubtask(
+  taskId: string,
+  path: string[]
+): Promise<{ task: import('../types').Task; promotedTask: import('../types').Task }> {
+  return request(`/api/tasks/${taskId}/subtasks/promote${subtaskPathQuery(path)}`, {
+    method: 'POST',
+  });
+}
+
+export async function reorderProjectTask(
+  projectId: string,
+  taskId: string,
+  index: number
+): Promise<{ tasks: import('../types').Task[] }> {
+  return request(`/api/projects/${projectId}/tasks/reorder`, {
+    method: 'POST',
+    body: JSON.stringify({ taskId, index }),
+  });
 }
 
 export async function listConversations(): Promise<{ conversations: import('../types').ConversationSummary[] }> {

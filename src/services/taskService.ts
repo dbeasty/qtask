@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { TaskModel } from '../models/index.js';
 import type {
   CreateTaskInput,
+  MoveSubtaskInput,
   TaskLink,
   TaskLinkType,
   TaskSearchFilters,
@@ -13,6 +14,80 @@ import { buildSubtaskTree, serializeTask } from '../utils/serialization.js';
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
 import { buildTaskEmbeddingText, cosineSimilarity, generateEmbedding } from './embeddingService.js';
+
+type ProgressNode = Record<string, unknown> & {
+  status?: string;
+  subtasks?: ProgressNode[];
+  percentComplete?: number;
+  lastProgressField?: string;
+};
+
+function applyProgressInputFields(
+  node: ProgressNode,
+  input: {
+    percentComplete?: number;
+    percentCompleteOverride?: number | null;
+    progressShare?: number | null;
+    hoursSpent?: number | null;
+    hoursRemaining?: number | null;
+    lastProgressField?: string | null;
+    status?: string;
+  },
+  changes: Record<string, unknown>
+) {
+  if (input.status !== undefined) {
+    node.status = input.status;
+    changes.status = input.status;
+    if (input.status === 'done' && (node.subtasks ?? []).length === 0) {
+      node.percentComplete = 100;
+      node.lastProgressField = 'percent';
+      changes.percentComplete = 100;
+      changes.lastProgressField = 'percent';
+    }
+  }
+  if (input.percentComplete !== undefined) {
+    node.percentComplete = input.percentComplete;
+    changes.percentComplete = input.percentComplete;
+  }
+  if (input.percentCompleteOverride !== undefined) {
+    node.percentCompleteOverride =
+      input.percentCompleteOverride === null ? undefined : input.percentCompleteOverride;
+    changes.percentCompleteOverride = input.percentCompleteOverride;
+  }
+  if (input.progressShare !== undefined) {
+    node.progressShare = input.progressShare === null ? undefined : input.progressShare;
+    changes.progressShare = input.progressShare;
+  }
+  if (input.hoursSpent !== undefined) {
+    node.hoursSpent = input.hoursSpent === null ? undefined : input.hoursSpent;
+    changes.hoursSpent = input.hoursSpent;
+  }
+  if (input.hoursRemaining !== undefined) {
+    node.hoursRemaining = input.hoursRemaining === null ? undefined : input.hoursRemaining;
+    changes.hoursRemaining = input.hoursRemaining;
+  }
+  if (input.lastProgressField !== undefined) {
+    node.lastProgressField =
+      input.lastProgressField === null ? undefined : input.lastProgressField;
+    changes.lastProgressField = input.lastProgressField;
+  }
+}
+
+function finalizeTaskProgress(task: {
+  status?: string;
+  percentComplete: number;
+  subtasks: unknown[];
+  markModified?: (path: string) => void;
+  toObject: () => Record<string, unknown>;
+}) {
+  const withPercent = applyPercentComplete(
+    task.toObject() as unknown as Parameters<typeof applyPercentComplete>[0]
+  );
+  task.status = withPercent.status as typeof task.status;
+  task.percentComplete = withPercent.percentComplete;
+  task.subtasks = withPercent.subtasks as typeof task.subtasks;
+  task.markModified?.('subtasks');
+}
 
 export class TaskService {
   async createTask(userId: string, input: CreateTaskInput, source: 'user' | 'ai' = 'user') {
@@ -33,7 +108,16 @@ export class TaskService {
       links: [],
     });
 
+    if (input.projectId) {
+      const minTask = await TaskModel.findOne({ userId, projectId: input.projectId })
+        .sort({ sortOrder: 1 })
+        .select('sortOrder')
+        .lean();
+      taskDoc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
+    }
+
     const withPercent = applyPercentComplete(taskDoc.toObject() as Parameters<typeof applyPercentComplete>[0]);
+    taskDoc.status = withPercent.status as typeof taskDoc.status;
     taskDoc.percentComplete = withPercent.percentComplete;
     taskDoc.subtasks = withPercent.subtasks as typeof taskDoc.subtasks;
 
@@ -77,7 +161,7 @@ export class TaskService {
       if (filters.dueAfter) (query.dueDate as Record<string, Date>).$gte = new Date(filters.dueAfter);
     }
 
-    let tasks = await TaskModel.find(query).sort({ updatedAt: -1 }).lean();
+    let tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();
 
     if (filters.query) {
       const textMatches = await TaskModel.find(
@@ -149,10 +233,6 @@ export class TaskService {
       task.description = input.description;
       changes.description = input.description;
     }
-    if (input.status !== undefined) {
-      task.status = input.status;
-      changes.status = input.status;
-    }
     if (input.priority !== undefined) {
       task.priority = input.priority;
       changes.priority = input.priority;
@@ -165,15 +245,7 @@ export class TaskService {
       task.tags = input.tags;
       changes.tags = input.tags;
     }
-    if (input.percentComplete !== undefined) {
-      task.percentComplete = input.percentComplete;
-      changes.percentComplete = input.percentComplete;
-    }
-    if (input.percentCompleteOverride !== undefined) {
-      task.percentCompleteOverride =
-        input.percentCompleteOverride === null ? undefined : input.percentCompleteOverride;
-      changes.percentCompleteOverride = input.percentCompleteOverride;
-    }
+    applyProgressInputFields(task as unknown as ProgressNode, input, changes);
     if (input.projectId !== undefined) {
       task.projectId = input.projectId === null ? undefined : input.projectId;
       changes.projectId = input.projectId;
@@ -183,9 +255,7 @@ export class TaskService {
       changes.assigneeId = input.assigneeId;
     }
 
-    const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
-    task.percentComplete = withPercent.percentComplete;
-    task.subtasks = withPercent.subtasks as typeof task.subtasks;
+    finalizeTaskProgress(task);
 
     await task.save();
     await enqueueEmbeddingJob(String(task._id));
@@ -307,9 +377,8 @@ export class TaskService {
       parent.subtasks.push(newSubtask as unknown as (typeof parent.subtasks)[0]);
     }
 
-    const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
-    task.percentComplete = withPercent.percentComplete;
-    task.subtasks = withPercent.subtasks as typeof task.subtasks;
+    finalizeTaskProgress(task);
+    task.markModified('subtasks');
     await task.save();
 
     await logActivity({
@@ -346,10 +415,6 @@ export class TaskService {
       node.description = input.description;
       changes.description = input.description;
     }
-    if (input.status !== undefined) {
-      node.status = input.status;
-      changes.status = input.status;
-    }
     if (input.priority !== undefined) {
       node.priority = input.priority;
       changes.priority = input.priority;
@@ -362,19 +427,10 @@ export class TaskService {
       node.tags = input.tags;
       changes.tags = input.tags;
     }
-    if (input.percentComplete !== undefined) {
-      node.percentComplete = input.percentComplete;
-      changes.percentComplete = input.percentComplete;
-    }
-    if (input.percentCompleteOverride !== undefined) {
-      node.percentCompleteOverride =
-        input.percentCompleteOverride === null ? undefined : input.percentCompleteOverride;
-      changes.percentCompleteOverride = input.percentCompleteOverride;
-    }
+    applyProgressInputFields(node as ProgressNode, input, changes);
 
-    const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
-    task.percentComplete = withPercent.percentComplete;
-    task.subtasks = withPercent.subtasks as typeof task.subtasks;
+    finalizeTaskProgress(task);
+    task.markModified('subtasks');
     await task.save();
     await enqueueEmbeddingJob(String(task._id));
 
@@ -387,6 +443,165 @@ export class TaskService {
     });
 
     return serializeTask(task.toObject());
+  }
+
+  async moveSubtask(userId: string, taskId: string, input: MoveSubtaskInput) {
+    const { fromPath, toParentPath, index } = input;
+    if (fromPath.length === 0) {
+      throw new Error('fromPath is required');
+    }
+
+    const task = await TaskModel.findOne({ _id: taskId, userId });
+    if (!task) return null;
+
+    const nodeId = fromPath[fromPath.length - 1]!;
+    const currentParentPath = fromPath.slice(0, -1);
+
+    if (this.isDescendantOrSelfPath(fromPath, toParentPath)) {
+      throw new Error('Cannot move a subtask into itself or its descendants');
+    }
+
+    const currentParentArray = this.getParentArray(task, currentParentPath);
+    if (!currentParentArray) return null;
+
+    const fromIndex = currentParentArray.findIndex((s) => String(s._id) === nodeId);
+    if (fromIndex === -1) return null;
+
+    const targetParentArray = this.getParentArray(task, toParentPath);
+    if (!targetParentArray) return null;
+
+    const isSameParent =
+      currentParentPath.length === toParentPath.length &&
+      currentParentPath.every((id, i) => id === toParentPath[i]);
+
+    const [node] = currentParentArray.splice(fromIndex, 1);
+
+    let insertIndex = index ?? targetParentArray.length;
+    if (isSameParent && insertIndex > fromIndex) {
+      insertIndex -= 1;
+    }
+    insertIndex = Math.max(0, Math.min(insertIndex, targetParentArray.length));
+
+    targetParentArray.splice(insertIndex, 0, node!);
+
+    finalizeTaskProgress(task);
+    task.markModified('subtasks');
+    await task.save();
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'subtask.moved',
+      details: { fromPath, toParentPath, index: insertIndex },
+    });
+
+    return serializeTask(task.toObject());
+  }
+
+  async promoteSubtaskToTask(userId: string, taskId: string, subtaskPath: string[]) {
+    if (subtaskPath.length === 0) return null;
+
+    const task = await TaskModel.findOne({ _id: taskId, userId });
+    if (!task) return null;
+
+    const subtaskId = subtaskPath[subtaskPath.length - 1]!;
+    const currentParentPath = subtaskPath.slice(0, -1);
+    const currentParentArray = this.getParentArray(task, currentParentPath);
+    if (!currentParentArray) return null;
+
+    const fromIndex = currentParentArray.findIndex((s) => String(s._id) === subtaskId);
+    if (fromIndex === -1) return null;
+
+    const [node] = currentParentArray.splice(fromIndex, 1);
+    const nodeObj = node as Record<string, unknown>;
+
+    let projectId = task.projectId;
+    if (!projectId) {
+      const { projectService } = await import('./projectService.js');
+      projectId = await projectService.ensureDefaultProject(userId);
+    }
+
+    const promotedDoc = new TaskModel({
+      userId,
+      projectId,
+      title: nodeObj.title,
+      description: nodeObj.description,
+      status: nodeObj.status ?? 'todo',
+      priority: nodeObj.priority ?? 'medium',
+      dueDate: nodeObj.dueDate,
+      tags: nodeObj.tags ?? [],
+      percentComplete: nodeObj.percentComplete ?? 0,
+      percentCompleteOverride: nodeObj.percentCompleteOverride,
+      progressShare: nodeObj.progressShare,
+      hoursSpent: nodeObj.hoursSpent,
+      hoursRemaining: nodeObj.hoursRemaining,
+      lastProgressField: nodeObj.lastProgressField,
+      subtasks: nodeObj.subtasks ?? [],
+      links: nodeObj.links ?? [],
+    });
+
+    const minTask = await TaskModel.findOne({ userId, projectId })
+      .sort({ sortOrder: 1 })
+      .select('sortOrder')
+      .lean();
+    promotedDoc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
+
+    const withPercent = applyPercentComplete(
+      promotedDoc.toObject() as Parameters<typeof applyPercentComplete>[0]
+    );
+    promotedDoc.status = withPercent.status as typeof promotedDoc.status;
+    promotedDoc.percentComplete = withPercent.percentComplete;
+    promotedDoc.subtasks = withPercent.subtasks as typeof promotedDoc.subtasks;
+
+    await promotedDoc.save();
+    const promotedId = String(promotedDoc._id);
+    await enqueueEmbeddingJob(promotedId);
+
+    if (!task.links.some((l) => l.taskId === promotedId && l.type === 'related')) {
+      task.links.push({ taskId: promotedId, type: 'related' });
+    }
+
+    finalizeTaskProgress(task);
+    task.markModified('subtasks');
+    await task.save();
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'subtask.promoted',
+      details: { path: subtaskPath, promotedTaskId: promotedId, title: nodeObj.title },
+    });
+
+    return {
+      task: serializeTask(task.toObject()),
+      promotedTask: serializeTask(promotedDoc.toObject()),
+    };
+  }
+
+  async reorderProjectTask(userId: string, projectId: string, taskId: string, index: number) {
+    const tasks = await TaskModel.find({ userId, projectId }).sort({ sortOrder: 1, createdAt: -1 });
+    const orderedIds = tasks.map((task) => String(task._id));
+    const fromIndex = orderedIds.indexOf(taskId);
+    if (fromIndex === -1) return null;
+
+    const clampedIndex = Math.max(0, Math.min(index, orderedIds.length - 1));
+    const [movedId] = orderedIds.splice(fromIndex, 1);
+    orderedIds.splice(clampedIndex, 0, movedId!);
+
+    await Promise.all(
+      orderedIds.map((id, sortOrder) =>
+        TaskModel.updateOne({ _id: id, userId }, { $set: { sortOrder } })
+      )
+    );
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'task.reordered',
+      details: { projectId, index: clampedIndex },
+    });
+
+    return this.listTasks(userId);
   }
 
   async deleteSubtask(userId: string, taskId: string, subtaskPath: string[]) {
@@ -411,9 +626,8 @@ export class TaskService {
       parent.subtasks.splice(index, 1);
     }
 
-    const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
-    task.percentComplete = withPercent.percentComplete;
-    task.subtasks = withPercent.subtasks as typeof task.subtasks;
+    finalizeTaskProgress(task);
+    task.markModified('subtasks');
     await task.save();
 
     await logActivity({
@@ -424,6 +638,27 @@ export class TaskService {
     });
 
     return serializeTask(task.toObject());
+  }
+
+  private getParentArray(
+    task: { subtasks: Array<{ _id: Types.ObjectId; subtasks?: unknown[] }> },
+    parentPath: string[]
+  ): Array<{ _id: Types.ObjectId; subtasks?: unknown[] }> | null {
+    if (parentPath.length === 0) {
+      return task.subtasks;
+    }
+    const parent = this.findSubtaskByPath(
+      task.subtasks as Array<{ _id: Types.ObjectId; subtasks?: Array<{ _id: Types.ObjectId; subtasks?: unknown[] }> }>,
+      parentPath
+    );
+    if (!parent) return null;
+    parent.subtasks = parent.subtasks ?? [];
+    return parent.subtasks as Array<{ _id: Types.ObjectId; subtasks?: unknown[] }>;
+  }
+
+  private isDescendantOrSelfPath(fromPath: string[], toParentPath: string[]): boolean {
+    if (toParentPath.length < fromPath.length) return false;
+    return fromPath.every((id, i) => toParentPath[i] === id);
   }
 
   private findSubtaskByPath(

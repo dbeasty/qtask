@@ -10,6 +10,7 @@ export function App() {
   const [view, setView] = useState<View>('chat');
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
+  const [suggestedProjectName, setSuggestedProjectName] = useState('');
 
   useEffect(() => {
     checkHealth()
@@ -53,9 +54,15 @@ export function App() {
 
       <main>
         {view === 'chat' ? (
-          <ChatPage onTasksChanged={handleTasksChanged} />
+          <ChatPage
+            onTasksChanged={handleTasksChanged}
+            onProjectSuggested={setSuggestedProjectName}
+          />
         ) : (
-          <TasksPage key={tasksVersion} onTasksChanged={handleTasksChanged} />
+          <TasksPage
+            externalRefreshKey={tasksVersion}
+            suggestedProjectName={suggestedProjectName}
+          />
         )}
       </main>
     </div>

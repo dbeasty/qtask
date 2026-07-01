@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Project, TaskPriority, TaskStatus } from '../types';
+import { ProjectComboBox } from './ProjectComboBox';
+import { TaskProgressSlider } from './TaskProgressSlider';
+import { TaskSplitInput } from './TaskSplitInput';
 
 export interface TaskFormValues {
   title: string;
   description: string;
   status: TaskStatus;
   priority: TaskPriority;
-  projectId: string;
+  projectName: string;
   tags: string;
+  percentComplete: number;
+  progressShare: string;
+  hoursSpent: string;
+  hoursRemaining: string;
+  lastProgressField: 'percent' | 'hoursSpent' | 'hoursRemaining';
 }
 
 const STATUS_OPTIONS: TaskStatus[] = ['todo', 'in_progress', 'done', 'cancelled'];
@@ -21,8 +29,13 @@ function valuesEqual(a: TaskFormValues, b: TaskFormValues): boolean {
     a.description === b.description &&
     a.status === b.status &&
     a.priority === b.priority &&
-    a.projectId === b.projectId &&
-    a.tags === b.tags
+    a.projectName === b.projectName &&
+    a.tags === b.tags &&
+    a.percentComplete === b.percentComplete &&
+    a.progressShare === b.progressShare &&
+    a.hoursSpent === b.hoursSpent &&
+    a.hoursRemaining === b.hoursRemaining &&
+    a.lastProgressField === b.lastProgressField
   );
 }
 
@@ -30,10 +43,12 @@ interface TaskFormBaseProps {
   mode: 'create' | 'edit';
   initialValues: TaskFormValues;
   showProjectFields?: boolean;
+  showProgressFields?: boolean;
+  showProgressShare?: boolean;
   projects?: Project[];
   saving?: boolean;
   className?: string;
-  readOnlyFields?: Array<'progress'>;
+  readOnlyProgress?: boolean;
   progressValue?: number;
 }
 
@@ -61,10 +76,12 @@ export function TaskForm(props: TaskFormProps) {
     mode,
     initialValues,
     showProjectFields = false,
+    showProgressFields = false,
+    showProgressShare = false,
     projects = [],
     saving = false,
     className,
-    readOnlyFields = [],
+    readOnlyProgress = false,
     progressValue,
     autoSave,
   } = props;
@@ -185,6 +202,36 @@ export function TaskForm(props: TaskFormProps) {
     [autoSave, scheduleAutoSave]
   );
 
+  const handleStatusChange = (status: TaskStatus) => {
+    updateValues((current) => ({
+      ...current,
+      status,
+      percentComplete: status === 'done' ? 100 : current.percentComplete,
+      lastProgressField: 'percent',
+    }));
+  };
+
+  const handlePercentChange = (percent: number) => {
+    updateValues((current) => ({
+      ...current,
+      percentComplete: percent,
+      lastProgressField: 'percent',
+    }));
+  };
+
+  const handleHoursChange = (field: 'hoursSpent' | 'hoursRemaining', raw: string) => {
+    updateValues((current) => {
+      const next = { ...current, [field]: raw, lastProgressField: field };
+      const spent = parseFloat(field === 'hoursSpent' ? raw : current.hoursSpent) || 0;
+      const remaining = parseFloat(field === 'hoursRemaining' ? raw : current.hoursRemaining) || 0;
+      const total = spent + remaining;
+      if (total > 0) {
+        next.percentComplete = Math.round((spent / total) * 100);
+      }
+      return next;
+    });
+  };
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (autoSave) return;
@@ -247,12 +294,7 @@ export function TaskForm(props: TaskFormProps) {
           <span>Status</span>
           <select
             value={values.status}
-            onChange={(event) =>
-              updateValues((current) => ({
-                ...current,
-                status: event.target.value as TaskStatus,
-              }))
-            }
+            onChange={(event) => handleStatusChange(event.target.value as TaskStatus)}
             disabled={saving}
           >
             {STATUS_OPTIONS.map((status) => (
@@ -284,33 +326,74 @@ export function TaskForm(props: TaskFormProps) {
         </label>
       </div>
 
-      {readOnlyFields.includes('progress') && progressValue !== undefined && (
-        <dl className="task-detail-fields task-form-readonly-fields">
-          <div>
-            <dt>Progress</dt>
-            <dd>{progressValue}%</dd>
+      {readOnlyProgress && progressValue !== undefined && (
+        <div className="task-form-field">
+          <span>Progress</span>
+          <TaskProgressSlider value={progressValue} disabled />
+        </div>
+      )}
+
+      {showProgressFields && !readOnlyProgress && (
+        <div className="task-form-progress-section">
+          <div className="task-form-field">
+            <span>Progress</span>
+            <TaskProgressSlider
+              value={values.percentComplete}
+              disabled={saving}
+              onChange={handlePercentChange}
+            />
           </div>
-        </dl>
+
+          <div className="task-form-row">
+            <label className="task-form-field">
+              <span>Hours spent</span>
+              <input
+                type="number"
+                min={0}
+                step={0.25}
+                value={values.hoursSpent}
+                onChange={(event) => handleHoursChange('hoursSpent', event.target.value)}
+                disabled={saving}
+                placeholder="optional"
+              />
+            </label>
+            <label className="task-form-field">
+              <span>Hours remaining</span>
+              <input
+                type="number"
+                min={0}
+                step={0.25}
+                value={values.hoursRemaining}
+                onChange={(event) => handleHoursChange('hoursRemaining', event.target.value)}
+                disabled={saving}
+                placeholder="optional"
+              />
+            </label>
+          </div>
+        </div>
+      )}
+
+      {showProgressShare && (
+        <div className="task-form-field">
+          <span>Task split</span>
+          <TaskSplitInput
+            value={values.progressShare}
+            onChange={(progressShare) => updateValues((current) => ({ ...current, progressShare }))}
+            disabled={saving}
+          />
+        </div>
       )}
 
       {showProjectFields && (
         <>
           <label className="task-form-field">
             <span>Project</span>
-            <select
-              value={values.projectId}
-              onChange={(event) =>
-                updateValues((current) => ({ ...current, projectId: event.target.value }))
-              }
+            <ProjectComboBox
+              value={values.projectName}
+              projects={projects}
+              onChange={(name) => updateValues((current) => ({ ...current, projectName: name }))}
               disabled={saving}
-            >
-              <option value="">None</option>
-              {projects.map((project) => (
-                <option key={project._id} value={project._id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
+            />
           </label>
 
           <label className="task-form-field">
@@ -352,4 +435,27 @@ export function parseTagsInput(tags: string): string[] {
     .split(',')
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+export function parseOptionalNumber(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function emptyFormValues(projectName = ''): TaskFormValues {
+  return {
+    title: '',
+    description: '',
+    status: 'todo',
+    priority: 'medium',
+    projectName,
+    tags: '',
+    percentComplete: 0,
+    progressShare: '',
+    hoursSpent: '',
+    hoursRemaining: '',
+    lastProgressField: 'percent',
+  };
 }

@@ -1,44 +1,96 @@
-import { ProjectModel } from '../models/index.js';
+import { ProjectModel, TaskModel } from '../models/index.js';
 import { config } from '../config/index.js';
 import { taskService } from './taskService.js';
 
+export const DEFAULT_PROJECT_NAME = 'Project One';
+
+function serializeProject(project: {
+  _id: unknown;
+  userId: string;
+  name: string;
+  description?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    _id: String(project._id),
+    userId: project.userId,
+    name: project.name,
+    description: project.description ?? undefined,
+    createdAt: project.createdAt.toISOString(),
+    updatedAt: project.updatedAt.toISOString(),
+  };
+}
+
 export class ProjectService {
+  async ensureDefaultProject(userId: string): Promise<string> {
+    const count = await ProjectModel.countDocuments({ userId });
+    if (count > 0) {
+      const existing = await ProjectModel.findOne({ userId }).sort({ createdAt: 1 }).lean();
+      return String(existing!._id);
+    }
+
+    const project = await ProjectModel.create({ userId, name: DEFAULT_PROJECT_NAME });
+    return String(project._id);
+  }
+
+  async updateProject(
+    userId: string,
+    projectId: string,
+    input: { name?: string; description?: string | null }
+  ) {
+    const project = await ProjectModel.findOne({ _id: projectId, userId });
+    if (!project) return null;
+
+    if (input.name !== undefined) {
+      const trimmed = input.name.trim();
+      if (!trimmed) {
+        throw new Error('Project name cannot be empty');
+      }
+      project.name = trimmed;
+    }
+    if (input.description !== undefined) {
+      project.description = input.description ?? undefined;
+    }
+
+    await project.save();
+    return serializeProject(project);
+  }
   async createProject(userId: string, name: string, description?: string) {
     const project = await ProjectModel.create({ userId, name, description });
-    return {
-      _id: String(project._id),
-      userId: project.userId,
-      name: project.name,
-      description: project.description,
-      createdAt: project.createdAt.toISOString(),
-      updatedAt: project.updatedAt.toISOString(),
-    };
+    return serializeProject(project);
   }
 
   async getProject(userId: string, projectId: string) {
     const project = await ProjectModel.findOne({ _id: projectId, userId }).lean();
     if (!project) return null;
 
-    return {
-      _id: String(project._id),
-      userId: project.userId,
-      name: project.name,
-      description: project.description,
-      createdAt: project.createdAt.toISOString(),
-      updatedAt: project.updatedAt.toISOString(),
-    };
+    return serializeProject(project);
   }
 
   async listProjects(userId: string) {
+    await this.ensureDefaultProject(userId);
     const projects = await ProjectModel.find({ userId }).sort({ updatedAt: -1 }).lean();
-    return projects.map((p) => ({
-      _id: String(p._id),
-      userId: p.userId,
-      name: p.name,
-      description: p.description,
-      createdAt: p.createdAt.toISOString(),
-      updatedAt: p.updatedAt.toISOString(),
-    }));
+    return projects.map((p) => serializeProject(p));
+  }
+
+  async deleteProject(userId: string, projectId: string) {
+    const project = await ProjectModel.findOne({ _id: projectId, userId });
+    if (!project) return null;
+
+    const { deletedCount } = await TaskModel.deleteMany({ userId, projectId });
+    await ProjectModel.deleteOne({ _id: projectId, userId });
+
+    const remaining = await ProjectModel.countDocuments({ userId });
+    let nextProjectId: string | null = null;
+    if (remaining === 0) {
+      nextProjectId = await this.ensureDefaultProject(userId);
+    } else {
+      const next = await ProjectModel.findOne({ userId }).sort({ createdAt: 1 }).lean();
+      nextProjectId = next ? String(next._id) : null;
+    }
+
+    return { deletedTaskCount: deletedCount, nextProjectId };
   }
 
   async summarizeProject(userId: string, projectId: string): Promise<string> {

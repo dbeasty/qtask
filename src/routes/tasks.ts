@@ -165,6 +165,63 @@ tasksRouter.patch('/:id/subtasks', async (req, res, next) => {
   }
 });
 
+tasksRouter.post('/:id/subtasks/promote', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const path = (req.query.path as string)?.split(',').filter(Boolean) ?? [];
+    if (path.length === 0) {
+      res.status(400).json({ error: 'path query parameter is required' });
+      return;
+    }
+
+    const result = await taskService.promoteSubtaskToTask(userId, req.params.id!, path);
+    if (!result) {
+      res.status(404).json({ error: 'Task or subtask not found' });
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/subtasks/move', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { fromPath, toParentPath, index } = req.body as {
+      fromPath?: string[];
+      toParentPath?: string[];
+      index?: number;
+    };
+
+    if (!fromPath?.length) {
+      res.status(400).json({ error: 'fromPath is required' });
+      return;
+    }
+    if (!Array.isArray(toParentPath)) {
+      res.status(400).json({ error: 'toParentPath is required' });
+      return;
+    }
+
+    const task = await taskService.moveSubtask(userId, req.params.id!, {
+      fromPath,
+      toParentPath,
+      index,
+    });
+    if (!task) {
+      res.status(404).json({ error: 'Task or subtask not found' });
+      return;
+    }
+    res.json({ task });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Cannot move')) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
 tasksRouter.delete('/:id/subtasks', async (req, res, next) => {
   try {
     const userId = getUserId(req);
