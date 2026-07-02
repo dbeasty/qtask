@@ -21,6 +21,7 @@ interface TaskMoveMenuProps {
   onPromote: () => void;
   onOutdent: () => void;
   onAttach: (target: MoveAttachTarget) => void;
+  onDelete: () => void | Promise<boolean>;
   onClose: () => void;
 }
 
@@ -37,6 +38,7 @@ export function TaskMoveMenu({
   onPromote,
   onOutdent,
   onAttach,
+  onDelete,
   onClose,
 }: TaskMoveMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -99,6 +101,13 @@ export function TaskMoveMenu({
     onClose();
   };
 
+  const handleDelete = async () => {
+    const deleted = await onDelete();
+    if (deleted) {
+      onClose();
+    }
+  };
+
   return createPortal(
     <div
       ref={menuRef}
@@ -123,6 +132,16 @@ export function TaskMoveMenu({
         onClick={() => run(onMoveDown)}
       >
         Move down
+      </button>
+      <div className="task-move-menu-divider" role="separator" />
+      <button
+        type="button"
+        className="task-move-menu-item task-move-menu-item-danger"
+        role="menuitem"
+        disabled={saving}
+        onClick={() => void handleDelete()}
+      >
+        Delete
       </button>
       {kind === 'subtask' && (
         <>

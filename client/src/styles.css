@@ -952,6 +952,19 @@ main {
   cursor: not-allowed;
 }
 
+.task-move-menu-divider {
+  margin: 0.2rem 0;
+  border-top: 1px solid #243041;
+}
+
+.task-move-menu-item-danger {
+  color: #fecaca;
+}
+
+.task-move-menu-item-danger:hover:not(:disabled) {
+  background: #450a0a;
+}
+
 .task-move-menu-attach {
   margin-top: 0.25rem;
   padding-top: 0.35rem;

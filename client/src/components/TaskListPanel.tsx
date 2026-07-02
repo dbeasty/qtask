@@ -6,11 +6,13 @@ interface TaskListPanelProps {
   tasks: Task[];
   selection: Selection | null;
   saving: boolean;
-  addButtonLabel: string;
-  hasSelection: boolean;
+  addTaskLabel: string;
+  addSubtaskLabel: string;
+  showAddSubtask: boolean;
   addDisabled: boolean;
-  onAddClick: () => void;
-  onDelete: () => void;
+  onAddTaskClick: () => void;
+  onAddSubtaskClick: () => void;
+  onDelete: () => void | Promise<boolean>;
   onSelect: (selection: Selection) => void;
   onMoveSubtask: (
     taskId: string,
@@ -33,10 +35,12 @@ export function TaskListPanel({
   tasks,
   selection,
   saving,
-  addButtonLabel,
-  hasSelection,
+  addTaskLabel,
+  addSubtaskLabel,
+  showAddSubtask,
   addDisabled,
-  onAddClick,
+  onAddTaskClick,
+  onAddSubtaskClick,
   onDelete,
   onSelect,
   onMoveSubtask,
@@ -52,14 +56,19 @@ export function TaskListPanel({
           <button
             type="button"
             className="primary-button"
-            onClick={onAddClick}
+            onClick={onAddTaskClick}
             disabled={saving || addDisabled}
           >
-            {addButtonLabel}
+            {addTaskLabel}
           </button>
-          {hasSelection && (
-            <button type="button" className="danger-button" onClick={onDelete} disabled={saving}>
-              Delete
+          {showAddSubtask && (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={onAddSubtaskClick}
+              disabled={saving}
+            >
+              {addSubtaskLabel}
             </button>
           )}
         </div>
@@ -76,6 +85,7 @@ export function TaskListPanel({
           onPromoteSubtask={onPromoteSubtask}
           onMoveTask={onMoveTask}
           onAttachTask={onAttachTask}
+          onDelete={onDelete}
         />
       </div>
     </aside>

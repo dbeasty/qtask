@@ -470,11 +470,11 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
     setProjects((current) => current.map((item) => (item._id === projectId ? project : item)));
   };
 
-  const handleDelete = async () => {
-    if (!selection || !selectedTask) return;
+  const handleDelete = async (): Promise<boolean> => {
+    if (!selection || !selectedTask) return false;
 
     const label = selection.kind === 'task' ? 'task' : 'subtask';
-    if (!window.confirm(`Delete this ${label}? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete this ${label}? This cannot be undone.`)) return false;
 
     setSaving(true);
     setActionError(null);
@@ -491,8 +491,10 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
         setSelection({ kind: 'task', taskId: selectedTask._id });
       }
       resetHierarchyModes();
+      return true;
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to delete');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -625,18 +627,12 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
 
   const hasSelection = Boolean(selection && selectedTask);
   const isAddingTask = creatingTaskForProjectId === resolvedActiveProjectId;
-  const addButtonLabel = hasSelection
-    ? addingSubtask
-      ? 'Cancel'
-      : '+ Add subtask'
-    : isAddingTask
-      ? 'Cancel'
-      : '+ Add task';
+  const addTaskLabel = isAddingTask ? 'Cancel' : '+ Add task';
+  const addSubtaskButtonLabel = addingSubtask ? 'Cancel' : '+ Add subtask';
   const addSubtaskLabel = detail ? `Add subtask to "${detail.title}"` : 'Add subtask';
 
-  const handleAddClick = () => {
-    if (hasSelection) {
-      setAddingSubtask((current) => !current);
+  const handleAddTaskClick = () => {
+    if (isAddingTask) {
       setCreatingTaskForProjectId(null);
       setActionError(null);
       return;
@@ -644,6 +640,13 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
     if (resolvedActiveProjectId) {
       handleStartAddTask(resolvedActiveProjectId);
     }
+  };
+
+  const handleAddSubtaskClick = () => {
+    if (!hasSelection) return;
+    setAddingSubtask((current) => !current);
+    setCreatingTaskForProjectId(null);
+    setActionError(null);
   };
 
   return (
@@ -704,10 +707,12 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
                 tasks={activeProjectGroup.tasks}
                 selection={selection}
                 saving={saving}
-                addButtonLabel={addButtonLabel}
-                hasSelection={hasSelection}
+                addTaskLabel={addTaskLabel}
+                addSubtaskLabel={addSubtaskButtonLabel}
+                showAddSubtask={hasSelection}
                 addDisabled={!resolvedActiveProjectId}
-                onAddClick={handleAddClick}
+                onAddTaskClick={handleAddTaskClick}
+                onAddSubtaskClick={handleAddSubtaskClick}
                 onDelete={handleDelete}
                 onSelect={handleSelect}
                 onMoveSubtask={handleMoveSubtask}

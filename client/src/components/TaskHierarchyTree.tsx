@@ -49,6 +49,7 @@ interface TaskHierarchyTreeProps {
     parentPath: string[],
     index?: number
   ) => void;
+  onDelete: () => void | Promise<boolean>;
 }
 
 function isSelectionActive(selection: Selection | null, taskId: string, path: string[]): boolean {
@@ -185,6 +186,7 @@ interface SubtaskTreeNodeProps {
   onMoveUp: TaskHierarchyTreeProps['onMoveUp'];
   onPromoteSubtask: TaskHierarchyTreeProps['onPromoteSubtask'];
   onAttach: (fromPath: string[], target: AttachTarget) => void;
+  onDelete: TaskHierarchyTreeProps['onDelete'];
   dragHandlers: ReturnType<typeof useTreeDragDrop>;
 }
 
@@ -205,6 +207,7 @@ function SubtaskTreeNode({
   onMoveUp,
   onPromoteSubtask,
   onAttach,
+  onDelete,
   dragHandlers,
 }: SubtaskTreeNodeProps) {
   const key = nodeKey(task._id, path);
@@ -308,6 +311,7 @@ function SubtaskTreeNode({
                 onPromote={() => onPromoteSubtask(task._id, path)}
                 onOutdent={() => onMoveSubtask(task._id, path, path.slice(0, -2))}
                 onAttach={(target) => onAttach(path, target)}
+                onDelete={onDelete}
                 onClose={() => onToggleMoveMenu(null)}
               />
             )}
@@ -335,6 +339,7 @@ function SubtaskTreeNode({
               onMoveUp={onMoveUp}
               onPromoteSubtask={onPromoteSubtask}
               onAttach={onAttach}
+              onDelete={onDelete}
               dragHandlers={dragHandlers}
             />
           ))}
@@ -354,6 +359,7 @@ export function TaskHierarchyTree({
   onPromoteSubtask,
   onMoveTask,
   onAttachTask,
+  onDelete,
 }: TaskHierarchyTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [openMoveMenuKey, setOpenMoveMenuKey] = useState<string | null>(null);
@@ -493,6 +499,7 @@ export function TaskHierarchyTree({
                         const projectTarget = target as ProjectAttachTarget;
                         onAttachTask(task._id, projectTarget.targetTaskId, projectTarget.parentPath);
                       }}
+                      onDelete={onDelete}
                       onClose={() => setOpenMoveMenuKey(null)}
                     />
                   )}
@@ -520,6 +527,7 @@ export function TaskHierarchyTree({
                     onMoveUp={onMoveUp}
                     onPromoteSubtask={onPromoteSubtask}
                     onAttach={(fromPath, target) => onMoveSubtask(task._id, fromPath, target.parentPath)}
+                    onDelete={onDelete}
                     dragHandlers={dragHandlers}
                   />
                 ))}

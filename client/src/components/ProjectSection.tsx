@@ -21,6 +21,7 @@ interface ProjectSectionProps {
     parentPath: string[],
     index?: number
   ) => void;
+  onDelete: () => void | Promise<boolean>;
 }
 
 export function ProjectSection({
@@ -33,6 +34,7 @@ export function ProjectSection({
   onPromoteSubtask,
   onMoveTask,
   onAttachTask,
+  onDelete,
 }: ProjectSectionProps) {
   return (
     <div className="project-section">
@@ -47,6 +49,7 @@ export function ProjectSection({
           onPromoteSubtask={onPromoteSubtask}
           onMoveTask={onMoveTask}
           onAttachTask={onAttachTask}
+          onDelete={onDelete}
         />
       ) : (
         <p className="muted project-section-empty">No tasks in this project yet.</p>
