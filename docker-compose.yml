@@ -1,10 +1,57 @@
 services:
   mongodb:
     image: mongo:7
-    ports:
-      - "27017:27017"
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-}
     volumes:
       - qtask_mongo_data:/data/db
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    networks:
+      - qtask
+
+  api:
+    build: .
+    profiles: ["app"]
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      MONGODB_URI: ${MONGODB_URI}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SERVE_CLIENT: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+    networks:
+      - qtask
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - qtask_ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - qtask
+
+networks:
+  qtask:
+    driver: bridge
 
 volumes:
   qtask_mongo_data:
+  qtask_ollama_data:

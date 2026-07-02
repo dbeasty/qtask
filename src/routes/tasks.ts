@@ -284,6 +284,12 @@ tasksRouter.delete('/:id/subtasks', async (req, res, next) => {
 
 tasksRouter.get('/:id/activity', async (req, res, next) => {
   try {
+    const userId = getUserId(req);
+    const task = await taskService.getTask(userId, req.params.id!);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
     const activity = await getActivityForTask(req.params.id!);
     res.json({ activity });
   } catch (error) {

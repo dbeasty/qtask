@@ -1,14 +1,33 @@
-const USER_ID = import.meta.env.VITE_USER_ID ?? 'local-user';
+import { getStoredToken, clearStoredToken } from '../auth/storage';
+
+export class AuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
+function authHeaders(extra?: HeadersInit): HeadersInit {
+  const token = getStoredToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return { ...headers, ...extra };
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-user-id': USER_ID,
-      ...init?.headers,
-    },
+    headers: authHeaders(init?.headers),
   });
+
+  if (response.status === 401) {
+    clearStoredToken();
+    throw new AuthError('Session expired. Please sign in again.');
+  }
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
@@ -26,6 +45,11 @@ async function consumeSseStream(
   response: Response,
   onEvent: (event: import('../types').ChatStreamEvent) => void
 ): Promise<void> {
+  if (response.status === 401) {
+    clearStoredToken();
+    throw new AuthError('Session expired. Please sign in again.');
+  }
+
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error((body as { error?: string }).error ?? 'Request failed');
@@ -57,7 +81,11 @@ async function consumeSseStream(
 }
 
 export async function checkHealth(): Promise<{ status: string; service: string }> {
-  return request('/health');
+  const response = await fetch('/health');
+  if (!response.ok) {
+    throw new Error('Health check failed');
+  }
+  return response.json() as Promise<{ status: string; service: string }>;
 }
 
 export async function listTasks(): Promise<{ tasks: import('../types').Task[] }> {
@@ -193,10 +221,7 @@ export async function streamChat(
 ): Promise<void> {
   const response = await fetch('/api/chat', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-user-id': USER_ID,
-    },
+    headers: authHeaders(),
     body: JSON.stringify({ message, conversationId }),
   });
 
@@ -222,10 +247,7 @@ export async function approveProposal(
 ): Promise<void> {
   const response = await fetch('/api/chat/approve', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-user-id': USER_ID,
-    },
+    headers: authHeaders(),
     body: JSON.stringify({ conversationId, proposalId, action }),
   });
 

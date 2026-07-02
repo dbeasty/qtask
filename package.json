@@ -10,7 +10,8 @@
     "dev": "tsx watch src/index.ts",
     "mcp": "tsx src/mcp/standalone.ts",
     "dev:client": "npm run dev --prefix client",
-    "dev:all": "concurrently -n api,web -c blue,green \"npm run dev\" \"npm run dev:client\""
+    "dev:all": "concurrently -n api,web -c blue,green \"npm run dev\" \"npm run dev:client\"",
+    "test": "node --import tsx --test tests/**/*.test.ts"
   },
   "engines": {
     "node": ">=20"
@@ -18,15 +19,26 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
+    "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.16.0",
     "zod": "^3.25.67"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.0.3",
+    "@types/supertest": "^7.2.0",
     "concurrently": "^9.2.0",
+    "mongodb-memory-server": "^11.2.0",
+    "supertest": "^7.2.2",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }

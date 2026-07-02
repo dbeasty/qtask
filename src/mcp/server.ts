@@ -1,11 +1,19 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { config } from '../config/index.js';
 import { toolDefinitions, executeTool } from '../agent/tools.js';
 import { connectDb } from '../db/connection.js';
 import { startEmbeddingWorker } from '../services/embeddingQueue.js';
+import { resolveAuthUserId } from '../middleware/auth.js';
 
-export async function createMcpServer(userId = config.defaultUserId): Promise<McpServer> {
+export async function resolveMcpUserId(): Promise<string> {
+  const token = process.env.MCP_JWT;
+  if (!token) {
+    throw new Error('MCP_JWT environment variable is required. Log in via the web client and copy your JWT.');
+  }
+  return resolveAuthUserId(token);
+}
+
+export async function createMcpServer(userId: string): Promise<import('@modelcontextprotocol/sdk/server/mcp.js').McpServer> {
+  const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
   const server = new McpServer({
     name: 'qtask',
     version: '0.1.0',
@@ -28,7 +36,9 @@ export async function startMcpServer(): Promise<void> {
   await connectDb();
   startEmbeddingWorker();
 
-  const server = await createMcpServer();
+  const userId = await resolveMcpUserId();
+  const server = await createMcpServer(userId);
+  const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

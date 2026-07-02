@@ -5,7 +5,9 @@
       "args": ["run", "mcp"],
       "cwd": "/Users/davidj/devel/qtask",
       "env": {
-        "MONGODB_URI": "mongodb://localhost:27017/qtask"
+        "MONGODB_URI": "mongodb://localhost:27017/qtask",
+        "JWT_SECRET": "dev-jwt-secret-change-me",
+        "MCP_JWT": "paste-your-jwt-from-login-here"
       }
     }
   }

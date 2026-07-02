@@ -1,0 +1,10 @@
+# Production overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app --profile ollama up -d
+
+services:
+  mongodb:
+    ports: []
+
+  api:
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434

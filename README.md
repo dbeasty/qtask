@@ -18,6 +18,8 @@ ollama pull nomic-embed-text
 ```bash
 docker compose up -d
 cp .env.example .env
+# Set JWT_SECRET in .env
+
 npm install
 npm install --prefix client
 npm run dev:all
@@ -26,7 +28,7 @@ npm run dev:all
 - API: http://localhost:3000
 - Web client: http://localhost:5173
 
-See **[docs/DEPLOY.md](docs/DEPLOY.md)** for full local stack setup, environment variables, MCP configuration, and the planned AWS deployment path.
+Create an account on first visit. See **[docs/DEPLOY.md](docs/DEPLOY.md)** for production self-hosting, HTTPS, backups, and MCP configuration.
 
 ## Scripts
 
@@ -36,13 +38,14 @@ See **[docs/DEPLOY.md](docs/DEPLOY.md)** for full local stack setup, environment
 | `npm run dev:client` | React web client only |
 | `npm run dev:all` | Backend + web client |
 | `npm run mcp` | MCP stdio server (for Cursor) |
+| `npm test` | Run integration tests |
+| `npm run build` | Build API |
+| `npm start` | Start production API (serves web client) |
 
-## Chat / SLM
+## Authentication
 
-The web client uses `POST /api/chat` (SSE) with an Ollama agent loop. Set `OLLAMA_MODEL` to a tool-capable model (default: `llama3.1`).
-
-Phase 1 auth is a stub: requests use `x-user-id: local-user` (or `DEFAULT_USER_ID` / `VITE_USER_ID`).
+Email/password accounts with JWT. All API routes except `/health` and `/api/auth/*` require `Authorization: Bearer <token>`.
 
 ## MCP in Cursor
 
-Copy `mcp-config.example.json` into your Cursor MCP settings and run MongoDB locally.
+Log in via the web client, copy your JWT, and set `MCP_JWT` in your Cursor MCP config. See `mcp-config.example.json`.
