@@ -11,6 +11,9 @@ const registerSchema = z.object({
   email: z.string().email('Valid email is required'),
   password: z.string().min(10, 'Password must be at least 10 characters'),
   displayName: z.string().trim().min(1).optional(),
+  acceptLegal: z.literal(true, {
+    errorMap: () => ({ message: 'You must accept the Terms & Disclaimer and Privacy Policy' }),
+  }),
 });
 
 const loginSchema = z.object({

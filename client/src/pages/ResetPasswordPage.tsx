@@ -40,7 +40,7 @@ export function ResetPasswordPage() {
         <div className="auth-card">
           <h1>Reset password</h1>
           <p className="auth-error">Missing reset token.</p>
-          <a className="auth-link" href="/">
+          <a className="auth-link" href="/login">
             Go to sign in
           </a>
         </div>
@@ -57,7 +57,7 @@ export function ResetPasswordPage() {
         {success ? (
           <>
             <p className="auth-success">{success}</p>
-            <a className="auth-link" href="/">
+            <a className="auth-link" href="/login">
               Go to sign in
             </a>
           </>

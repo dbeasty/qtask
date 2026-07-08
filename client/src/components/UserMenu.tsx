@@ -155,6 +155,14 @@ export function UserMenu({
         Change password
       </button>
 
+      <a className="user-menu-item" role="menuitem" href="/privacy" onClick={onClose}>
+        Privacy Policy
+      </a>
+
+      <a className="user-menu-item" role="menuitem" href="/terms" onClick={onClose}>
+        Terms &amp; Disclaimer
+      </a>
+
       <div className="user-menu-divider" role="separator" />
 
       <button

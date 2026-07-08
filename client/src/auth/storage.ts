@@ -30,12 +30,13 @@ async function parseAuthResponse(response: Response, fallbackError: string) {
 export async function register(
   email: string,
   password: string,
-  displayName?: string
+  displayName?: string,
+  acceptLegal?: boolean
 ): Promise<{ message: string }> {
   const response = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, displayName }),
+    body: JSON.stringify({ email, password, displayName, acceptLegal: acceptLegal ? true : undefined }),
   });
   return parseAuthResponse(response, 'Registration failed') as Promise<{ message: string }>;
 }

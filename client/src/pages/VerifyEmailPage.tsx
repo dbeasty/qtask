@@ -35,7 +35,7 @@ export function VerifyEmailPage() {
           {message}
         </p>
         {status !== 'loading' && (
-          <a className="auth-link" href="/">
+          <a className="auth-link" href="/login">
             Go to sign in
           </a>
         )}

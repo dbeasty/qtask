@@ -5,12 +5,17 @@ import { forgotPassword, resendVerification } from '../auth/storage';
 
 type Mode = 'login' | 'register' | 'forgot-password' | 'check-email';
 
-export function LoginPage() {
+interface LoginPageProps {
+  initialMode?: 'login' | 'register';
+}
+
+export function LoginPage({ initialMode = 'login' }: LoginPageProps) {
   const { login, register } = useAuth();
-  const [mode, setMode] = useState<Mode>('login');
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [acceptLegal, setAcceptLegal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -21,6 +26,9 @@ export function LoginPage() {
     setError(null);
     setInfo(null);
     setNeedsVerification(false);
+    if (next !== 'register') {
+      setAcceptLegal(false);
+    }
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -34,7 +42,7 @@ export function LoginPage() {
       if (mode === 'login') {
         await login(email, password);
       } else if (mode === 'register') {
-        const result = await register(email, password, displayName || undefined);
+        const result = await register(email, password, displayName || undefined, acceptLegal);
         setInfo(result.message);
         setMode('check-email');
       } else if (mode === 'forgot-password') {
@@ -81,6 +89,9 @@ export function LoginPage() {
       </div>
     );
   }
+
+  const canSubmit =
+    !submitting && (mode !== 'register' || acceptLegal);
 
   return (
     <div className="auth-page">
@@ -151,6 +162,21 @@ export function LoginPage() {
             <p className="auth-hint muted">Password must be at least 10 characters.</p>
           )}
 
+          {mode === 'register' && (
+            <label className="legal-checkbox">
+              <input
+                type="checkbox"
+                checked={acceptLegal}
+                onChange={(e) => setAcceptLegal(e.target.checked)}
+                required
+              />
+              <span>
+                I agree to the <a href="/terms">Terms &amp; Disclaimer</a> and{' '}
+                <a href="/privacy">Privacy Policy</a>
+              </span>
+            </label>
+          )}
+
           {mode === 'login' && (
             <button type="button" className="auth-link-btn" onClick={() => switchMode('forgot-password')}>
               Forgot password?
@@ -171,7 +197,7 @@ export function LoginPage() {
             </button>
           )}
 
-          <button type="submit" className="auth-submit" disabled={submitting}>
+          <button type="submit" className="auth-submit" disabled={!canSubmit}>
             {submitting
               ? 'Please wait…'
               : mode === 'login'
@@ -187,6 +213,10 @@ export function LoginPage() {
             </button>
           )}
         </form>
+
+        <p className="auth-back-home muted">
+          <a href="/">Back to home</a>
+        </p>
       </div>
     </div>
   );

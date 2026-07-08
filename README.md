@@ -2,6 +2,8 @@
 
 AI-native, MCP-powered task management.
 
+Production site: **https://qtask.dev** · Contributions welcome at [github.com/dbeasty/qtask](https://github.com/dbeasty/qtask).
+
 ## Prerequisites
 
 - Node.js 20+

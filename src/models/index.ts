@@ -11,6 +11,8 @@ const userSchema = new Schema(
     emailVerificationExpires: { type: Date },
     passwordResetTokenHash: { type: String },
     passwordResetExpires: { type: Date },
+    legalAcceptedAt: { type: Date },
+    legalVersion: { type: String },
   },
   { timestamps: true }
 );

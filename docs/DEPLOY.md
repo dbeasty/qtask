@@ -2,6 +2,8 @@
 
 How to run QTask locally, self-host on your own server, and (eventually) migrate to AWS.
 
+The official production deployment is at **https://qtask.dev**. Source code and contributions: [github.com/dbeasty/qtask](https://github.com/dbeasty/qtask).
+
 ---
 
 ## Table of Contents
@@ -86,7 +88,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `SMTP_SECURE` | `false` | Use TLS (`true` for port 465) |
 | `SMTP_USER` | — | SMTP username (if required) |
 | `SMTP_PASS` | — | SMTP password (if required) |
-| `SMTP_FROM` | `noreply@qtask.local` | From address for auth emails |
+| `SMTP_FROM` | `noreply@qtask.dev` | From address for auth emails |
 | `TRUST_PROXY` | `false` | Set `true` behind reverse proxy |
 | `SERVE_CLIENT` | `true` | Serve `client/dist` from API in production |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
@@ -107,7 +109,7 @@ QTask uses email/password accounts with signed JWTs. New accounts must verify th
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/auth/register` | `{ email, password, displayName? }` → `{ message }` (sends verification email) |
+| `POST /api/auth/register` | `{ email, password, displayName?, acceptLegal: true }` → `{ message }` (sends verification email with privacy link) |
 | `POST /api/auth/verify-email` | `{ token }` → `{ message }` |
 | `POST /api/auth/resend-verification` | `{ email }` → `{ message }` |
 | `POST /api/auth/login` | `{ email, password }` → `{ token, user }` (403 if email unverified) |
@@ -193,15 +195,18 @@ Set these in your `.env` / Docker environment:
 
 ```
 TRUST_PROXY=true
-CORS_ORIGIN=https://qtask.yourdomain.com
+CORS_ORIGIN=https://qtask.dev
+APP_URL=https://qtask.dev
 ```
+
+Replace `qtask.dev` with your own domain if self-hosting elsewhere.
 
 ### Caddy (recommended)
 
 `Caddyfile`:
 
 ```caddy
-qtask.yourdomain.com {
+qtask.dev {
     reverse_proxy localhost:3000
 
     header {
@@ -212,6 +217,8 @@ qtask.yourdomain.com {
     }
 }
 ```
+
+Replace `qtask.dev` with your own domain if self-hosting elsewhere.
 
 Caddy obtains and renews Let's Encrypt certificates automatically.
 
@@ -224,10 +231,10 @@ caddy run --config Caddyfile
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name qtask.yourdomain.com;
+    server_name qtask.dev;
 
-    ssl_certificate     /etc/letsencrypt/live/qtask.yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/qtask.yourdomain.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/qtask.dev/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/qtask.dev/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -246,15 +253,17 @@ server {
 
 server {
     listen 80;
-    server_name qtask.yourdomain.com;
+    server_name qtask.dev;
     return 301 https://$host$request_uri;
 }
 ```
 
+Replace `qtask.dev` with your own domain if self-hosting elsewhere.
+
 Obtain certificates with [certbot](https://certbot.eff.org/):
 
 ```bash
-sudo certbot certonly --nginx -d qtask.yourdomain.com
+sudo certbot certonly --nginx -d qtask.dev
 ```
 
 ### Firewall checklist

@@ -4,9 +4,12 @@ import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { UserMenu } from './components/UserMenu';
 import { ChatPage } from './pages/ChatPage';
 import { LoginPage } from './pages/LoginPage';
+import { PrivacyPage } from './pages/PrivacyPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { TasksPage } from './pages/TasksPage';
+import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
+import { WelcomePage } from './pages/WelcomePage';
 import { checkHealth } from './api/client';
 import './styles.css';
 
@@ -52,15 +55,25 @@ export function App() {
     );
   }
 
+  const pathname = getAuthPathname();
+  if (pathname === '/terms') {
+    return <TermsPage />;
+  }
+  if (pathname === '/privacy') {
+    return <PrivacyPage />;
+  }
+
   if (!user) {
-    const pathname = getAuthPathname();
     if (pathname === '/verify-email') {
       return <VerifyEmailPage />;
     }
     if (pathname === '/reset-password') {
       return <ResetPasswordPage />;
     }
-    return <LoginPage />;
+    if (pathname === '/login' || pathname === '/register') {
+      return <LoginPage initialMode={pathname === '/register' ? 'register' : 'login'} />;
+    }
+    return <WelcomePage />;
   }
 
   return (

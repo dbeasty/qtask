@@ -35,7 +35,7 @@ after(async () => {
 async function registerAndVerify(email: string, password: string) {
   const register = await request(app)
     .post('/api/auth/register')
-    .send({ email, password })
+    .send({ email, password, acceptLegal: true })
     .expect(201);
 
   assert.ok(register.body.message);
@@ -70,7 +70,7 @@ describe('auth', () => {
   it('blocks login until email is verified', async () => {
     await request(app)
       .post('/api/auth/register')
-      .send({ email: 'unverified@example.com', password: 'password1234' })
+      .send({ email: 'unverified@example.com', password: 'password1234', acceptLegal: true })
       .expect(201);
 
     const login = await request(app)
@@ -84,7 +84,7 @@ describe('auth', () => {
   it('resends verification email', async () => {
     await request(app)
       .post('/api/auth/register')
-      .send({ email: 'resend@example.com', password: 'password1234' })
+      .send({ email: 'resend@example.com', password: 'password1234', acceptLegal: true })
       .expect(201);
 
     const { testEmailOutbox } = await import('../src/services/emailService.js');
@@ -102,7 +102,7 @@ describe('auth', () => {
   it('resets password via email link', async () => {
     await request(app)
       .post('/api/auth/register')
-      .send({ email: 'reset@example.com', password: 'password1234' })
+      .send({ email: 'reset@example.com', password: 'password1234', acceptLegal: true })
       .expect(201);
 
     const { testEmailOutbox } = await import('../src/services/emailService.js');
@@ -172,6 +172,40 @@ describe('auth', () => {
   it('rejects protected routes without a token', async () => {
     await request(app).get('/api/tasks').expect(401);
     await request(app).get('/api/projects').expect(401);
+  });
+
+  it('rejects registration without legal acceptance', async () => {
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'nolegal@example.com', password: 'password1234' })
+      .expect(400);
+
+    assert.match(res.body.error, /accept the Terms/i);
+  });
+
+  it('records legal acceptance on registration', async () => {
+    await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'legal@example.com', password: 'password1234', acceptLegal: true })
+      .expect(201);
+
+    const user = await mongoose.connection.collection('users').findOne({ email: 'legal@example.com' });
+    assert.ok(user);
+    assert.ok(user.legalAcceptedAt);
+    assert.equal(user.legalVersion, '1.0');
+  });
+
+  it('includes privacy link in verification email', async () => {
+    await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'emailprivacy@example.com', password: 'password1234', acceptLegal: true })
+      .expect(201);
+
+    const { testEmailOutbox } = await import('../src/services/emailService.js');
+    const body = testEmailOutbox.verificationBodies.at(-1);
+    assert.ok(body, 'verification email body should be captured in test outbox');
+    assert.match(body, /\/privacy/);
+    assert.match(body, /github\.com\/dbeasty\/qtask/);
   });
 
   it('rejects invalid credentials', async () => {

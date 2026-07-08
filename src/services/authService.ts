@@ -7,6 +7,7 @@ import { projectService } from './projectService.js';
 import * as emailService from './emailService.js';
 
 const BCRYPT_ROUNDS = 12;
+const LEGAL_VERSION = '1.0';
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 60 * 60 * 1000;
 
@@ -33,7 +34,12 @@ function serializeUser(user: {
 }
 
 export class AuthService {
-  async register(input: { email: string; password: string; displayName?: string }) {
+  async register(input: {
+    email: string;
+    password: string;
+    displayName?: string;
+    acceptLegal: true;
+  }) {
     const email = normalizeEmail(input.email);
     const existing = await UserModel.findOne({ email }).lean();
     if (existing) {
@@ -50,6 +56,8 @@ export class AuthService {
       emailVerified: false,
       emailVerificationTokenHash: verification.tokenHash,
       emailVerificationExpires: verification.expiresAt,
+      legalAcceptedAt: new Date(),
+      legalVersion: LEGAL_VERSION,
     });
 
     const userId = String(user._id);
