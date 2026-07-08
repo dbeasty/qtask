@@ -45,7 +45,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
 
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 30,
+    max: config.nodeEnv === 'test' ? 10_000 : 30,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many authentication attempts, please try again later' },

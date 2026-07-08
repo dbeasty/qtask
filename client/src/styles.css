@@ -38,10 +38,9 @@ button {
 
 .app-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  padding: 1rem 1.5rem;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.75rem 1.5rem;
   border-bottom: 1px solid #243041;
   background: rgba(15, 20, 25, 0.85);
   backdrop-filter: blur(8px);
@@ -52,20 +51,265 @@ button {
   font-size: 1.4rem;
 }
 
-.header-actions {
+.header-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 1rem;
-  flex-wrap: wrap;
+}
+
+.header-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.api-status-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  background: #64748b;
+}
+
+.api-status-dot.ok {
+  background: #4ade80;
+}
+
+.api-status-dot.bad {
+  background: #f87171;
+}
+
+.api-status-dot.checking {
+  opacity: 0.6;
+}
+
+.header-tagline {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.header-views-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.header-views-label {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.header-user {
+  flex-shrink: 0;
 }
 
 .user-pill {
   font-size: 0.85rem;
 }
 
-.logout-btn {
-  font-size: 0.85rem;
+.user-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #314158;
+  background: #182030;
+  color: #e8edf5;
+  border-radius: 999px;
   padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.user-menu-trigger:hover {
+  background: #1b2738;
+}
+
+.user-menu-chevron {
+  font-size: 0.7rem;
+  color: #94a3b8;
+}
+
+.auth-success {
+  margin: 0;
+  color: #4ade80;
+  font-size: 0.9rem;
+}
+
+.auth-link,
+.auth-link-btn {
+  color: #60a5fa;
+  font-size: 0.9rem;
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.auth-link-btn:hover,
+.auth-link:hover {
+  text-decoration: underline;
+}
+
+.password-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-field input {
+  width: 100%;
+  padding-right: 3.5rem;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 0.5rem;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.2rem 0.35rem;
+}
+
+.password-toggle:hover {
+  color: #e8edf5;
+}
+
+.auth-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.auth-dialog {
+  width: min(100%, 400px);
+  padding: 1.5rem;
+  border: 1px solid #314158;
+  border-radius: 0.75rem;
+  background: #111827;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.auth-dialog h2 {
+  margin: 0 0 1rem;
+  font-size: 1.2rem;
+}
+
+.auth-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.user-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 14rem;
+  max-width: min(20rem, calc(100vw - 1rem));
+  padding: 0.35rem;
+  border: 1px solid #314158;
+  border-radius: 0.5rem;
+  background: #111827;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.user-menu-header {
+  padding: 0.4rem 0.55rem 0.25rem;
+}
+
+.user-menu-email {
+  font-size: 0.85rem;
+  color: #e8edf5;
+  word-break: break-all;
+}
+
+.user-menu-display-name {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin-top: 0.15rem;
+}
+
+.user-menu-item {
+  border: none;
+  background: transparent;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.user-menu-item:hover:not(:disabled) {
+  background: #1b2738;
+}
+
+.user-menu-item:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.user-menu-divider {
+  margin: 0.2rem 0;
+  border-top: 1px solid #243041;
+}
+
+.user-menu-item-danger {
+  color: #fecaca;
+}
+
+.user-menu-item-danger:hover:not(:disabled) {
+  background: #450a0a;
+}
+
+.user-menu-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.25rem 0.35rem;
+}
+
+.user-menu-edit input {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #314158;
+  border-radius: 0.35rem;
+  background: #0f172a;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.user-menu-edit-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.user-menu-error {
+  margin: 0;
+  padding: 0 0.55rem;
+  color: #e5534b;
+  font-size: 0.8rem;
 }
 
 .auth-page {
@@ -171,23 +415,6 @@ nav button,
 
 .danger-button:hover:not(:disabled) {
   background: #7f1d1d;
-}
-
-.status-pill {
-  font-size: 0.85rem;
-  padding: 0.35rem 0.7rem;
-  border-radius: 999px;
-  background: #243041;
-}
-
-.status-pill.ok {
-  background: #123524;
-  color: #86efac;
-}
-
-.status-pill.bad {
-  background: #3f1d1d;
-  color: #fca5a5;
 }
 
 main {

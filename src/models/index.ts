@@ -6,6 +6,11 @@ const userSchema = new Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
     displayName: { type: String, trim: true },
+    emailVerified: { type: Boolean, default: false },
+    emailVerificationTokenHash: { type: String },
+    emailVerificationExpires: { type: Date },
+    passwordResetTokenHash: { type: String },
+    passwordResetExpires: { type: Date },
   },
   { timestamps: true }
 );

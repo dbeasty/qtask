@@ -80,6 +80,13 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `JWT_SECRET` | *(dev fallback)* | **Required in production.** Signs auth tokens |
 | `JWT_EXPIRES_IN` | `7d` | Token lifetime |
 | `CORS_ORIGIN` | `http://localhost:5173` | Allowed web client origin |
+| `APP_URL` | `http://localhost:5173` | Public web URL for email links |
+| `SMTP_HOST` | — | **Required in production.** SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_SECURE` | `false` | Use TLS (`true` for port 465) |
+| `SMTP_USER` | — | SMTP username (if required) |
+| `SMTP_PASS` | — | SMTP password (if required) |
+| `SMTP_FROM` | `noreply@qtask.local` | From address for auth emails |
 | `TRUST_PROXY` | `false` | Set `true` behind reverse proxy |
 | `SERVE_CLIENT` | `true` | Serve `client/dist` from API in production |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
@@ -94,13 +101,35 @@ For Docker production, also see [`.env.docker.example`](.env.docker.example).
 
 ## 3. Authentication
 
-QTask uses email/password accounts with signed JWTs.
+QTask uses email/password accounts with signed JWTs. New accounts must verify their email before signing in.
+
+### Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/auth/register` | `{ email, password, displayName? }` → `{ token, user }` |
-| `POST /api/auth/login` | `{ email, password }` → `{ token, user }` |
+| `POST /api/auth/register` | `{ email, password, displayName? }` → `{ message }` (sends verification email) |
+| `POST /api/auth/verify-email` | `{ token }` → `{ message }` |
+| `POST /api/auth/resend-verification` | `{ email }` → `{ message }` |
+| `POST /api/auth/login` | `{ email, password }` → `{ token, user }` (403 if email unverified) |
+| `POST /api/auth/forgot-password` | `{ email }` → `{ message }` |
+| `POST /api/auth/reset-password` | `{ token, password }` → `{ message }` |
 | `GET /api/auth/me` | `Authorization: Bearer <token>` → `{ user }` |
+| `PATCH /api/auth/me` | `{ displayName? }` → `{ user }` (authenticated) |
+| `POST /api/auth/change-password` | `{ currentPassword, newPassword }` → `{ message }` (authenticated) |
+
+### Email verification
+
+1. User registers → receives a verification link at `/verify-email?token=...`
+2. User clicks the link → email is marked verified
+3. User signs in normally
+
+In local development without SMTP configured, verification and reset links are logged to the API console instead of being emailed.
+
+### Password reset
+
+1. User clicks **Forgot password?** on the sign-in page
+2. Receives a reset link at `/reset-password?token=...`
+3. Sets a new password and signs in
 
 All `/api/tasks`, `/api/projects`, and `/api/chat` routes require a valid JWT.
 

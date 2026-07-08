@@ -1,4 +1,4 @@
-import { before, after, describe, it } from 'node:test';
+import { before, after, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
@@ -20,6 +20,11 @@ before(async () => {
   app = await createApp({ connect: true, startWorker: false });
 });
 
+beforeEach(async () => {
+  const { clearTestEmailOutbox } = await import('../src/services/emailService.js');
+  clearTestEmailOutbox();
+});
+
 after(async () => {
   const { stopEmbeddingWorker } = await import('../src/services/embeddingQueue.js');
   stopEmbeddingWorker();
@@ -27,27 +32,141 @@ after(async () => {
   await mongo.stop();
 });
 
+async function registerAndVerify(email: string, password: string) {
+  const register = await request(app)
+    .post('/api/auth/register')
+    .send({ email, password })
+    .expect(201);
+
+  assert.ok(register.body.message);
+
+  const { testEmailOutbox } = await import('../src/services/emailService.js');
+  const token = testEmailOutbox.verification.at(-1);
+  assert.ok(token, 'verification token should be captured in test outbox');
+
+  await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
+
+  const login = await request(app)
+    .post('/api/auth/login')
+    .send({ email, password })
+    .expect(200);
+
+  return login.body.token as string;
+}
+
 describe('auth', () => {
-  it('registers, logs in, and returns /me', async () => {
-    const register = await request(app)
-      .post('/api/auth/register')
-      .send({ email: 'alice@example.com', password: 'password1234' })
-      .expect(201);
-
-    assert.ok(register.body.token);
-    assert.equal(register.body.user.email, 'alice@example.com');
-
-    const login = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'alice@example.com', password: 'password1234' })
-      .expect(200);
+  it('registers, verifies email, logs in, and returns /me', async () => {
+    const token = await registerAndVerify('alice@example.com', 'password1234');
 
     const me = await request(app)
       .get('/api/auth/me')
-      .set('Authorization', `Bearer ${login.body.token}`)
+      .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
     assert.equal(me.body.user.email, 'alice@example.com');
+    assert.equal(me.body.user.emailVerified, true);
+  });
+
+  it('blocks login until email is verified', async () => {
+    await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'unverified@example.com', password: 'password1234' })
+      .expect(201);
+
+    const login = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'unverified@example.com', password: 'password1234' })
+      .expect(403);
+
+    assert.match(login.body.error, /verify your email/i);
+  });
+
+  it('resends verification email', async () => {
+    await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'resend@example.com', password: 'password1234' })
+      .expect(201);
+
+    const { testEmailOutbox } = await import('../src/services/emailService.js');
+    const firstToken = testEmailOutbox.verification.at(-1);
+
+    await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'resend@example.com' })
+      .expect(200);
+
+    const secondToken = testEmailOutbox.verification.at(-1);
+    assert.notEqual(firstToken, secondToken);
+  });
+
+  it('resets password via email link', async () => {
+    await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'reset@example.com', password: 'password1234' })
+      .expect(201);
+
+    const { testEmailOutbox } = await import('../src/services/emailService.js');
+    const verifyToken = testEmailOutbox.verification.at(-1);
+    assert.ok(verifyToken);
+    await request(app).post('/api/auth/verify-email').send({ token: verifyToken }).expect(200);
+
+    await request(app)
+      .post('/api/auth/forgot-password')
+      .send({ email: 'reset@example.com' })
+      .expect(200);
+
+    const resetToken = testEmailOutbox.reset.at(-1);
+    assert.ok(resetToken);
+
+    await request(app)
+      .post('/api/auth/reset-password')
+      .send({ token: resetToken, password: 'newpassword999' })
+      .expect(200);
+
+    await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'reset@example.com', password: 'password1234' })
+      .expect(401);
+
+    const login = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'reset@example.com', password: 'newpassword999' })
+      .expect(200);
+
+    assert.ok(login.body.token);
+  });
+
+  it('changes password while authenticated', async () => {
+    const token = await registerAndVerify('changepw@example.com', 'password1234');
+
+    await request(app)
+      .post('/api/auth/change-password')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ currentPassword: 'wrong-password', newPassword: 'newpassword999' })
+      .expect(401);
+
+    await request(app)
+      .post('/api/auth/change-password')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ currentPassword: 'password1234', newPassword: 'newpassword999' })
+      .expect(200);
+
+    await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'changepw@example.com', password: 'newpassword999' })
+      .expect(200);
+  });
+
+  it('updates display name via PATCH /me', async () => {
+    const token = await registerAndVerify('profile@example.com', 'password1234');
+
+    const updated = await request(app)
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ displayName: 'Profile User' })
+      .expect(200);
+
+    assert.equal(updated.body.user.displayName, 'Profile User');
   });
 
   it('rejects protected routes without a token', async () => {
@@ -65,37 +184,30 @@ describe('auth', () => {
 
 describe('user isolation', () => {
   it('keeps tasks scoped per user', async () => {
-    const alice = await request(app)
-      .post('/api/auth/register')
-      .send({ email: 'alice2@example.com', password: 'password1234' })
-      .expect(201);
-
-    const bob = await request(app)
-      .post('/api/auth/register')
-      .send({ email: 'bob@example.com', password: 'password1234' })
-      .expect(201);
+    const aliceToken = await registerAndVerify('alice2@example.com', 'password1234');
+    const bobToken = await registerAndVerify('bob@example.com', 'password1234');
 
     const aliceTask = await request(app)
       .post('/api/tasks')
-      .set('Authorization', `Bearer ${alice.body.token}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
       .send({ title: 'Alice task' })
       .expect(201);
 
     const bobTasks = await request(app)
       .get('/api/tasks')
-      .set('Authorization', `Bearer ${bob.body.token}`)
+      .set('Authorization', `Bearer ${bobToken}`)
       .expect(200);
 
     assert.equal(bobTasks.body.tasks.length, 0);
 
     await request(app)
       .get(`/api/tasks/${aliceTask.body.task._id}`)
-      .set('Authorization', `Bearer ${bob.body.token}`)
+      .set('Authorization', `Bearer ${bobToken}`)
       .expect(404);
 
     const aliceTasks = await request(app)
       .get('/api/tasks')
-      .set('Authorization', `Bearer ${alice.body.token}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
       .expect(200);
 
     assert.equal(aliceTasks.body.tasks.length, 1);

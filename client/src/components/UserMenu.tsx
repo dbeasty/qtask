@@ -1,0 +1,174 @@
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
+import type { AuthUser } from '../auth/storage';
+
+interface UserMenuProps {
+  user: AuthUser;
+  anchorRef: RefObject<HTMLButtonElement | null>;
+  onChangePassword: () => void;
+  onUpdateDisplayName: (displayName: string | null) => Promise<void>;
+  onSignOut: () => void;
+  onClose: () => void;
+}
+
+export function UserMenu({
+  user,
+  anchorRef,
+  onChangePassword,
+  onUpdateDisplayName,
+  onSignOut,
+  onClose,
+}: UserMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = useState<{ top: number; left: number; visibility: 'hidden' | 'visible' }>({
+    top: 0,
+    left: 0,
+    visibility: 'hidden',
+  });
+  const [editingName, setEditingName] = useState(false);
+  const [displayName, setDisplayName] = useState(user.displayName ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const menu = menuRef.current;
+    if (!anchor || !menu) return;
+
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const margin = 8;
+
+    let left = anchorRect.right - menuRect.width;
+    let top = anchorRect.bottom + margin;
+
+    if (left < margin) {
+      left = margin;
+    }
+    if (left + menuRect.width > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - menuRect.width - margin);
+    }
+    if (top + menuRect.height > window.innerHeight - margin) {
+      top = Math.max(margin, anchorRect.top - menuRect.height - margin);
+    }
+
+    setMenuStyle({ top, left, visibility: 'visible' });
+  }, [anchorRef, editingName]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
+      onClose();
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [anchorRef, onClose]);
+
+  useEffect(() => {
+    const handleDismiss = () => onClose();
+    window.addEventListener('scroll', handleDismiss, true);
+    window.addEventListener('resize', handleDismiss);
+    return () => {
+      window.removeEventListener('scroll', handleDismiss, true);
+      window.removeEventListener('resize', handleDismiss);
+    };
+  }, [onClose]);
+
+  async function handleSaveDisplayName() {
+    setSaving(true);
+    setError(null);
+    try {
+      const trimmed = displayName.trim();
+      await onUpdateDisplayName(trimmed || null);
+      setEditingName(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update display name');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="user-menu"
+      role="menu"
+      style={{ top: menuStyle.top, left: menuStyle.left, visibility: menuStyle.visibility }}
+    >
+      <div className="user-menu-header">
+        <div className="user-menu-email">{user.email}</div>
+        {user.displayName && !editingName && (
+          <div className="user-menu-display-name">{user.displayName}</div>
+        )}
+      </div>
+
+      {editingName ? (
+        <div className="user-menu-edit">
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Display name"
+            autoFocus
+          />
+          <div className="user-menu-edit-actions">
+            <button type="button" className="user-menu-item" disabled={saving} onClick={() => void handleSaveDisplayName()}>
+              Save
+            </button>
+            <button
+              type="button"
+              className="user-menu-item"
+              disabled={saving}
+              onClick={() => {
+                setEditingName(false);
+                setDisplayName(user.displayName ?? '');
+                setError(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="user-menu-item"
+          role="menuitem"
+          onClick={() => setEditingName(true)}
+        >
+          Edit display name
+        </button>
+      )}
+
+      {error && <p className="user-menu-error">{error}</p>}
+
+      <button
+        type="button"
+        className="user-menu-item"
+        role="menuitem"
+        onClick={() => {
+          onChangePassword();
+          onClose();
+        }}
+      >
+        Change password
+      </button>
+
+      <div className="user-menu-divider" role="separator" />
+
+      <button
+        type="button"
+        className="user-menu-item user-menu-item-danger"
+        role="menuitem"
+        onClick={() => {
+          onSignOut();
+          onClose();
+        }}
+      >
+        Sign out
+      </button>
+    </div>,
+    document.body
+  );
+}

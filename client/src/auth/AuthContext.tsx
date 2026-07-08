@@ -14,6 +14,7 @@ import {
   login as loginRequest,
   register as registerRequest,
   setStoredToken,
+  updateProfile as updateProfileRequest,
   type AuthUser,
 } from './storage';
 
@@ -21,8 +22,9 @@ interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, displayName?: string) => Promise<void>;
+  register: (email: string, password: string, displayName?: string) => Promise<{ message: string }>;
   logout: () => void;
+  updateProfile: (displayName: string | null) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -51,9 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const register = useCallback(async (email: string, password: string, displayName?: string) => {
-    const result = await registerRequest(email, password, displayName);
-    setStoredToken(result.token);
-    setUser(result.user);
+    return registerRequest(email, password, displayName);
   }, []);
 
   const logout = useCallback(() => {
@@ -61,9 +61,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const updateProfile = useCallback(async (displayName: string | null) => {
+    const result = await updateProfileRequest(displayName);
+    setUser(result.user);
+  }, []);
+
   const value = useMemo(
-    () => ({ user, loading, login, register, logout }),
-    [user, loading, login, register, logout]
+    () => ({ user, loading, login, register, logout, updateProfile }),
+    [user, loading, login, register, logout, updateProfile]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
