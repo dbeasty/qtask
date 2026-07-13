@@ -1,0 +1,17 @@
+[Unit]
+Description=QTask API and web client
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=qtask
+Group=qtask
+WorkingDirectory=/opt/qtask
+EnvironmentFile=/opt/qtask/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

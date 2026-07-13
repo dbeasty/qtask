@@ -13,6 +13,8 @@ import { errorHandler, notFoundHandler } from './middleware/index.js';
 import { requireAuth } from './middleware/auth.js';
 import { startEmbeddingWorker } from './services/embeddingQueue.js';
 import { config } from './config/index.js';
+import { initEmail, getEmailStatus } from './services/emailService.js';
+import { APP_VERSION } from './version.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +25,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   if (shouldConnect) {
     await connectDb();
   }
+  await initEmail();
   if (shouldStartWorker) {
     startEmbeddingWorker();
   }
@@ -65,18 +68,19 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     try {
       if (mongoose.connection.readyState !== 1) {
         checks.mongodb = 'disconnected';
-        res.status(503).json({ status: 'degraded', checks });
+        res.status(503).json({ status: 'degraded', version: APP_VERSION, checks });
         return;
       }
       await mongoose.connection.db?.admin().ping();
       checks.mongodb = 'ok';
     } catch {
       checks.mongodb = 'error';
-      res.status(503).json({ status: 'degraded', checks });
+      res.status(503).json({ status: 'degraded', version: APP_VERSION, checks });
       return;
     }
 
-    res.json({ status: 'ok', service: 'qtask', checks });
+    checks.email = getEmailStatus();
+    res.json({ status: 'ok', service: 'qtask', version: APP_VERSION, checks });
   });
 
   app.use('/api/auth', authLimiter, authRouter);
@@ -86,7 +90,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   app.use('/api', requireAuth, chatLimiter, chatRouter);
 
   if (config.serveClient && config.nodeEnv === 'production') {
-    const clientDist = path.resolve(__dirname, '../../client/dist');
+    const clientDist = path.resolve(__dirname, '../client/dist');
     app.use(express.static(clientDist));
     app.get(/^(?!\/api|\/health).*/, (_req, res, next) => {
       res.sendFile(path.join(clientDist, 'index.html'), (err) => {

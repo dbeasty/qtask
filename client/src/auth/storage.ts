@@ -27,6 +27,14 @@ async function parseAuthResponse(response: Response, fallbackError: string) {
   return body;
 }
 
+export async function getAuthConfig(): Promise<{ registrationEnabled: boolean }> {
+  const response = await fetch('/api/auth/config');
+  if (!response.ok) {
+    return { registrationEnabled: false };
+  }
+  return response.json() as Promise<{ registrationEnabled: boolean }>;
+}
+
 export async function register(
   email: string,
   password: string,

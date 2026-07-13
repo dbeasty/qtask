@@ -1,0 +1,11 @@
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - qtask_mongo_data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
+
+volumes:
+  qtask_mongo_data:

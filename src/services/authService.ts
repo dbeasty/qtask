@@ -40,6 +40,10 @@ export class AuthService {
     displayName?: string;
     acceptLegal: true;
   }) {
+    if (!emailService.isRegistrationEnabled()) {
+      throw new HttpError(503, 'Registration is not currently enabled.');
+    }
+
     const email = normalizeEmail(input.email);
     const existing = await UserModel.findOne({ email }).lean();
     if (existing) {
@@ -111,7 +115,7 @@ export class AuthService {
     const email = normalizeEmail(emailInput);
     const user = await UserModel.findOne({ email });
 
-    if (user && !isEmailVerified(user)) {
+    if (user && !isEmailVerified(user) && emailService.isRegistrationEnabled()) {
       const verification = createOneTimeToken(VERIFICATION_TTL_MS);
       user.emailVerificationTokenHash = verification.tokenHash;
       user.emailVerificationExpires = verification.expiresAt;
@@ -126,7 +130,7 @@ export class AuthService {
     const email = normalizeEmail(emailInput);
     const user = await UserModel.findOne({ email });
 
-    if (user) {
+    if (user && emailService.isRegistrationEnabled()) {
       const reset = createOneTimeToken(RESET_TTL_MS);
       user.passwordResetTokenHash = reset.tokenHash;
       user.passwordResetExpires = reset.expiresAt;

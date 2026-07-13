@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authService } from '../services/authService.js';
+import { isRegistrationEnabled } from '../services/emailService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { getUserId } from '../middleware/index.js';
@@ -41,6 +42,10 @@ const changePasswordSchema = z.object({
 
 const updateProfileSchema = z.object({
   displayName: z.union([z.string().trim().min(1), z.null()]).optional(),
+});
+
+authRouter.get('/config', (_req, res) => {
+  res.json({ registrationEnabled: isRegistrationEnabled() });
 });
 
 authRouter.post('/register', validateBody(registerSchema), async (req, res, next) => {

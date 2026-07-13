@@ -5,6 +5,7 @@ import { UserMenu } from './components/UserMenu';
 import { ChatPage } from './pages/ChatPage';
 import { LoginPage } from './pages/LoginPage';
 import { PrivacyPage } from './pages/PrivacyPage';
+import { RegisterPage } from './pages/RegisterPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { TasksPage } from './pages/TasksPage';
 import { TermsPage } from './pages/TermsPage';
@@ -70,8 +71,11 @@ export function App() {
     if (pathname === '/reset-password') {
       return <ResetPasswordPage />;
     }
-    if (pathname === '/login' || pathname === '/register') {
-      return <LoginPage initialMode={pathname === '/register' ? 'register' : 'login'} />;
+    if (pathname === '/login') {
+      return <LoginPage />;
+    }
+    if (pathname === '/register') {
+      return <RegisterPage />;
     }
     return <WelcomePage />;
   }

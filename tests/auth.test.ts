@@ -214,6 +214,33 @@ describe('auth', () => {
       .send({ email: 'nobody@example.com', password: 'wrong' })
       .expect(401);
   });
+
+  it('disables registration when REGISTRATION_ENABLED=false', async () => {
+    const previous = process.env.REGISTRATION_ENABLED;
+    process.env.REGISTRATION_ENABLED = 'false';
+
+    try {
+      const config = await request(app).get('/api/auth/config').expect(200);
+      assert.equal(config.body.registrationEnabled, false);
+
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({ email: 'capacity@example.com', password: 'password1234', acceptLegal: true })
+        .expect(503);
+
+      assert.match(res.body.error, /not currently enabled/i);
+
+      const { UserModel } = await import('../src/models/index.js');
+      const user = await UserModel.findOne({ email: 'capacity@example.com' }).lean();
+      assert.equal(user, null);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.REGISTRATION_ENABLED;
+      } else {
+        process.env.REGISTRATION_ENABLED = previous;
+      }
+    }
+  });
 });
 
 describe('user isolation', () => {
@@ -254,5 +281,7 @@ describe('health', () => {
     const res = await request(app).get('/health').expect(200);
     assert.equal(res.body.status, 'ok');
     assert.equal(res.body.checks.mongodb, 'ok');
+    assert.equal(res.body.checks.email, 'ok');
+    assert.ok(res.body.version);
   });
 });

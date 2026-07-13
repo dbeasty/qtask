@@ -17,13 +17,14 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-3003}:3003"
     environment:
       NODE_ENV: production
-      PORT: 3000
+      PORT: 3003
       MONGODB_URI: ${MONGODB_URI}
       JWT_SECRET: ${JWT_SECRET}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      APP_URL: ${APP_URL:-https://qtask.dev}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://qtask.dev}
       TRUST_PROXY: ${TRUST_PROXY:-true}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}

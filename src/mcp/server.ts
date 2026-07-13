@@ -3,6 +3,7 @@ import { toolDefinitions, executeTool } from '../agent/tools.js';
 import { connectDb } from '../db/connection.js';
 import { startEmbeddingWorker } from '../services/embeddingQueue.js';
 import { resolveAuthUserId } from '../middleware/auth.js';
+import { APP_VERSION } from '../version.js';
 
 export async function resolveMcpUserId(): Promise<string> {
   const token = process.env.MCP_JWT;
@@ -16,7 +17,7 @@ export async function createMcpServer(userId: string): Promise<import('@modelcon
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
   const server = new McpServer({
     name: 'qtask',
-    version: '0.1.0',
+    version: APP_VERSION,
   });
 
   for (const tool of toolDefinitions) {
