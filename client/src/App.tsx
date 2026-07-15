@@ -16,6 +16,8 @@ import './styles.css';
 
 type View = 'chat' | 'tasks';
 
+const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
+
 function getAuthPathname(): string {
   return window.location.pathname.replace(/\/+$/, '') || '/';
 }
@@ -40,6 +42,14 @@ export function App() {
   useEffect(() => {
     refreshHealth();
   }, [refreshHealth]);
+
+  // Keep the address bar in sync once signed in (login never navigated away).
+  useEffect(() => {
+    if (!user) return;
+    if (AUTH_PATHS.has(getAuthPathname())) {
+      window.history.replaceState(null, '', '/');
+    }
+  }, [user]);
 
   const apiStatusLabel =
     healthy == null ? 'Checking API…' : healthy ? 'API connected' : 'API offline';
