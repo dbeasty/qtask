@@ -140,7 +140,7 @@ export function LoginPage() {
         </form>
 
         {mode === 'login' && registrationEnabled && (
-          <p className="auth-hint muted">
+          <p className="auth-hint auth-hint--switch muted">
             Need an account? <a href="/register">Get started</a>
           </p>
         )}

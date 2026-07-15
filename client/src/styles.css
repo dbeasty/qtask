@@ -493,6 +493,10 @@ button {
   font-size: 0.8rem;
 }
 
+.auth-hint--switch {
+  margin-top: 1rem;
+}
+
 .auth-error {
   margin: 0;
   color: #e5534b;
