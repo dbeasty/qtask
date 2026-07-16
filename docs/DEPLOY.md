@@ -508,6 +508,87 @@ Obtain certificates with [certbot](https://certbot.eff.org/):
 sudo certbot certonly --nginx -d qtask.dev
 ```
 
+### Standalone admin application
+
+The admin UI/API runs as a separate process on port `3004`. It can reset passwords,
+delete accounts, report per-user/global MongoDB usage, and show Ollama call/resource
+statistics. Never expose port `3004` directly; bind it to loopback and give it a
+separate nginx hostname reachable only through your firewall or VPN.
+
+Build and run it outside Docker:
+
+```bash
+npm run build:all
+NODE_ENV=production npm run start:admin
+```
+
+With Compose, include the admin profile:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  --profile app --profile admin --profile ollama up -d --build
+```
+
+Required configuration:
+
+```dotenv
+ADMIN_AUTH_MODE=password
+ADMIN_PASSWORD=a-strong-dedicated-password
+ADMIN_JWT_SECRET=a-different-long-random-secret
+ADMIN_COOKIE_SECURE=true
+LLM_METRICS_RETENTION_DAYS=30
+```
+
+The detailed per-call metric collection expires after the configured number of
+days; compact daily totals remain. Prompts and responses are never stored.
+Although deployment can set `ADMIN_PASSWORD` and `MONGO_ROOT_PASSWORD` to the
+same value, separate secrets are strongly recommended because the web process
+does not need the MongoDB root credential.
+
+For password mode, proxy a firewall-restricted hostname to
+`http://127.0.0.1:3004`. To use a verified client certificate instead of a
+password, set `ADMIN_AUTH_MODE=mtls`, generate a long `ADMIN_PROXY_SECRET`, and
+configure nginx:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name admin.qtask.dev;
+
+    ssl_certificate     /etc/letsencrypt/live/admin.qtask.dev/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/admin.qtask.dev/privkey.pem;
+    ssl_client_certificate /etc/nginx/qtask-admin-client-ca.pem;
+    ssl_verify_client on;
+
+    location / {
+        proxy_pass http://127.0.0.1:3004;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
+        proxy_set_header X-SSL-Client-DN $ssl_client_s_dn;
+        proxy_set_header X-Admin-Proxy-Secret "same-value-as-ADMIN_PROXY_SECRET";
+    }
+}
+```
+
+The proxy secret prevents a locally spoofed certificate-identity header. Keep
+the admin listener on loopback even when mTLS is enabled.
+
+Ollama API health, models, durations, tokens, failures, and embedding queue
+statistics work for local and remote Ollama. For local Compose CPU/RAM metrics,
+also enable the restricted socket proxy:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  --profile app --profile admin --profile ollama --profile monitoring up -d
+```
+
+For NVIDIA utilization, VRAM, temperature, and power, additionally enable
+`--profile gpu-monitoring` on a host with the NVIDIA container runtime. When
+Ollama runs on a remote Jetson or another machine, local Docker/GPU collectors
+correctly show unavailable; deploy compatible metrics exporters on that host
+and set `OLLAMA_DOCKER_STATS_URL` / `DCGM_METRICS_URL` if needed.
+
 ### Caddy (alternative)
 
 Skip this section if you already use nginx. Caddy is an alternative reverse proxy with automatic Let's Encrypt:
@@ -533,6 +614,7 @@ caddy run --config Caddyfile
 
 - Allow **443** (and **80** for ACME redirects) on your router and host firewall
 - Do **not** forward **3003** or **27017** on your router — nginx reaches the app on localhost
+- Do **not** forward **3004**; only the restricted admin nginx hostname may reach it
 - Block **27017** (MongoDB) from the public internet
 - With `docker-compose.prod.yml`, the API binds to **127.0.0.1:3003** only
 

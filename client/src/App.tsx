@@ -23,7 +23,7 @@ function getAuthPathname(): string {
 }
 
 export function App() {
-  const { user, loading, logout, updateProfile } = useAuth();
+  const { user, loading, mustChangePassword, logout, updateProfile } = useAuth();
   const [view, setView] = useState<View>('chat');
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
@@ -88,6 +88,15 @@ export function App() {
       return <RegisterPage />;
     }
     return <WelcomePage />;
+  }
+
+  if (mustChangePassword) {
+    // Block the entire app until the temporary password has been replaced.
+    return (
+      <div className="auth-page">
+        <ChangePasswordDialog forced />
+      </div>
+    );
   }
 
   return (

@@ -24,12 +24,14 @@ function serializeUser(user: {
   email: string;
   displayName?: string | null;
   emailVerified?: boolean | null;
+  mustChangePassword?: boolean | null;
 }) {
   return {
     id: String(user._id),
     email: user.email,
     displayName: user.displayName ?? undefined,
     emailVerified: isEmailVerified(user),
+    mustChangePassword: user.mustChangePassword === true,
   };
 }
 
@@ -88,8 +90,15 @@ export class AuthService {
     }
 
     const userId = String(user._id);
-    const token = signToken({ sub: userId, email: user.email });
-    return { token, user: serializeUser(user) };
+    user.lastLoginAt = new Date();
+    await user.save();
+    const mustChangePassword = user.mustChangePassword === true;
+    const token = signToken({
+      sub: userId,
+      email: user.email,
+      ...(mustChangePassword ? { pwd_change: true } : {}),
+    });
+    return { token, user: serializeUser(user), mustChangePassword };
   }
 
   async verifyEmail(token: string) {
@@ -155,6 +164,7 @@ export class AuthService {
     user.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     user.passwordResetTokenHash = undefined;
     user.passwordResetExpires = undefined;
+    user.mustChangePassword = false;
     await user.save();
 
     return { message: 'Password updated. You can now sign in.' };
@@ -172,9 +182,11 @@ export class AuthService {
     }
 
     user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    user.mustChangePassword = false;
     await user.save();
 
-    return { message: 'Password updated.' };
+    const token = signToken({ sub: String(user._id), email: user.email });
+    return { message: 'Password updated.', token, user: serializeUser(user) };
   }
 
   async updateProfile(userId: string, input: { displayName?: string | null }) {

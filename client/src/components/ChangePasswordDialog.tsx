@@ -1,13 +1,17 @@
 import { useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { PasswordInput } from './PasswordInput';
-import { changePassword } from '../auth/storage';
+import { useAuth } from '../auth/AuthContext';
 
 interface ChangePasswordDialogProps {
-  onClose: () => void;
+  onClose?: () => void;
+  /** When true the dialog cannot be dismissed: the user signed in with a
+   * temporary password and must set a new one before using the app. */
+  forced?: boolean;
 }
 
-export function ChangePasswordDialog({ onClose }: ChangePasswordDialogProps) {
+export function ChangePasswordDialog({ onClose, forced = false }: ChangePasswordDialogProps) {
+  const { changePassword, logout } = useAuth();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -19,6 +23,10 @@ export function ChangePasswordDialog({ onClose }: ChangePasswordDialogProps) {
     event.preventDefault();
     setError(null);
 
+    if (newPassword.length < 10) {
+      setError('New password must be at least 10 characters.');
+      return;
+    }
     if (newPassword !== confirmPassword) {
       setError('New passwords do not match.');
       return;
@@ -27,23 +35,36 @@ export function ChangePasswordDialog({ onClose }: ChangePasswordDialogProps) {
     setSubmitting(true);
     try {
       const result = await changePassword(currentPassword, newPassword);
-      setSuccess(result.message);
+      if (!forced) {
+        setSuccess(result.message ?? 'Password updated.');
+      }
+      // In forced mode the dialog unmounts automatically once the auth
+      // context clears the must-change-password flag.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not change password');
-    } finally {
       setSubmitting(false);
+      return;
     }
+    setSubmitting(false);
   }
 
   return createPortal(
-    <div className="auth-dialog-backdrop" onClick={onClose}>
+    <div className="auth-dialog-backdrop" onClick={forced ? undefined : onClose}>
       <div
         className="auth-dialog"
         role="dialog"
         aria-labelledby="change-password-title"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 id="change-password-title">Change password</h2>
+        <h2 id="change-password-title">
+          {forced ? 'Set a new password' : 'Change password'}
+        </h2>
+
+        {forced && (
+          <p className="muted">
+            You signed in with a temporary password. Choose a new password to continue.
+          </p>
+        )}
 
         {success ? (
           <>
@@ -55,7 +76,7 @@ export function ChangePasswordDialog({ onClose }: ChangePasswordDialogProps) {
         ) : (
           <form className="auth-form" onSubmit={handleSubmit}>
             <label>
-              Current password
+              {forced ? 'Temporary password' : 'Current password'}
               <PasswordInput
                 value={currentPassword}
                 onChange={setCurrentPassword}
@@ -91,9 +112,25 @@ export function ChangePasswordDialog({ onClose }: ChangePasswordDialogProps) {
             {error && <p className="auth-error">{error}</p>}
 
             <div className="auth-dialog-actions">
-              <button type="button" className="auth-link-btn" onClick={onClose} disabled={submitting}>
-                Cancel
-              </button>
+              {forced ? (
+                <button
+                  type="button"
+                  className="auth-link-btn"
+                  onClick={logout}
+                  disabled={submitting}
+                >
+                  Sign out
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="auth-link-btn"
+                  onClick={onClose}
+                  disabled={submitting}
+                >
+                  Cancel
+                </button>
+              )}
               <button type="submit" className="auth-submit" disabled={submitting}>
                 {submitting ? 'Please wait…' : 'Update password'}
               </button>

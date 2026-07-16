@@ -17,6 +17,7 @@ export interface AuthUser {
   email: string;
   displayName?: string;
   emailVerified?: boolean;
+  mustChangePassword?: boolean;
 }
 
 async function parseAuthResponse(response: Response, fallbackError: string) {
@@ -49,13 +50,21 @@ export async function register(
   return parseAuthResponse(response, 'Registration failed') as Promise<{ message: string }>;
 }
 
-export async function login(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
+export interface LoginResult {
+  token: string;
+  user: AuthUser;
+  /** True when the user signed in with a temporary password and the token is
+   * only valid for POST /api/auth/change-password. */
+  mustChangePassword?: boolean;
+}
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const response = await fetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  return parseAuthResponse(response, 'Login failed') as Promise<{ token: string; user: AuthUser }>;
+  return parseAuthResponse(response, 'Login failed') as Promise<LoginResult>;
 }
 
 export async function verifyEmail(token: string): Promise<{ message: string }> {
@@ -94,10 +103,18 @@ export async function resetPassword(token: string, password: string): Promise<{ 
   return parseAuthResponse(response, 'Password reset failed') as Promise<{ message: string }>;
 }
 
+export interface ChangePasswordResult {
+  message?: string;
+  /** Present when the backend issues a fresh session after the change
+   * (e.g. after a forced temporary-password change). */
+  token?: string;
+  user?: AuthUser;
+}
+
 export async function changePassword(
   currentPassword: string,
   newPassword: string
-): Promise<{ message: string }> {
+): Promise<ChangePasswordResult> {
   const token = getStoredToken();
   const response = await fetch('/api/auth/change-password', {
     method: 'POST',
@@ -107,7 +124,7 @@ export async function changePassword(
     },
     body: JSON.stringify({ currentPassword, newPassword }),
   });
-  return parseAuthResponse(response, 'Could not change password') as Promise<{ message: string }>;
+  return parseAuthResponse(response, 'Could not change password') as Promise<ChangePasswordResult>;
 }
 
 export async function updateProfile(displayName: string | null): Promise<{ user: AuthUser }> {

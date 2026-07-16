@@ -14,6 +14,7 @@ import type {
 } from '../types/conversation.js';
 import { createLogger } from '../utils/logger.js';
 import { conversationService } from './conversationService.js';
+import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 
 const log = createLogger('chatService');
 const SYSTEM_PROMPT = loadAgentContext();
@@ -28,6 +29,12 @@ interface OllamaStreamChunk {
     }>;
   };
   done?: boolean;
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  eval_count?: number;
+  eval_duration?: number;
 }
 
 interface OllamaChatMessage {
@@ -100,9 +107,11 @@ function createProposal(
   };
 }
 
-async function* streamOllamaChat(
+export async function* streamOllamaChat(
   messages: OllamaChatMessage[],
-  iteration: number
+  iteration: number,
+  userId: string,
+  conversationId: string
 ): AsyncGenerator<OllamaStreamPart> {
   log.debug('Ollama chat request', {
     model: config.ollama.model,
@@ -110,25 +119,43 @@ async function* streamOllamaChat(
     iteration,
   });
 
-  const response = await fetch(`${config.ollama.baseUrl}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: config.ollama.model,
-      messages,
-      tools: getOllamaTools(),
-      stream: true,
-      options: { temperature: 0.2 },
-    }),
+  const tracker = createLlmCallTracker({
+    callType: 'chat',
+    source: 'chat_loop',
+    model: config.ollama.model,
+    userId,
+    conversationId,
+    iteration,
   });
+  let response: Response;
+  try {
+    response = await fetch(`${config.ollama.baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.ollama.model,
+        messages,
+        tools: getOllamaTools(),
+        stream: true,
+        options: { temperature: 0.2 },
+      }),
+    });
+  } catch (error) {
+    tracker.fail(error);
+    throw error;
+  }
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Ollama chat failed (${response.status}): ${body}`);
+    const error = new Error(`Ollama chat failed (${response.status}): ${body}`);
+    tracker.fail(error, response.status);
+    throw error;
   }
 
   if (!response.body) {
-    throw new Error('Ollama returned an empty response body');
+    const error = new Error('Ollama returned an empty response body');
+    tracker.fail(error, response.status);
+    throw error;
   }
 
   let content = '';
@@ -138,49 +165,59 @@ async function* streamOllamaChat(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let finalTiming: OllamaTimingFields | undefined;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const chunk = JSON.parse(line) as OllamaStreamChunk;
-      const message = chunk.message;
-      if (!message) continue;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const chunk = JSON.parse(line) as OllamaStreamChunk;
+        if (chunk.done) {
+          finalTiming = chunk;
+        }
+        const message = chunk.message;
+        if (!message) continue;
 
-      if (message.content) {
-        content += message.content;
-        tokenBuffer.push(message.content);
-      }
+        if (message.content) {
+          content += message.content;
+          tokenBuffer.push(message.content);
+        }
 
-      if (message.tool_calls) {
-        for (let i = 0; i < message.tool_calls.length; i++) {
-          const call = message.tool_calls[i];
-          if (!call?.function?.name) continue;
+        if (message.tool_calls) {
+          for (let i = 0; i < message.tool_calls.length; i++) {
+            const call = message.tool_calls[i];
+            if (!call?.function?.name) continue;
 
-          const existing = toolCallsByIndex.get(i) ?? {
-            function: { name: call.function.name, arguments: {} },
-          };
-
-          if (call.function.name) {
-            existing.function.name = call.function.name;
-          }
-          if (call.function.arguments) {
-            existing.function.arguments = {
-              ...existing.function.arguments,
-              ...parseToolArguments(call.function.arguments),
+            const existing = toolCallsByIndex.get(i) ?? {
+              function: { name: call.function.name, arguments: {} },
             };
+
+            if (call.function.name) {
+              existing.function.name = call.function.name;
+            }
+            if (call.function.arguments) {
+              existing.function.arguments = {
+                ...existing.function.arguments,
+                ...parseToolArguments(call.function.arguments),
+              };
+            }
+            toolCallsByIndex.set(i, existing);
           }
-          toolCallsByIndex.set(i, existing);
         }
       }
     }
+  } catch (error) {
+    tracker.fail(error, response.status);
+    throw error;
   }
+  tracker.complete(response.status, finalTiming);
 
   const toolCalls = [...toolCallsByIndex.values()];
 
@@ -313,7 +350,12 @@ export class ChatService {
       let content = '';
       let toolCalls: OllamaToolCall[] = [];
 
-      for await (const part of streamOllamaChat(toOllamaMessages(workingMessages), iteration)) {
+      for await (const part of streamOllamaChat(
+        toOllamaMessages(workingMessages),
+        iteration,
+        userId,
+        conversationId
+      )) {
         if (part.kind === 'token') {
           yield { type: 'token', content: part.content };
         } else {

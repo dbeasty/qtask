@@ -10,3 +10,9 @@ services:
       - "127.0.0.1:3003:3003"
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
+
+  admin:
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-3004}:3004"
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}

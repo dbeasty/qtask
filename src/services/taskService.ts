@@ -799,7 +799,11 @@ export class TaskService {
     baseQuery: Record<string, unknown>
   ): Promise<Array<{ task: Record<string, unknown>; score: number }>> {
     try {
-      const queryEmbedding = await generateEmbedding(queryText);
+      const queryEmbedding = await generateEmbedding(queryText, {
+        userId,
+        source: 'semantic_search',
+        degradedFallback: true,
+      });
       const candidates = await TaskModel.find({
         ...baseQuery,
         embedding: { $exists: true, $ne: [] },

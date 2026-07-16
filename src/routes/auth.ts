@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authService } from '../services/authService.js';
 import { isRegistrationEnabled } from '../services/emailService.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requirePasswordChangeAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { getUserId } from '../middleware/index.js';
 
@@ -102,7 +102,7 @@ authRouter.post('/reset-password', validateBody(resetPasswordSchema), async (req
   }
 });
 
-authRouter.post('/change-password', requireAuth, validateBody(changePasswordSchema), async (req, res, next) => {
+authRouter.post('/change-password', requirePasswordChangeAuth, validateBody(changePasswordSchema), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const result = await authService.changePassword(userId, req.body.currentPassword, req.body.newPassword);
@@ -122,7 +122,7 @@ authRouter.patch('/me', requireAuth, validateBody(updateProfileSchema), async (r
   }
 });
 
-authRouter.get('/me', requireAuth, async (req, res, next) => {
+authRouter.get('/me', requirePasswordChangeAuth, async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const user = await authService.getUserById(userId);

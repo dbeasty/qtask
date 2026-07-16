@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  changePassword as changePasswordRequest,
   clearStoredToken,
   fetchMe,
   getStoredToken,
@@ -16,15 +17,20 @@ import {
   setStoredToken,
   updateProfile as updateProfileRequest,
   type AuthUser,
+  type ChangePasswordResult,
 } from './storage';
 
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
+  /** True when the user signed in with a temporary password and must set a
+   * new one before accessing the app. */
+  mustChangePassword: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, displayName?: string, acceptLegal?: boolean) => Promise<{ message: string }>;
   logout: () => void;
   updateProfile: (displayName: string | null) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<ChangePasswordResult>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -32,6 +38,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
 
   useEffect(() => {
     const token = getStoredToken();
@@ -41,7 +48,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     fetchMe(token)
-      .then((me) => setUser(me))
+      .then((me) => {
+        setUser(me);
+        setMustChangePassword(me.mustChangePassword === true);
+      })
       .catch(() => clearStoredToken())
       .finally(() => setLoading(false));
   }, []);
@@ -49,6 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     const result = await loginRequest(email, password);
     setStoredToken(result.token);
+    setMustChangePassword(result.mustChangePassword === true);
     setUser(result.user);
   }, []);
 
@@ -58,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     clearStoredToken();
+    setMustChangePassword(false);
     setUser(null);
   }, []);
 
@@ -66,9 +78,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(result.user);
   }, []);
 
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    const result = await changePasswordRequest(currentPassword, newPassword);
+    if (result.token) {
+      setStoredToken(result.token);
+    }
+    if (result.user) {
+      setUser(result.user);
+    }
+    setMustChangePassword(false);
+    return result;
+  }, []);
+
   const value = useMemo(
-    () => ({ user, loading, login, register, logout, updateProfile }),
-    [user, loading, login, register, logout, updateProfile]
+    () => ({ user, loading, mustChangePassword, login, register, logout, updateProfile, changePassword }),
+    [user, loading, mustChangePassword, login, register, logout, updateProfile, changePassword]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

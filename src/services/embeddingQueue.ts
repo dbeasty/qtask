@@ -58,7 +58,11 @@ async function processNextJob(): Promise<void> {
         description: task.description ?? undefined,
         tags: task.tags,
       });
-      const embedding = await generateEmbedding(text);
+      const embedding = await generateEmbedding(text, {
+        userId: task.userId,
+        taskId: String(task._id),
+        source: 'embedding_job',
+      });
 
       await TaskModel.findByIdAndUpdate(task._id, { embedding });
       await EmbeddingJobModel.findByIdAndUpdate(job._id, {

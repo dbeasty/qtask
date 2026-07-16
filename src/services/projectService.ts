@@ -1,6 +1,7 @@
 import { ProjectModel, TaskModel } from '../models/index.js';
 import { config } from '../config/index.js';
 import { taskService } from './taskService.js';
+import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 
 export const DEFAULT_PROJECT_NAME = 'Project One';
 
@@ -122,6 +123,12 @@ export class ProjectService {
       })),
     };
 
+    const tracker = createLlmCallTracker({
+      callType: 'generate',
+      source: 'project_summary',
+      model: config.ollama.model,
+      userId,
+    });
     try {
       const response = await fetch(`${config.ollama.baseUrl}/api/generate`, {
         method: 'POST',
@@ -137,9 +144,11 @@ export class ProjectService {
         throw new Error(`Ollama generate failed: ${response.status}`);
       }
 
-      const data = (await response.json()) as { response: string };
+      const data = (await response.json()) as { response: string } & OllamaTimingFields;
+      tracker.complete(response.status, data);
       return data.response.trim();
-    } catch {
+    } catch (error) {
+      tracker.fail(error, undefined, true);
       return [
         `Project "${project.name}" has ${summary.totalTasks} tasks.`,
         `Status breakdown: ${summary.byStatus.todo} todo, ${summary.byStatus.in_progress} in progress, ${summary.byStatus.done} done.`,

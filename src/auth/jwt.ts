@@ -4,6 +4,7 @@ import { config } from '../config/index.js';
 export interface JwtPayload {
   sub: string;
   email: string;
+  pwd_change?: boolean;
 }
 
 export function signToken(payload: JwtPayload): string {

@@ -38,14 +38,78 @@ services:
     networks:
       - qtask
 
+  admin:
+    build: .
+    profiles: ["admin"]
+    restart: unless-stopped
+    command: ["node", "dist/admin/index.js"]
+    ports:
+      - "${ADMIN_PORT:-3004}:3004"
+    environment:
+      NODE_ENV: production
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: 3004
+      ADMIN_AUTH_MODE: ${ADMIN_AUTH_MODE:-password}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
+      ADMIN_PROXY_SECRET: ${ADMIN_PROXY_SECRET:-}
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-true}
+      MONGODB_URI: ${MONGODB_URI}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      LLM_METRICS_RETENTION_DAYS: ${LLM_METRICS_RETENTION_DAYS:-30}
+      OLLAMA_DOCKER_STATS_URL: ${OLLAMA_DOCKER_STATS_URL:-http://docker-proxy:2375/v1.41}
+      OLLAMA_DOCKER_CONTAINER: ${OLLAMA_DOCKER_CONTAINER:-qtask-ollama}
+      DCGM_METRICS_URL: ${DCGM_METRICS_URL:-http://dcgm-exporter:9400/metrics}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+    networks:
+      - qtask
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3004/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
   ollama:
     image: ollama/ollama:latest
+    container_name: qtask-ollama
     profiles: ["ollama"]
     restart: unless-stopped
     volumes:
       - qtask_ollama_data:/root/.ollama
     ports:
       - "11434:11434"
+    networks:
+      - qtask
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      PING: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - qtask
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:latest
+    profiles: ["gpu-monitoring"]
+    restart: unless-stopped
+    gpus: all
+    cap_add:
+      - SYS_ADMIN
+    expose:
+      - "9400"
     networks:
       - qtask
 

@@ -1,22 +1,45 @@
 import { config } from '../config/index.js';
+import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const response = await fetch(`${config.ollama.baseUrl}/api/embeddings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: config.ollama.embeddingModel,
-      prompt: text,
-    }),
+export async function generateEmbedding(
+  text: string,
+  context: {
+    userId?: string;
+    taskId?: string;
+    source: 'embedding_job' | 'semantic_search';
+    degradedFallback?: boolean;
+  }
+): Promise<number[]> {
+  const tracker = createLlmCallTracker({
+    callType: 'embed',
+    source: context.source,
+    model: config.ollama.embeddingModel,
+    userId: context.userId,
+    taskId: context.taskId,
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Ollama embedding failed (${response.status}): ${body}`);
-  }
+  try {
+    const response = await fetch(`${config.ollama.baseUrl}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.ollama.embeddingModel,
+        prompt: text,
+      }),
+    });
 
-  const data = (await response.json()) as { embedding: number[] };
-  return data.embedding;
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Ollama embedding failed (${response.status}): ${body}`);
+    }
+
+    const data = (await response.json()) as { embedding: number[] } & OllamaTimingFields;
+    tracker.complete(response.status, data);
+    return data.embedding;
+  } catch (error) {
+    tracker.fail(error, undefined, context.degradedFallback);
+    throw error;
+  }
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {

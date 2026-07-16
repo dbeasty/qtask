@@ -1,7 +1,11 @@
 import dotenv from 'dotenv';
 
-dotenv.config();
-dotenv.config({ path: '.env.local', override: true });
+// Test processes set NODE_ENV before importing config and must not inherit
+// developer/production secrets from local dotenv files.
+if (process.env.NODE_ENV !== 'test' && process.env.QTASK_SKIP_DOTENV !== 'true') {
+  dotenv.config();
+  dotenv.config({ path: '.env.local', override: true });
+}
 
 function requireSecret(name: string, value: string | undefined, devFallback: string): string {
   if (value) return value;
@@ -13,6 +17,7 @@ function requireSecret(name: string, value: string | undefined, devFallback: str
 }
 
 export type MailProvider = 'resend' | 'smtp' | 'none';
+export type AdminAuthMode = 'password' | 'mtls';
 
 const DEFAULT_FROM = 'noreply@qtask.dev';
 
@@ -38,6 +43,7 @@ export function resolveMailFrom(
 }
 
 const mailProvider = resolveMailProvider();
+const adminAuthMode: AdminAuthMode = process.env.ADMIN_AUTH_MODE === 'mtls' ? 'mtls' : 'password';
 
 export const config = {
   port: parseInt(process.env.PORT ?? '3000', 10),
@@ -68,5 +74,29 @@ export const config = {
     baseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
     model: process.env.OLLAMA_MODEL ?? 'llama3.1',
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'nomic-embed-text',
+  },
+  admin: {
+    host: process.env.ADMIN_HOST ?? '127.0.0.1',
+    port: parseInt(process.env.ADMIN_PORT ?? '3004', 10),
+    authMode: adminAuthMode,
+    password: process.env.ADMIN_PASSWORD,
+    jwtSecret:
+      process.env.ADMIN_JWT_SECRET ??
+      ((process.env.NODE_ENV ?? 'development') === 'production'
+        ? ''
+        : 'dev-admin-jwt-secret-change-me'),
+    proxySecret: process.env.ADMIN_PROXY_SECRET,
+    cookieSecure:
+      process.env.ADMIN_COOKIE_SECURE === 'true' ||
+      (process.env.ADMIN_COOKIE_SECURE !== 'false' && (process.env.NODE_ENV ?? 'development') === 'production'),
+    clientDist: process.env.ADMIN_CLIENT_DIST,
+  },
+  llmMetrics: {
+    retentionDays: Math.max(1, parseInt(process.env.LLM_METRICS_RETENTION_DAYS ?? '30', 10)),
+  },
+  resourceMonitoring: {
+    dockerApiUrl: process.env.OLLAMA_DOCKER_STATS_URL,
+    dockerContainer: process.env.OLLAMA_DOCKER_CONTAINER ?? 'qtask-ollama-1',
+    dcgmMetricsUrl: process.env.DCGM_METRICS_URL,
   },
 } as const;

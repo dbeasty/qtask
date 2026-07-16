@@ -13,6 +13,9 @@ const userSchema = new Schema(
     passwordResetExpires: { type: Date },
     legalAcceptedAt: { type: Date },
     legalVersion: { type: String },
+    lastLoginAt: { type: Date },
+    lastActiveAt: { type: Date },
+    mustChangePassword: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
@@ -167,3 +170,78 @@ const conversationSchema = new Schema(
 );
 
 export const ConversationModel = model('Conversation', conversationSchema);
+
+const llmCallMetricSchema = new Schema(
+  {
+    requestId: { type: String, required: true, unique: true },
+    userId: { type: String, index: true },
+    conversationId: { type: String },
+    taskId: { type: String },
+    callType: { type: String, enum: ['chat', 'generate', 'embed'], required: true, index: true },
+    source: {
+      type: String,
+      enum: ['chat_loop', 'project_summary', 'embedding_job', 'semantic_search'],
+      required: true,
+    },
+    model: { type: String, required: true, index: true },
+    startedAt: { type: Date, required: true, index: true },
+    completedAt: { type: Date, required: true },
+    durationMs: { type: Number, required: true },
+    success: { type: Boolean, required: true, index: true },
+    degradedFallback: { type: Boolean, default: false },
+    httpStatus: { type: Number },
+    errorCategory: { type: String },
+    errorMessage: { type: String },
+    totalDurationNs: { type: Number },
+    loadDurationNs: { type: Number },
+    promptEvalCount: { type: Number },
+    promptEvalDurationNs: { type: Number },
+    evalCount: { type: Number },
+    evalDurationNs: { type: Number },
+    iteration: { type: Number },
+    expiresAt: { type: Date, required: true },
+  },
+  { timestamps: false }
+);
+
+llmCallMetricSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+llmCallMetricSchema.index({ startedAt: -1, callType: 1, model: 1 });
+
+export const LlmCallMetricModel = model('LlmCallMetric', llmCallMetricSchema);
+
+const llmDailyMetricSchema = new Schema(
+  {
+    day: { type: Date, required: true },
+    userId: { type: String },
+    callType: { type: String, enum: ['chat', 'generate', 'embed'], required: true },
+    model: { type: String, required: true },
+    calls: { type: Number, default: 0 },
+    successes: { type: Number, default: 0 },
+    failures: { type: Number, default: 0 },
+    degradedFallbacks: { type: Number, default: 0 },
+    durationMs: { type: Number, default: 0 },
+    promptTokens: { type: Number, default: 0 },
+    evalTokens: { type: Number, default: 0 },
+  },
+  { timestamps: true }
+);
+
+llmDailyMetricSchema.index(
+  { day: 1, userId: 1, callType: 1, model: 1 },
+  { unique: true }
+);
+
+export const LlmDailyMetricModel = model('LlmDailyMetric', llmDailyMetricSchema);
+
+const adminAuditSchema = new Schema(
+  {
+    adminIdentity: { type: String, required: true },
+    action: { type: String, required: true },
+    targetUserId: { type: String },
+    targetEmail: { type: String },
+    details: { type: Schema.Types.Mixed, default: {} },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+export const AdminAuditModel = model('AdminAudit', adminAuditSchema);

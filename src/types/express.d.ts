@@ -4,6 +4,10 @@ declare global {
       auth?: {
         userId: string;
         email: string;
+        mustChangePassword: boolean;
+      };
+      admin?: {
+        identity: string;
       };
     }
   }
