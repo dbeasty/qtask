@@ -40,7 +40,14 @@ function readToken(req: Request): AdminToken | null {
   }
 }
 
-function issueSession(res: Response, identity: string): { identity: string; csrfToken: string } {
+function adminFeatures() {
+  return { deleteConfirmEmail: config.admin.deleteConfirmEmail };
+}
+
+function issueSession(
+  res: Response,
+  identity: string
+): { identity: string; csrfToken: string; features: { deleteConfirmEmail: boolean } } {
   const csrfToken = randomBytes(24).toString('base64url');
   const options: SignOptions = { expiresIn: '1h' };
   const token = jwt.sign(
@@ -55,7 +62,7 @@ function issueSession(res: Response, identity: string): { identity: string; csrf
     maxAge: 60 * 60 * 1000,
     path: '/api/admin',
   });
-  return { identity, csrfToken };
+  return { identity, csrfToken, features: adminFeatures() };
 }
 
 export function passwordLogin(req: Request, res: Response): void {
@@ -92,6 +99,7 @@ export function adminSession(req: Request, res: Response): void {
     authMode: config.admin.authMode,
     identity: token?.sub,
     csrfToken: token?.csrf,
+    features: adminFeatures(),
   });
 }
 

@@ -96,7 +96,7 @@ describe('admin data management', () => {
       .expect(200);
   });
 
-  it('reports totals and cascade deletes a confirmed account', async () => {
+  it('reports totals and cascade deletes without email confirmation by default', async () => {
     const user = await createVerifiedUser('delete@example.com');
     const { TaskModel, ProjectModel } = await import('../src/models/index.js');
     await Promise.all([
@@ -104,17 +104,45 @@ describe('admin data management', () => {
       ProjectModel.create({ userId: String(user._id), name: 'Delete me' }),
     ]);
     const { agent, csrf } = await adminSession();
+    const session = await agent.get('/api/admin/auth/session').expect(200);
+    assert.equal(session.body.features.deleteConfirmEmail, false);
+
     const stats = await agent.get('/api/admin/stats').expect(200);
     assert.ok(stats.body.users >= 1);
     assert.ok(stats.body.totalDataBytes > 0);
 
-    await agent
-      .delete(`/api/admin/users/${user._id}`)
-      .set('x-csrf-token', csrf)
-      .send({ confirmEmail: user.email })
-      .expect(200);
+    await agent.delete(`/api/admin/users/${user._id}`).set('x-csrf-token', csrf).expect(200);
 
     assert.equal(await TaskModel.countDocuments({ userId: String(user._id) }), 0);
     assert.equal(await ProjectModel.countDocuments({ userId: String(user._id) }), 0);
+  });
+
+  it('requires matching confirmEmail when ADMIN_DELETE_CONFIRM_EMAIL is enabled', async () => {
+    const { config } = await import('../src/config/index.js');
+    const previous = config.admin.deleteConfirmEmail;
+    config.admin.deleteConfirmEmail = true;
+    try {
+      const user = await createVerifiedUser('confirm-delete@example.com');
+      const { agent, csrf } = await adminSession();
+      const session = await agent.get('/api/admin/auth/session').expect(200);
+      assert.equal(session.body.features.deleteConfirmEmail, true);
+
+      await agent
+        .delete(`/api/admin/users/${user._id}`)
+        .set('x-csrf-token', csrf)
+        .send({ confirmEmail: 'wrong@example.com' })
+        .expect(400);
+
+      await agent
+        .delete(`/api/admin/users/${user._id}`)
+        .set('x-csrf-token', csrf)
+        .send({ confirmEmail: user.email })
+        .expect(200);
+
+      const { UserModel } = await import('../src/models/index.js');
+      assert.equal(await UserModel.countDocuments({ _id: user._id }), 0);
+    } finally {
+      config.admin.deleteConfirmEmail = previous;
+    }
   });
 });

@@ -115,10 +115,10 @@ export async function resetUserPassword(
   });
 }
 
-export async function deleteUser(userId: string, confirmEmail: string): Promise<void> {
+export async function deleteUser(userId: string, confirmEmail?: string): Promise<void> {
   await request<unknown>(`/api/admin/users/${encodeURIComponent(userId)}`, {
     method: 'DELETE',
-    body: JSON.stringify({ confirmEmail }),
+    body: JSON.stringify(confirmEmail !== undefined ? { confirmEmail } : {}),
     csrf: true,
   });
 }

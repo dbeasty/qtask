@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { deleteUser } from '../api/client';
+import { useAuth } from '../auth/AuthContext';
 import type { AdminUser } from '../types';
 
 interface DeleteUserDialogProps {
@@ -9,11 +10,13 @@ interface DeleteUserDialogProps {
 }
 
 export function DeleteUserDialog({ user, onClose, onDeleted }: DeleteUserDialogProps) {
+  const { features } = useAuth();
+  const requireEmailConfirm = features.deleteConfirmEmail;
   const [confirmation, setConfirmation] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const matches = confirmation.trim() === user.email;
+  const matches = !requireEmailConfirm || confirmation.trim() === user.email;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -21,7 +24,7 @@ export function DeleteUserDialog({ user, onClose, onDeleted }: DeleteUserDialogP
     setError(null);
     setSubmitting(true);
     try {
-      await deleteUser(user.id, confirmation.trim());
+      await deleteUser(user.id, requireEmailConfirm ? confirmation.trim() : undefined);
       onDeleted();
       onClose();
     } catch (err) {
@@ -46,18 +49,20 @@ export function DeleteUserDialog({ user, onClose, onDeleted }: DeleteUserDialogP
         </p>
 
         <form onSubmit={handleSubmit}>
-          <label>
-            Type the user's email to confirm
-            <input
-              type="text"
-              value={confirmation}
-              onChange={(e) => setConfirmation(e.target.value)}
-              placeholder={user.email}
-              autoComplete="off"
-              spellCheck={false}
-              autoFocus
-            />
-          </label>
+          {requireEmailConfirm && (
+            <label>
+              Type the user's email to confirm
+              <input
+                type="text"
+                value={confirmation}
+                onChange={(e) => setConfirmation(e.target.value)}
+                placeholder={user.email}
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus
+              />
+            </label>
+          )}
 
           {error && <p className="dialog-error">{error}</p>}
 

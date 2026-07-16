@@ -239,7 +239,7 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    if (req.body?.confirmEmail !== user.email) {
+    if (config.admin.deleteConfirmEmail && req.body?.confirmEmail !== user.email) {
       res.status(400).json({ error: 'Email confirmation does not match' });
       return;
     }

@@ -539,6 +539,10 @@ ADMIN_COOKIE_SECURE=true
 LLM_METRICS_RETENTION_DAYS=30
 ```
 
+By default, deleting a user from the admin console only needs a dialog
+confirmation (plus CSRF). To also require typing the account email before
+delete, set `ADMIN_DELETE_CONFIRM_EMAIL=true`.
+
 The detailed per-call metric collection expires after the configured number of
 days; compact daily totals remain. Prompts and responses are never stored.
 Although deployment can set `ADMIN_PASSWORD` and `MONGO_ROOT_PASSWORD` to the

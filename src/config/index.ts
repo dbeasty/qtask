@@ -90,6 +90,8 @@ export const config = {
       process.env.ADMIN_COOKIE_SECURE === 'true' ||
       (process.env.ADMIN_COOKIE_SECURE !== 'false' && (process.env.NODE_ENV ?? 'development') === 'production'),
     clientDist: process.env.ADMIN_CLIENT_DIST,
+    /** When true, admin delete-user requires typing the account email to confirm. */
+    deleteConfirmEmail: process.env.ADMIN_DELETE_CONFIRM_EMAIL === 'true',
   },
   llmMetrics: {
     retentionDays: Math.max(1, parseInt(process.env.LLM_METRICS_RETENTION_DAYS ?? '30', 10)),

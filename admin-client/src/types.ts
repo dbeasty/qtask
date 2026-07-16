@@ -1,15 +1,21 @@
 export type AdminAuthMode = 'password' | 'mtls';
 
+export interface AdminFeatures {
+  deleteConfirmEmail: boolean;
+}
+
 export interface SessionResponse {
   authenticated: boolean;
   authMode: AdminAuthMode;
   identity?: string;
   csrfToken?: string;
+  features: AdminFeatures;
 }
 
 export interface LoginResponse {
   identity: string;
   csrfToken: string;
+  features: AdminFeatures;
 }
 
 export interface AdminStats {
