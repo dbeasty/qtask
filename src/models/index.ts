@@ -137,14 +137,29 @@ const embeddingJobSchema = new Schema(
 
 export const EmbeddingJobModel = model('EmbeddingJob', embeddingJobSchema);
 
+const projectCollaboratorSchema = new Schema(
+  {
+    userId: { type: String, required: true },
+    role: {
+      type: String,
+      enum: ['editor', 'executor', 'viewer'],
+      required: true,
+    },
+  },
+  { _id: false }
+);
+
 const projectSchema = new Schema(
   {
     userId: { type: String, required: true, index: true },
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
+    collaborators: { type: [projectCollaboratorSchema], default: [] },
   },
   { timestamps: true }
 );
+
+projectSchema.index({ 'collaborators.userId': 1 });
 
 export const ProjectModel = model('Project', projectSchema);
 

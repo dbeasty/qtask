@@ -16,6 +16,7 @@ interface ProjectToolbarProps {
   onSelectProject: (projectId: string) => void;
   onRename: (projectId: string, name: string) => Promise<void>;
   onDeleteProject: () => void;
+  onManageMembers: () => void;
   onRefresh: () => void;
   onToggleCreateProject: () => void;
   onNewProjectNameChange: (name: string) => void;
@@ -38,12 +39,15 @@ export function ProjectToolbar({
   onSelectProject,
   onRename,
   onDeleteProject,
+  onManageMembers,
   onRefresh,
   onToggleCreateProject,
   onNewProjectNameChange,
   onCreateProject,
   onCancelCreateProject,
 }: ProjectToolbarProps) {
+  const canManageMembers = activeProject?.canManageMembers ?? false;
+  const memberCount = 1 + (activeProject?.collaborators.length ?? 0);
   const [expanded, setExpanded] = useState(false);
   const [name, setName] = useState(activeProject?.name ?? '');
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -163,11 +167,15 @@ export function ProjectToolbar({
                       setName(lastSavedRef.current);
                     }
                   }}
-                  disabled={saving}
+                  disabled={saving || !canManageMembers}
                   aria-label="Project name"
+                  readOnly={!canManageMembers}
                 />
               </label>
-              <span className="project-toolbar-meta">{taskCountLabel}</span>
+              <span className="project-toolbar-meta">
+                {taskCountLabel}
+                {activeProject.role !== 'owner' ? ` · ${activeProject.role}` : ''}
+              </span>
             </>
           )}
 
@@ -181,6 +189,16 @@ export function ProjectToolbar({
               {creatingProject ? 'Cancel' : 'New project'}
             </button>
             {activeProject && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onManageMembers}
+                disabled={loading || saving}
+              >
+                Members ({memberCount})
+              </button>
+            )}
+            {activeProject && canManageMembers && (
               <button
                 type="button"
                 className="danger-button"

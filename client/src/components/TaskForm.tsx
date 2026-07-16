@@ -47,6 +47,10 @@ interface TaskFormBaseProps {
   showProgressShare?: boolean;
   projects?: Project[];
   saving?: boolean;
+  /** When true, fields are non-editable (e.g. viewer role). */
+  disabled?: boolean;
+  /** When true with disabled, status may still be changed (e.g. executor role). */
+  statusEditable?: boolean;
   className?: string;
   readOnlyProgress?: boolean;
   progressValue?: number;
@@ -80,11 +84,17 @@ export function TaskForm(props: TaskFormProps) {
     showProgressShare = false,
     projects = [],
     saving = false,
+    disabled = false,
+    statusEditable = false,
     className,
     readOnlyProgress = false,
     progressValue,
     autoSave,
   } = props;
+
+  const fieldsDisabled = saving || disabled;
+  const statusDisabled = saving || (disabled && !statusEditable);
+  const canAutoSave = !disabled || statusEditable;
 
   const [values, setValues] = useState<TaskFormValues>(initialValues);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -134,7 +144,7 @@ export function TaskForm(props: TaskFormProps) {
 
   const performAutoSave = useCallback(
     async (nextValues: TaskFormValues) => {
-      if (!autoSave) return;
+      if (!autoSave || !canAutoSave) return;
 
       if (!nextValues.title.trim()) {
         setValidationError('Title is required');
@@ -173,19 +183,19 @@ export function TaskForm(props: TaskFormProps) {
         setSaveError(message);
       }
     },
-    [autoSave, clearSavedFade]
+    [autoSave, clearSavedFade, canAutoSave]
   );
 
   const scheduleAutoSave = useCallback(
     (nextValues: TaskFormValues) => {
-      if (!autoSave) return;
+      if (!autoSave || !canAutoSave) return;
 
       clearDebounce();
       debounceTimerRef.current = setTimeout(() => {
         void performAutoSave(nextValues);
       }, autoSave.debounceMs ?? 500);
     },
-    [autoSave, clearDebounce, performAutoSave]
+    [autoSave, clearDebounce, performAutoSave, canAutoSave]
   );
 
   const updateValues = useCallback(
@@ -193,13 +203,13 @@ export function TaskForm(props: TaskFormProps) {
       setValues((current) => {
         const next = updater(current);
         isDirtyRef.current = !valuesEqual(next, lastSavedRef.current);
-        if (autoSave) {
+        if (autoSave && canAutoSave) {
           scheduleAutoSave(next);
         }
         return next;
       });
     },
-    [autoSave, scheduleAutoSave]
+    [autoSave, scheduleAutoSave, canAutoSave]
   );
 
   const handleStatusChange = (status: TaskStatus) => {
@@ -272,7 +282,7 @@ export function TaskForm(props: TaskFormProps) {
           type="text"
           value={values.title}
           onChange={(event) => updateValues((current) => ({ ...current, title: event.target.value }))}
-          disabled={saving}
+          disabled={fieldsDisabled}
           autoFocus={mode === 'create'}
         />
       </label>
@@ -284,7 +294,7 @@ export function TaskForm(props: TaskFormProps) {
           onChange={(event) =>
             updateValues((current) => ({ ...current, description: event.target.value }))
           }
-          disabled={saving}
+          disabled={fieldsDisabled}
           rows={3}
         />
       </label>
@@ -295,7 +305,7 @@ export function TaskForm(props: TaskFormProps) {
           <select
             value={values.status}
             onChange={(event) => handleStatusChange(event.target.value as TaskStatus)}
-            disabled={saving}
+            disabled={statusDisabled}
           >
             {STATUS_OPTIONS.map((status) => (
               <option key={status} value={status}>
@@ -315,7 +325,7 @@ export function TaskForm(props: TaskFormProps) {
                 priority: event.target.value as TaskPriority,
               }))
             }
-            disabled={saving}
+            disabled={fieldsDisabled}
           >
             {PRIORITY_OPTIONS.map((priority) => (
               <option key={priority} value={priority}>
@@ -339,7 +349,7 @@ export function TaskForm(props: TaskFormProps) {
             <span>Progress</span>
             <TaskProgressSlider
               value={values.percentComplete}
-              disabled={saving}
+              disabled={fieldsDisabled}
               onChange={handlePercentChange}
             />
           </div>
@@ -353,7 +363,7 @@ export function TaskForm(props: TaskFormProps) {
                 step={0.25}
                 value={values.hoursSpent}
                 onChange={(event) => handleHoursChange('hoursSpent', event.target.value)}
-                disabled={saving}
+                disabled={fieldsDisabled}
                 placeholder="optional"
               />
             </label>
@@ -365,7 +375,7 @@ export function TaskForm(props: TaskFormProps) {
                 step={0.25}
                 value={values.hoursRemaining}
                 onChange={(event) => handleHoursChange('hoursRemaining', event.target.value)}
-                disabled={saving}
+                disabled={fieldsDisabled}
                 placeholder="optional"
               />
             </label>
@@ -379,7 +389,7 @@ export function TaskForm(props: TaskFormProps) {
           <TaskSplitInput
             value={values.progressShare}
             onChange={(progressShare) => updateValues((current) => ({ ...current, progressShare }))}
-            disabled={saving}
+            disabled={fieldsDisabled}
           />
         </div>
       )}
@@ -392,7 +402,7 @@ export function TaskForm(props: TaskFormProps) {
               value={values.projectName}
               projects={projects}
               onChange={(name) => updateValues((current) => ({ ...current, projectName: name }))}
-              disabled={saving}
+              disabled={fieldsDisabled}
             />
           </label>
 
@@ -402,7 +412,7 @@ export function TaskForm(props: TaskFormProps) {
               type="text"
               value={values.tags}
               onChange={(event) => updateValues((current) => ({ ...current, tags: event.target.value }))}
-              disabled={saving}
+              disabled={fieldsDisabled}
               placeholder="comma-separated"
             />
           </label>
@@ -411,7 +421,7 @@ export function TaskForm(props: TaskFormProps) {
 
       {!autoSave && (
         <div className="task-form-actions">
-          <button type="submit" className="primary-button" disabled={saving}>
+          <button type="submit" className="primary-button" disabled={fieldsDisabled}>
             {saving ? 'Saving…' : (props as TaskFormSubmitProps).submitLabel}
           </button>
           {(props as TaskFormSubmitProps).onCancel && (
@@ -419,7 +429,7 @@ export function TaskForm(props: TaskFormProps) {
               type="button"
               className="secondary-button"
               onClick={(props as TaskFormSubmitProps).onCancel}
-              disabled={saving}
+              disabled={fieldsDisabled}
             >
               Cancel
             </button>

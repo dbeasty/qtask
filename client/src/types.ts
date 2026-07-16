@@ -39,10 +39,28 @@ export interface Subtask {
   subtasks: Subtask[];
 }
 
+export type CollaboratorRole = 'editor' | 'executor' | 'viewer';
+export type ProjectRole = 'owner' | CollaboratorRole;
+
+export interface ProjectCollaborator {
+  userId: string;
+  email: string;
+  displayName?: string;
+  role: CollaboratorRole;
+}
+
 export interface Project {
   _id: string;
+  userId: string;
+  ownerEmail: string;
+  ownerDisplayName?: string;
   name: string;
   description?: string;
+  role: ProjectRole;
+  canEdit: boolean;
+  canUpdateStatus: boolean;
+  canManageMembers: boolean;
+  collaborators: ProjectCollaborator[];
   createdAt: string;
   updatedAt: string;
 }

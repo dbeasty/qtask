@@ -115,6 +115,36 @@ export async function deleteProject(
   return request(`/api/projects/${id}`, { method: 'DELETE' });
 }
 
+export async function addProjectCollaborator(
+  projectId: string,
+  body: { email?: string; userId?: string; role?: import('../types').CollaboratorRole }
+): Promise<{ project: import('../types').Project }> {
+  return request(`/api/projects/${projectId}/collaborators`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateProjectCollaborator(
+  projectId: string,
+  collaboratorUserId: string,
+  body: { role: import('../types').CollaboratorRole }
+): Promise<{ project: import('../types').Project }> {
+  return request(`/api/projects/${projectId}/collaborators/${collaboratorUserId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function removeProjectCollaborator(
+  projectId: string,
+  collaboratorUserId: string
+): Promise<{ left: boolean; project: import('../types').Project | null }> {
+  return request(`/api/projects/${projectId}/collaborators/${collaboratorUserId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function createTask(
   body: import('../types').CreateTaskInput
 ): Promise<{ task: import('../types').Task }> {

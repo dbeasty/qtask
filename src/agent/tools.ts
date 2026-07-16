@@ -205,12 +205,13 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'assign_task',
-    description: 'Assign a task to a user (Phase 1: sets assigneeId on the task).',
+    description:
+      'Assign a task to a project collaborator (sets assigneeId). The assignee must already be a project member.',
     parameters: {
       type: 'object',
       properties: {
         taskId: { type: 'string' },
-        assigneeId: { type: 'string' },
+        assigneeId: { type: 'string', description: 'User id of an existing project collaborator' },
       },
       required: ['taskId', 'assigneeId'],
     },
@@ -219,40 +220,152 @@ export const toolDefinitions: ToolDefinition[] = [
       assigneeId: z.string(),
     },
     async execute(userId, input) {
-      const task = await taskService.updateTask(
+      const task = await taskService.getTask(userId, String(input.taskId));
+      if (!task) return err('Task not found');
+      if (!task.projectId) return err('Task has no project');
+      const projectId = String(task.projectId);
+
+      const project = await projectService.getProject(userId, projectId);
+      if (!project) return err('Project not found');
+
+      const assigneeId = String(input.assigneeId);
+      const isMember =
+        project.userId === assigneeId ||
+        project.collaborators.some((c) => c.userId === assigneeId);
+      if (!isMember) {
+        return err('Assignee must be a project member. Use share_project first.');
+      }
+
+      const updated = await taskService.updateTask(
         userId,
         String(input.taskId),
-        { assigneeId: String(input.assigneeId) },
+        { assigneeId },
         'ai'
       );
-      if (!task) return err('Task not found');
-      return ok(JSON.stringify(task, null, 2));
+      if (!updated) return err('Task not found');
+      return ok(JSON.stringify(updated, null, 2));
+    },
+  },
+  {
+    name: 'share_project',
+    description:
+      'Add an existing QTask user as a project collaborator by email (or userId). Roles: editor, executor, viewer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        email: { type: 'string', description: 'Email of an existing QTask account' },
+        userId: { type: 'string', description: 'User id (alternative to email)' },
+        role: {
+          type: 'string',
+          enum: ['editor', 'executor', 'viewer'],
+          description: 'Collaborator role (default editor)',
+        },
+      },
+      required: ['projectId'],
+    },
+    zodShape: {
+      projectId: z.string(),
+      email: z.string().email().optional(),
+      userId: z.string().optional(),
+      role: z.enum(['editor', 'executor', 'viewer']).optional(),
+    },
+    async execute(userId, input) {
+      try {
+        const project = await projectService.addCollaborator(userId, String(input.projectId), {
+          email: input.email as string | undefined,
+          userId: input.userId as string | undefined,
+          role: input.role as 'editor' | 'executor' | 'viewer' | undefined,
+        });
+        return ok(JSON.stringify(project, null, 2));
+      } catch (error) {
+        return err(error instanceof Error ? error.message : 'Failed to share project');
+      }
     },
   },
   {
     name: 'share_task',
-    description: 'Share a task with a collaborator by assigning them (Phase 1 placeholder for collaboration).',
+    description:
+      'Share a task by adding the collaborator to its project (by email or userId) and assigning them.',
     parameters: {
       type: 'object',
       properties: {
         taskId: { type: 'string' },
-        collaboratorId: { type: 'string' },
+        email: { type: 'string', description: 'Email of an existing QTask account' },
+        collaboratorId: { type: 'string', description: 'User id (alternative to email)' },
+        role: {
+          type: 'string',
+          enum: ['editor', 'executor', 'viewer'],
+          description: 'Project role if they are not yet a member (default editor)',
+        },
       },
-      required: ['taskId', 'collaboratorId'],
+      required: ['taskId'],
     },
     zodShape: {
       taskId: z.string(),
-      collaboratorId: z.string(),
+      email: z.string().email().optional(),
+      collaboratorId: z.string().optional(),
+      role: z.enum(['editor', 'executor', 'viewer']).optional(),
     },
     async execute(userId, input) {
-      const task = await taskService.updateTask(
-        userId,
-        String(input.taskId),
-        { assigneeId: String(input.collaboratorId) },
-        'ai'
-      );
-      if (!task) return err('Task not found');
-      return ok(JSON.stringify({ message: 'Task shared via assigneeId', task }, null, 2));
+      try {
+        const task = await taskService.getTask(userId, String(input.taskId));
+        if (!task) return err('Task not found');
+        if (!task.projectId) return err('Task has no project');
+        const projectId = String(task.projectId);
+
+        const project = await projectService.getProject(userId, projectId);
+        if (!project) return err('Project not found');
+
+        let collaboratorUserId = input.collaboratorId as string | undefined;
+        const email = input.email as string | undefined;
+
+        const alreadyMember = collaboratorUserId
+          ? project.userId === collaboratorUserId ||
+            project.collaborators.some((c) => c.userId === collaboratorUserId)
+          : email
+            ? project.collaborators.some((c) => c.email === email.trim().toLowerCase())
+            : false;
+
+        if (!alreadyMember) {
+          const shared = await projectService.addCollaborator(userId, projectId, {
+            email,
+            userId: collaboratorUserId,
+            role: (input.role as 'editor' | 'executor' | 'viewer' | undefined) ?? 'editor',
+          });
+          const added = shared.collaborators.find(
+            (c) =>
+              (collaboratorUserId && c.userId === collaboratorUserId) ||
+              (email && c.email === email.trim().toLowerCase())
+          );
+          collaboratorUserId = added?.userId;
+        } else if (!collaboratorUserId && email) {
+          collaboratorUserId = project.collaborators.find(
+            (c) => c.email === email.trim().toLowerCase()
+          )?.userId;
+        }
+
+        if (!collaboratorUserId) {
+          return err('Could not resolve collaborator user id');
+        }
+
+        const updated = await taskService.updateTask(
+          userId,
+          String(input.taskId),
+          { assigneeId: collaboratorUserId },
+          'ai'
+        );
+        if (!updated) return err('Task not found');
+        return ok(
+          JSON.stringify(
+            { message: 'Collaborator added to project and assigned to task', task: updated },
+            null,
+            2
+          )
+        );
+      } catch (error) {
+        return err(error instanceof Error ? error.message : 'Failed to share task');
+      }
     },
   },
   {

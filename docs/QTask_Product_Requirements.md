@@ -114,7 +114,7 @@ When a user signs in with a Google, Microsoft, or Apple account, QTask should be
 
 Sharing is a core feature, not an afterthought. Collaborators may use different identity providers, or no linked account at all — QTask's own backend is the source of truth for who has access to what, independent of which cloud account (if any) a user signed in with.
 
-- Sharer / collaborator list: every project (and optionally every individual task) has a list of collaborators with defined roles (owner, editor, commenter, viewer).
+- Sharer / collaborator list: every project (and optionally every individual task) has a list of collaborators with defined roles (owner, editor, executor, viewer).
 - Invite by email: a person without any existing QTask, Google, Microsoft, or Apple account can be invited by email; QTask sends an invite link and creates a pending collaborator record.
 - Cross-provider identity: a collaborator's identity (Google-signed-in, Microsoft-signed-in, Apple-signed-in, or email-only) is tracked independently of how the resource owner signed in — access control lives entirely in QTask's backend, not in any single provider's system.
 - Task delegation: a user can hand off an entire task (reassign) or share a subset (e.g. specific subtasks) with another collaborator.

@@ -10,11 +10,18 @@ import type {
   UpdateSubtaskInput,
   UpdateTaskInput,
 } from '../types/task.js';
+import { canEditProject, roleAtLeast, type ProjectRole } from '../types/project.js';
+import { HttpError } from '../utils/httpError.js';
 import { applyPercentComplete } from '../utils/percentComplete.js';
 import { buildSubtaskTree, serializeTask } from '../utils/serialization.js';
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
-import { buildTaskEmbeddingText, cosineSimilarity, generateEmbedding } from './embeddingService.js';
+import { cosineSimilarity, generateEmbedding } from './embeddingService.js';
+
+async function projects() {
+  const { projectService } = await import('./projectService.js');
+  return projectService;
+}
 
 type ProgressNode = Record<string, unknown> & {
   status?: string;
@@ -91,12 +98,74 @@ function finalizeTaskProgress(task: {
 }
 
 export class TaskService {
+  private async accessibleTaskQuery(userId: string): Promise<Record<string, unknown>> {
+    const projectIds = await (await projects()).listAccessibleProjectIds(userId);
+    if (projectIds.length === 0) {
+      return { userId };
+    }
+    return {
+      $or: [{ userId }, { projectId: { $in: projectIds } }],
+    };
+  }
+
+  /**
+   * Load a task the user can access. Non-members get null (404);
+   * members below minRole get 403.
+   */
+  private async loadAccessibleTask(userId: string, taskId: string, minRole: ProjectRole = 'viewer') {
+    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, minRole);
+    return loaded?.task ?? null;
+  }
+
+  private async loadAccessibleTaskWithRole(
+    userId: string,
+    taskId: string,
+    minRole: ProjectRole = 'viewer'
+  ) {
+    const task = await TaskModel.findById(taskId);
+    if (!task) return null;
+
+    if (task.projectId) {
+      const access = await (await projects()).getProjectAccess(userId, String(task.projectId));
+      if (!access) return null;
+      if (!roleAtLeast(access.role, minRole)) {
+        throw new HttpError(403, 'Insufficient project permissions');
+      }
+      return { task, role: access.role };
+    }
+
+    if (task.userId !== userId) return null;
+    return { task, role: 'owner' as ProjectRole };
+  }
+
+  private assertStatusOnlyUpdate(input: Record<string, unknown>) {
+    const provided = Object.entries(input).filter(([, value]) => value !== undefined);
+    const disallowed = provided.filter(([key]) => key !== 'status').map(([key]) => key);
+    if (disallowed.length > 0) {
+      throw new HttpError(403, 'Executors may only update task status');
+    }
+    if (!provided.some(([key]) => key === 'status')) {
+      throw new HttpError(400, 'status is required');
+    }
+  }
+
+  private async requireProjectEdit(userId: string, projectId: string) {
+    await (await projects()).assertProjectAccess(userId, projectId, 'editor');
+  }
+
   async createTask(userId: string, input: CreateTaskInput, source: 'user' | 'ai' = 'user') {
     const subtasks = (input.subtasks ?? []).map(buildSubtaskTree);
 
+    let projectId = input.projectId;
+    if (projectId) {
+      await this.requireProjectEdit(userId, projectId);
+    } else {
+      projectId = await (await projects()).ensureDefaultProject(userId);
+    }
+
     const taskDoc = new TaskModel({
       userId,
-      projectId: input.projectId,
+      projectId,
       title: input.title,
       description: input.description,
       status: input.status ?? 'todo',
@@ -109,8 +178,8 @@ export class TaskService {
       links: [],
     });
 
-    if (input.projectId) {
-      const minTask = await TaskModel.findOne({ userId, projectId: input.projectId })
+    if (projectId) {
+      const minTask = await TaskModel.findOne({ projectId })
         .sort({ sortOrder: 1 })
         .select('sortOrder')
         .lean();
@@ -137,15 +206,20 @@ export class TaskService {
   }
 
   async getTask(userId: string, taskId: string) {
-    const task = await TaskModel.findOne({ _id: taskId, userId }).lean();
+    const task = await this.loadAccessibleTask(userId, taskId, 'viewer');
     if (!task) return null;
 
-    const withPercent = applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]);
+    const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
     return serializeTask(withPercent as unknown as Record<string, unknown>);
   }
 
   async listTasks(userId: string, filters: TaskSearchFilters = {}) {
-    const query: Record<string, unknown> = { userId };
+    if (filters.projectId) {
+      await (await projects()).assertProjectAccess(userId, filters.projectId, 'viewer');
+    }
+
+    const accessQuery = await this.accessibleTaskQuery(userId);
+    const query: Record<string, unknown> = { ...accessQuery };
 
     if (filters.status) {
       query.status = Array.isArray(filters.status) ? { $in: filters.status } : filters.status;
@@ -172,7 +246,6 @@ export class TaskService {
         .sort({ score: { $meta: 'textScore' } })
         .lean();
 
-      const textIds = new Set(textMatches.map((t) => String(t._id)));
       const semanticMatches = await this.semanticSearch(userId, filters.query, query);
 
       const merged = new Map<string, { task: Record<string, unknown>; score: number }>();
@@ -221,39 +294,48 @@ export class TaskService {
     input: UpdateTaskInput,
     source: 'user' | 'ai' = 'user'
   ) {
-    const task = await TaskModel.findOne({ _id: taskId, userId });
-    if (!task) return null;
+    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor');
+    if (!loaded) return null;
+    const { task, role } = loaded;
 
     const changes: Record<string, unknown> = {};
 
-    if (input.title !== undefined) {
-      task.title = input.title;
-      changes.title = input.title;
-    }
-    if (input.description !== undefined) {
-      task.description = input.description;
-      changes.description = input.description;
-    }
-    if (input.priority !== undefined) {
-      task.priority = input.priority;
-      changes.priority = input.priority;
-    }
-    if (input.dueDate !== undefined) {
-      task.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
-      changes.dueDate = input.dueDate;
-    }
-    if (input.tags !== undefined) {
-      task.tags = input.tags;
-      changes.tags = input.tags;
-    }
-    applyProgressInputFields(task as unknown as ProgressNode, input, changes);
-    if (input.projectId !== undefined) {
-      task.projectId = input.projectId === null ? undefined : input.projectId;
-      changes.projectId = input.projectId;
-    }
-    if (input.assigneeId !== undefined) {
-      task.assigneeId = input.assigneeId === null ? undefined : input.assigneeId;
-      changes.assigneeId = input.assigneeId;
+    if (!canEditProject(role)) {
+      this.assertStatusOnlyUpdate(input as Record<string, unknown>);
+      applyProgressInputFields(task as unknown as ProgressNode, { status: input.status }, changes);
+    } else {
+      if (input.title !== undefined) {
+        task.title = input.title;
+        changes.title = input.title;
+      }
+      if (input.description !== undefined) {
+        task.description = input.description;
+        changes.description = input.description;
+      }
+      if (input.priority !== undefined) {
+        task.priority = input.priority;
+        changes.priority = input.priority;
+      }
+      if (input.dueDate !== undefined) {
+        task.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
+        changes.dueDate = input.dueDate;
+      }
+      if (input.tags !== undefined) {
+        task.tags = input.tags;
+        changes.tags = input.tags;
+      }
+      applyProgressInputFields(task as unknown as ProgressNode, input, changes);
+      if (input.projectId !== undefined) {
+        if (input.projectId !== null) {
+          await this.requireProjectEdit(userId, input.projectId);
+        }
+        task.projectId = input.projectId === null ? undefined : input.projectId;
+        changes.projectId = input.projectId;
+      }
+      if (input.assigneeId !== undefined) {
+        task.assigneeId = input.assigneeId === null ? undefined : input.assigneeId;
+        changes.assigneeId = input.assigneeId;
+      }
     }
 
     finalizeTaskProgress(task);
@@ -273,14 +355,17 @@ export class TaskService {
   }
 
   async deleteTask(userId: string, taskId: string) {
-    const result = await TaskModel.findOneAndDelete({ _id: taskId, userId });
-    if (!result) return false;
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+    if (!task) return false;
+
+    const title = task.title;
+    await task.deleteOne();
 
     await logActivity({
       taskId,
       userId,
       action: 'task.deleted',
-      details: { title: result.title },
+      details: { title },
     });
 
     return true;
@@ -292,8 +377,8 @@ export class TaskService {
     }
 
     const [task, linkedTask] = await Promise.all([
-      TaskModel.findOne({ _id: taskId, userId }),
-      TaskModel.findOne({ _id: linkedTaskId, userId }),
+      this.loadAccessibleTask(userId, taskId, 'editor'),
+      this.loadAccessibleTask(userId, linkedTaskId, 'editor'),
     ]);
 
     if (!task || !linkedTask) return null;
@@ -315,7 +400,7 @@ export class TaskService {
   }
 
   async removeLink(userId: string, taskId: string, linkedTaskId: string, type: TaskLinkType) {
-    const task = await TaskModel.findOne({ _id: taskId, userId });
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
     if (!task) return null;
 
     task.links = task.links.filter((l) => !(l.taskId === linkedTaskId && l.type === type)) as typeof task.links;
@@ -332,8 +417,9 @@ export class TaskService {
   }
 
   async getWorkload(userId: string, assigneeId?: string) {
+    const accessQuery = await this.accessibleTaskQuery(userId);
     const query: Record<string, unknown> = {
-      userId,
+      ...accessQuery,
       status: { $in: ['todo', 'in_progress'] },
     };
 
@@ -363,7 +449,7 @@ export class TaskService {
     subtaskPath: string[],
     input: CreateTaskInput['subtasks'] extends (infer U)[] | undefined ? U : never
   ) {
-    const task = await TaskModel.findOne({ _id: taskId, userId });
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
     if (!task) return null;
 
     const newSubtask = buildSubtaskTree(input);
@@ -399,8 +485,9 @@ export class TaskService {
     input: UpdateSubtaskInput,
     source: 'user' | 'ai' = 'user'
   ) {
-    const task = await TaskModel.findOne({ _id: taskId, userId });
-    if (!task || subtaskPath.length === 0) return null;
+    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor');
+    if (!loaded || subtaskPath.length === 0) return null;
+    const { task, role } = loaded;
 
     const subtask = this.findSubtaskByPath(task.subtasks, subtaskPath);
     if (!subtask) return null;
@@ -408,27 +495,32 @@ export class TaskService {
     const changes: Record<string, unknown> = {};
     const node = subtask as Record<string, unknown>;
 
-    if (input.title !== undefined) {
-      node.title = input.title;
-      changes.title = input.title;
+    if (!canEditProject(role)) {
+      this.assertStatusOnlyUpdate(input as Record<string, unknown>);
+      applyProgressInputFields(node as ProgressNode, { status: input.status }, changes);
+    } else {
+      if (input.title !== undefined) {
+        node.title = input.title;
+        changes.title = input.title;
+      }
+      if (input.description !== undefined) {
+        node.description = input.description;
+        changes.description = input.description;
+      }
+      if (input.priority !== undefined) {
+        node.priority = input.priority;
+        changes.priority = input.priority;
+      }
+      if (input.dueDate !== undefined) {
+        node.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
+        changes.dueDate = input.dueDate;
+      }
+      if (input.tags !== undefined) {
+        node.tags = input.tags;
+        changes.tags = input.tags;
+      }
+      applyProgressInputFields(node as ProgressNode, input, changes);
     }
-    if (input.description !== undefined) {
-      node.description = input.description;
-      changes.description = input.description;
-    }
-    if (input.priority !== undefined) {
-      node.priority = input.priority;
-      changes.priority = input.priority;
-    }
-    if (input.dueDate !== undefined) {
-      node.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
-      changes.dueDate = input.dueDate;
-    }
-    if (input.tags !== undefined) {
-      node.tags = input.tags;
-      changes.tags = input.tags;
-    }
-    applyProgressInputFields(node as ProgressNode, input, changes);
 
     finalizeTaskProgress(task);
     task.markModified('subtasks');
@@ -452,7 +544,7 @@ export class TaskService {
       throw new Error('fromPath is required');
     }
 
-    const task = await TaskModel.findOne({ _id: taskId, userId });
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
     if (!task) return null;
 
     const nodeId = fromPath[fromPath.length - 1]!;
@@ -502,7 +594,7 @@ export class TaskService {
   async promoteSubtaskToTask(userId: string, taskId: string, subtaskPath: string[]) {
     if (subtaskPath.length === 0) return null;
 
-    const task = await TaskModel.findOne({ _id: taskId, userId });
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
     if (!task) return null;
 
     const subtaskId = subtaskPath[subtaskPath.length - 1]!;
@@ -516,10 +608,9 @@ export class TaskService {
     const [node] = currentParentArray.splice(fromIndex, 1);
     const nodeObj = node as Record<string, unknown>;
 
-    let projectId = task.projectId;
+    let projectId = task.projectId ? String(task.projectId) : undefined;
     if (!projectId) {
-      const { projectService } = await import('./projectService.js');
-      projectId = await projectService.ensureDefaultProject(userId);
+      projectId = await (await projects()).ensureDefaultProject(userId);
     }
 
     const promotedDoc = new TaskModel({
@@ -541,7 +632,7 @@ export class TaskService {
       links: nodeObj.links ?? [],
     });
 
-    const minTask = await TaskModel.findOne({ userId, projectId })
+    const minTask = await TaskModel.findOne({ projectId })
       .sort({ sortOrder: 1 })
       .select('sortOrder')
       .lean();
@@ -591,8 +682,8 @@ export class TaskService {
     }
 
     const [sourceTask, targetTask] = await Promise.all([
-      TaskModel.findOne({ _id: sourceTaskId, userId }),
-      TaskModel.findOne({ _id: targetTaskId, userId }),
+      this.loadAccessibleTask(userId, sourceTaskId, 'editor'),
+      this.loadAccessibleTask(userId, targetTaskId, 'editor'),
     ]);
 
     if (!sourceTask || !targetTask) return null;
@@ -627,7 +718,7 @@ export class TaskService {
     finalizeTaskProgress(targetTask);
     targetTask.markModified('subtasks');
     await targetTask.save();
-    await TaskModel.deleteOne({ _id: sourceTaskId, userId });
+    await TaskModel.deleteOne({ _id: sourceTaskId });
     await enqueueEmbeddingJob(targetTaskId);
 
     await logActivity({
@@ -651,7 +742,9 @@ export class TaskService {
   }
 
   async reorderProjectTask(userId: string, projectId: string, taskId: string, index: number) {
-    const tasks = await TaskModel.find({ userId, projectId }).sort({ sortOrder: 1, createdAt: -1 });
+    await this.requireProjectEdit(userId, projectId);
+
+    const tasks = await TaskModel.find({ projectId }).sort({ sortOrder: 1, createdAt: -1 });
     const orderedIds = tasks.map((task) => String(task._id));
     const fromIndex = orderedIds.indexOf(taskId);
     if (fromIndex === -1) return null;
@@ -661,9 +754,7 @@ export class TaskService {
     orderedIds.splice(clampedIndex, 0, movedId!);
 
     await Promise.all(
-      orderedIds.map((id, sortOrder) =>
-        TaskModel.updateOne({ _id: id, userId }, { $set: { sortOrder } })
-      )
+      orderedIds.map((id, sortOrder) => TaskModel.updateOne({ _id: id }, { $set: { sortOrder } }))
     );
 
     await logActivity({
@@ -673,11 +764,11 @@ export class TaskService {
       details: { projectId, index: clampedIndex },
     });
 
-    return this.listTasks(userId);
+    return this.listTasks(userId, { projectId });
   }
 
   async deleteSubtask(userId: string, taskId: string, subtaskPath: string[]) {
-    const task = await TaskModel.findOne({ _id: taskId, userId });
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
     if (!task || subtaskPath.length === 0) return null;
 
     const subtaskId = subtaskPath[subtaskPath.length - 1]!;
@@ -752,8 +843,7 @@ export class TaskService {
     task: { projectId?: unknown }
   ): Promise<string> {
     if (task.projectId) return String(task.projectId);
-    const { projectService } = await import('./projectService.js');
-    return projectService.ensureDefaultProject(userId);
+    return (await projects()).ensureDefaultProject(userId);
   }
 
   private getParentArray(

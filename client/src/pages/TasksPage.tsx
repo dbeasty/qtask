@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  addProjectCollaborator,
   addSubtask,
   attachTaskAsSubtask,
   createProject,
@@ -11,11 +12,14 @@ import {
   listTasks,
   moveSubtask,
   promoteSubtask,
+  removeProjectCollaborator,
   reorderProjectTask,
   updateProject,
+  updateProjectCollaborator,
   updateSubtask,
   updateTask,
 } from '../api/client';
+import { useAuth } from '../auth/AuthContext';
 import {
   emptyFormValues,
   parseOptionalNumber,
@@ -23,10 +27,11 @@ import {
   TaskForm,
   type TaskFormValues,
 } from '../components/TaskForm';
+import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectToolbar } from '../components/ProjectToolbar';
 import { TaskListPanel } from '../components/TaskListPanel';
 import { type Selection } from '../components/TaskHierarchyTree';
-import type { Project, Subtask, Task, UpdateTaskInput } from '../types';
+import type { CollaboratorRole, Project, Subtask, Task, UpdateTaskInput } from '../types';
 import {
   getDefaultProject,
   groupTasksByProject,
@@ -170,6 +175,7 @@ function subtaskParentPath(selection: Selection): string[] {
 }
 
 export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }: TasksPageProps) {
+  const { user } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -183,6 +189,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   const [newProjectName, setNewProjectName] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [taskListExpanded, setTaskListExpanded] = useState(true);
+  const [membersOpen, setMembersOpen] = useState(false);
   const lastExternalRefreshKey = useRef(externalRefreshKey);
 
   useEffect(() => {
@@ -303,7 +310,14 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   const handleDetailSave = async (values: TaskFormValues) => {
     if (!selection || !selectedTask) return;
 
+    const statusOnly = !activeProject?.canEdit && Boolean(activeProject?.canUpdateStatus);
+
     if (selection.kind === 'task') {
+      if (statusOnly) {
+        const { task } = await updateTask(selectedTask._id, { status: values.status });
+        applyTaskUpdate(task);
+        return;
+      }
       const projectId = await resolveAndRefreshProjects(values.projectName);
       const progressPatch = selectedTask.subtasks.length === 0 ? buildProgressPatch(values) : {};
       const { task } = await updateTask(selectedTask._id, {
@@ -317,6 +331,13 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       });
       applyTaskUpdate(task);
     } else {
+      if (statusOnly) {
+        const { task } = await updateSubtask(selectedTask._id, selection.path, {
+          status: values.status,
+        });
+        applyTaskUpdate(task);
+        return;
+      }
       const isLeaf = (findSubtaskByPath(selectedTask.subtasks, selection.path)?.subtasks.length ?? 0) === 0;
       const progressPatch = isLeaf ? buildProgressPatch(values) : {};
       const { task } = await updateSubtask(selectedTask._id, selection.path, {
@@ -560,6 +581,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
 
   const handleDeleteProject = async () => {
     if (!resolvedActiveProjectId || !activeProject) return;
+    if (!activeProject.canManageMembers) return;
 
     const taskCount = activeProjectTasks.length;
     const message =
@@ -581,6 +603,54 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       resetHierarchyModes();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to delete project');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const replaceProject = (project: Project) => {
+    setProjects((current) => current.map((item) => (item._id === project._id ? project : item)));
+  };
+
+  const handleAddCollaborator = async (email: string, role: CollaboratorRole) => {
+    if (!activeProject) return;
+    setSaving(true);
+    try {
+      const { project } = await addProjectCollaborator(activeProject._id, { email, role });
+      replaceProject(project);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUpdateCollaboratorRole = async (collaboratorUserId: string, role: CollaboratorRole) => {
+    if (!activeProject) return;
+    setSaving(true);
+    try {
+      const { project } = await updateProjectCollaborator(activeProject._id, collaboratorUserId, {
+        role,
+      });
+      replaceProject(project);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemoveCollaborator = async (collaboratorUserId: string) => {
+    if (!activeProject) return;
+    setSaving(true);
+    try {
+      const result = await removeProjectCollaborator(activeProject._id, collaboratorUserId);
+      if (result.left || !result.project) {
+        setMembersOpen(false);
+        const [taskResponse, projectResponse] = await Promise.all([listTasks(), listProjects()]);
+        setTasks(taskResponse.tasks);
+        setProjects(projectResponse.projects);
+        setActiveProjectId(projectResponse.projects[0]?._id ?? null);
+        setSelection(null);
+      } else {
+        replaceProject(result.project);
+      }
     } finally {
       setSaving(false);
     }
@@ -688,6 +758,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             onSelectProject={handleSelectProject}
             onRename={handleRenameProject}
             onDeleteProject={handleDeleteProject}
+            onManageMembers={() => setMembersOpen(true)}
             onRefresh={refresh}
             onToggleCreateProject={() => {
               setCreatingProject((current) => !current);
@@ -701,6 +772,18 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             }}
           />
 
+          {membersOpen && activeProject && user && (
+            <ProjectMembersDialog
+              project={activeProject}
+              currentUserId={user.id}
+              saving={saving}
+              onClose={() => setMembersOpen(false)}
+              onAdd={handleAddCollaborator}
+              onUpdateRole={handleUpdateCollaboratorRole}
+              onRemove={handleRemoveCollaborator}
+            />
+          )}
+
           <div className={`tasks-layout${taskListExpanded ? '' : ' tasks-layout-task-list-collapsed'}`}>
             {taskListExpanded && activeProjectGroup && (
               <TaskListPanel
@@ -709,8 +792,8 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
                 saving={saving}
                 addTaskLabel={addTaskLabel}
                 addSubtaskLabel={addSubtaskButtonLabel}
-                showAddSubtask={hasSelection}
-                addDisabled={!resolvedActiveProjectId}
+                showAddSubtask={Boolean(hasSelection && activeProject?.canEdit)}
+                addDisabled={!resolvedActiveProjectId || !activeProject?.canEdit}
                 onAddTaskClick={handleAddTaskClick}
                 onAddSubtaskClick={handleAddSubtaskClick}
                 onDelete={handleDelete}
@@ -782,6 +865,8 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
                   readOnlyProgress={isParentDetail}
                   progressValue={detail.percentComplete}
                   projects={projects}
+                  disabled={!activeProject?.canEdit}
+                  statusEditable={Boolean(activeProject?.canUpdateStatus)}
                   autoSave={{ onSave: handleDetailSave }}
                 />
               </article>

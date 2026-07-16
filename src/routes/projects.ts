@@ -1,8 +1,25 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { getUserId } from '../middleware/index.js';
+import { validateBody } from '../middleware/validate.js';
 import { projectService } from '../services/projectService.js';
+import { COLLABORATOR_ROLES } from '../types/project.js';
 
 export const projectsRouter = Router();
+
+const addCollaboratorSchema = z
+  .object({
+    email: z.string().email().optional(),
+    userId: z.string().min(1).optional(),
+    role: z.enum(COLLABORATOR_ROLES).optional(),
+  })
+  .refine((body) => Boolean(body.email || body.userId), {
+    message: 'email or userId is required',
+  });
+
+const updateCollaboratorSchema = z.object({
+  role: z.enum(COLLABORATOR_ROLES),
+});
 
 projectsRouter.get('/', async (req, res, next) => {
   try {
@@ -40,10 +57,6 @@ projectsRouter.patch('/:id', async (req, res, next) => {
     }
     res.json({ project });
   } catch (error) {
-    if (error instanceof Error && error.message.includes('cannot be empty')) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
     next(error);
   }
 });
@@ -70,6 +83,53 @@ projectsRouter.delete('/:id', async (req, res, next) => {
       res.status(404).json({ error: 'Project not found' });
       return;
     }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+projectsRouter.post(
+  '/:id/collaborators',
+  validateBody(addCollaboratorSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const project = await projectService.addCollaborator(userId, String(req.params.id), req.body);
+      res.status(201).json({ project });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+projectsRouter.patch(
+  '/:id/collaborators/:collaboratorUserId',
+  validateBody(updateCollaboratorSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const project = await projectService.updateCollaboratorRole(
+        userId,
+        String(req.params.id),
+        String(req.params.collaboratorUserId),
+        req.body.role
+      );
+      res.json({ project });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+projectsRouter.delete('/:id/collaborators/:collaboratorUserId', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const result = await projectService.removeCollaborator(
+      userId,
+      String(req.params.id),
+      String(req.params.collaboratorUserId)
+    );
     res.json(result);
   } catch (error) {
     next(error);

@@ -244,17 +244,41 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
       return;
     }
     const userId = String(user._id);
-    const taskIds = await TaskModel.find({ userId }).distinct('_id');
-    const [tasks, projects, conversations, activities, embeddingJobs, metrics, dailyMetrics] = await Promise.all([
-      TaskModel.deleteMany({ userId }),
-      ProjectModel.deleteMany({ userId }),
-      ConversationModel.deleteMany({ userId }),
-      ActivityModel.deleteMany({ userId }),
-      EmbeddingJobModel.deleteMany({ taskId: { $in: taskIds.map(String) } }),
-      LlmCallMetricModel.deleteMany({ userId }),
-      LlmDailyMetricModel.deleteMany({ userId }),
-    ]);
+    const ownedProjectIds = (await ProjectModel.find({ userId }).distinct('_id')).map(String);
+    // Delete everything in owned projects, plus orphan tasks with no project.
+    // Tasks created in someone else's shared project are kept.
+    const orphanFilter = {
+      userId,
+      $or: [{ projectId: { $exists: false } }, { projectId: null }, { projectId: '' }],
+    };
+    const taskIdsToDelete = [
+      ...(ownedProjectIds.length
+        ? await TaskModel.find({ projectId: { $in: ownedProjectIds } }).distinct('_id')
+        : []),
+      ...(await TaskModel.find(orphanFilter).distinct('_id')),
+    ].map(String);
+
+    const [tasksInOwned, orphanTasks, projects, conversations, activities, embeddingJobs, metrics, dailyMetrics] =
+      await Promise.all([
+        ownedProjectIds.length
+          ? TaskModel.deleteMany({ projectId: { $in: ownedProjectIds } })
+          : Promise.resolve({ deletedCount: 0 }),
+        TaskModel.deleteMany(orphanFilter),
+        ProjectModel.deleteMany({ userId }),
+        ConversationModel.deleteMany({ userId }),
+        ActivityModel.deleteMany({ userId }),
+        EmbeddingJobModel.deleteMany({ taskId: { $in: taskIdsToDelete } }),
+        LlmCallMetricModel.deleteMany({ userId }),
+        LlmDailyMetricModel.deleteMany({ userId }),
+      ]);
+    await ProjectModel.updateMany(
+      { 'collaborators.userId': userId },
+      { $pull: { collaborators: { userId } } }
+    );
     await UserModel.deleteOne({ _id: user._id });
+    const tasks = {
+      deletedCount: (tasksInOwned.deletedCount ?? 0) + (orphanTasks.deletedCount ?? 0),
+    };
     await AdminAuditModel.create({
       adminIdentity: req.admin!.identity,
       action: 'delete_user',

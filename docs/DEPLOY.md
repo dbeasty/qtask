@@ -170,7 +170,7 @@ Operators can also set `REGISTRATION_ENABLED=false` to close signup for capacity
 
 All `/api/tasks`, `/api/projects`, and `/api/chat` routes require a valid JWT.
 
-Each user has isolated projects and tasks. Sharing between users is not yet implemented (PRD Phase 3).
+Each user has their own projects by default. Project owners can share a project with other existing accounts (roles: editor, executor, viewer). Email invites for users without an account are not yet implemented.
 
 ---
 

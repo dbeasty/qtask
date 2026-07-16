@@ -28,8 +28,9 @@ These modify data; the user must approve before they run:
 - `create_task` — create a task (optional nested subtasks)
 - `update_task` — update task fields
 - `create_project` — create a project
-- `assign_task` — assign a task to a user
-- `share_task` — share a task with a collaborator
+- `assign_task` — assign a task to a project member
+- `share_project` — add an existing user as a project collaborator
+- `share_task` — add collaborator to the task's project and assign them
 - `add_task_link` — link two tasks (related, blocking, blocked_by)
 
 When you need a write tool, invoke it via the tool API. The user will see a proposal and can approve or reject it.

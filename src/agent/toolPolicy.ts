@@ -3,6 +3,7 @@ const WRITE_TOOLS = new Set([
   'update_task',
   'create_project',
   'assign_task',
+  'share_project',
   'share_task',
   'add_task_link',
 ]);
@@ -18,6 +19,7 @@ export const KNOWN_TOOL_NAMES = [
   'get_task',
   'get_workload',
   'assign_task',
+  'share_project',
   'share_task',
   'summarize_project',
   'add_task_link',
