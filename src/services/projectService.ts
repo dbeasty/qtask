@@ -14,6 +14,7 @@ import {
 } from '../types/project.js';
 import { taskService } from './taskService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
+import type { StagingContext } from '../types/staging.js';
 
 export const DEFAULT_PROJECT_NAME = 'Project One';
 
@@ -25,6 +26,7 @@ type LeanProject = {
   collaborators?: Array<{ userId: string; role: CollaboratorRole }> | null;
   createdAt: Date;
   updatedAt: Date;
+  staging?: StagingContext & { stagedAt: Date };
 };
 
 function normalizeEmail(email: string): string {
@@ -101,9 +103,11 @@ export class ProjectService {
   }
 
   async ensureDefaultProject(userId: string): Promise<string> {
-    const count = await ProjectModel.countDocuments({ userId });
+    const count = await ProjectModel.countDocuments({ userId, staging: { $exists: false } });
     if (count > 0) {
-      const existing = await ProjectModel.findOne({ userId }).sort({ createdAt: 1 }).lean();
+      const existing = await ProjectModel.findOne({ userId, staging: { $exists: false } })
+        .sort({ createdAt: 1 })
+        .lean();
       return String(existing!._id);
     }
 
@@ -114,6 +118,7 @@ export class ProjectService {
   /** Projects the user owns or collaborates on. */
   accessibleProjectFilter(userId: string) {
     return {
+      staging: { $exists: false },
       $or: [{ userId }, { 'collaborators.userId': userId }],
     };
   }
@@ -159,6 +164,20 @@ export class ProjectService {
     return access;
   }
 
+  async assertProjectAccessForStaging(
+    userId: string,
+    projectId: string,
+    staging: StagingContext
+  ): Promise<void> {
+    const project = await ProjectModel.findOne({
+      _id: projectId,
+      userId,
+      'staging.conversationId': staging.conversationId,
+    }).lean();
+    if (project) return;
+    await this.assertProjectAccess(userId, projectId, 'editor');
+  }
+
   async updateProject(
     userId: string,
     projectId: string,
@@ -184,12 +203,29 @@ export class ProjectService {
     return serializeProject(project.toObject() as LeanProject, userId);
   }
 
-  async createProject(userId: string, name: string, description?: string) {
+  async createProject(
+    userId: string,
+    name: string,
+    description?: string,
+    staging?: StagingContext
+  ) {
+    if (staging) {
+      const existing = await ProjectModel.findOne({
+        userId,
+        name,
+        'staging.conversationId': staging.conversationId,
+      }).lean();
+      if (existing) {
+        return serializeProject(existing as LeanProject, userId);
+      }
+    }
+
     const project = await ProjectModel.create({
       userId,
       name,
       description,
       collaborators: [],
+      staging: staging ? { ...staging, stagedAt: new Date() } : undefined,
     });
     return serializeProject(project.toObject() as LeanProject, userId);
   }

@@ -1,6 +1,14 @@
 import { Schema, model } from 'mongoose';
 import type { TaskStatus, TaskPriority, TaskLinkType } from '../types/task.js';
 
+const userPreferencesSchema = new Schema(
+  {
+    autoApproveProposals: { type: Boolean, default: false },
+    skipConfirmations: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
 const userSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -16,6 +24,7 @@ const userSchema = new Schema(
     lastLoginAt: { type: Date },
     lastActiveAt: { type: Date },
     mustChangePassword: { type: Boolean, default: false },
+    preferences: { type: userPreferencesSchema, default: () => ({}) },
   },
   { timestamps: true }
 );
@@ -30,6 +39,15 @@ const taskLinkSchema = new Schema(
       enum: ['related', 'blocking', 'blocked_by'] satisfies TaskLinkType[],
       required: true,
     },
+  },
+  { _id: false }
+);
+
+const stagingSchema = new Schema(
+  {
+    conversationId: { type: String, required: true, index: true },
+    proposalId: { type: String, required: true },
+    stagedAt: { type: Date, required: true, default: Date.now, index: true },
   },
   { _id: false }
 );
@@ -99,6 +117,7 @@ const taskSchema = new Schema(
     sortOrder: { type: Number, default: 0 },
     assigneeId: { type: String, index: true },
     embedding: { type: [Number] },
+    staging: { type: stagingSchema },
   },
   { timestamps: true }
 );
@@ -155,6 +174,7 @@ const projectSchema = new Schema(
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
     collaborators: { type: [projectCollaboratorSchema], default: [] },
+    staging: { type: stagingSchema },
   },
   { timestamps: true }
 );

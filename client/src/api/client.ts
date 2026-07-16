@@ -244,6 +244,24 @@ export async function getConversation(id: string): Promise<{ conversation: impor
   return request(`/api/conversations/${id}`);
 }
 
+export async function deleteConversation(
+  id: string
+): Promise<{ discardedStagedCount: number }> {
+  return request(`/api/conversations/${id}`, { method: 'DELETE' });
+}
+
+export async function resetConversation(
+  id: string
+): Promise<{ conversation: import('../types').Conversation; discardedStagedCount: number }> {
+  return request(`/api/conversations/${id}/reset`, { method: 'POST' });
+}
+
+export async function duplicateConversation(
+  id: string
+): Promise<{ conversation: import('../types').Conversation }> {
+  return request(`/api/conversations/${id}/duplicate`, { method: 'POST' });
+}
+
 export async function streamChat(
   message: string,
   conversationId: string | undefined,

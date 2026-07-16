@@ -217,6 +217,36 @@ button {
   margin-top: 0.5rem;
 }
 
+.confirm-dialog-message {
+  margin: 0 0 1rem;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.confirm-dialog-checkbox,
+.dont-ask-again {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 1rem;
+  color: #94a3b8;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dont-ask-again {
+  margin: 0;
+  align-self: center;
+}
+
+.confirm-dialog-checkbox input,
+.dont-ask-again input {
+  margin: 0;
+  accent-color: #3b82f6;
+}
+
 .project-members-dialog {
   width: min(100%, 520px);
   max-height: min(90vh, 640px);
@@ -393,6 +423,46 @@ button {
   padding: 0 0.55rem;
   color: #e5534b;
   font-size: 0.8rem;
+}
+
+.user-menu-section-label {
+  margin: 0.35rem 0 0.15rem;
+  padding: 0 0.55rem;
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.user-menu-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: none;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.user-menu-toggle:hover:not(:disabled) {
+  background: #1e293b;
+}
+
+.user-menu-toggle:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.user-menu-toggle input {
+  margin: 0;
+  accent-color: #3b82f6;
 }
 
 .auth-page {
@@ -658,20 +728,59 @@ main {
   overflow: auto;
 }
 
-.conversation-list button {
-  width: 100%;
+.conversation-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.conversation-select {
+  flex: 1;
+  min-width: 0;
   text-align: left;
   border: none;
   background: transparent;
   color: #cbd5e1;
   padding: 0.55rem 0.7rem;
   border-radius: 0.6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.conversation-list button.active,
-.conversation-list button:hover {
+.conversation-select.active,
+.conversation-select:hover:not(:disabled) {
   background: #1b2738;
   color: white;
+}
+
+.conversation-select:disabled,
+.conversation-menu-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.conversation-menu-trigger {
+  flex: 0 0 1.8rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: #64748b;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conversation-menu-trigger:hover:not(:disabled),
+.conversation-menu-trigger[aria-expanded='true'] {
+  background: #1b2738;
+  color: #cbd5e1;
 }
 
 .chat-panel {
@@ -925,7 +1034,15 @@ main {
 
 .approval-bar-buttons {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 0.5rem;
+}
+
+.auto-approve-hint {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.85rem;
 }
 
 .chat-input {

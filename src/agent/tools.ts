@@ -2,11 +2,20 @@ import { z } from 'zod';
 import { projectService } from '../services/projectService.js';
 import { taskService } from '../services/taskService.js';
 import { createLogger } from '../utils/logger.js';
+import type { StagingContext } from '../types/staging.js';
 
 const log = createLogger('tools');
 
 const taskStatusSchema = z.enum(['todo', 'in_progress', 'done', 'cancelled']);
 const taskPrioritySchema = z.enum(['low', 'medium', 'high', 'urgent']);
+
+// All QTask ids (tasks, projects, users) are MongoDB ObjectIds. Rejecting
+// fabricated ids at proposal time keeps invalid write proposals from ever
+// reaching the user and tells the model to look the real id up instead.
+const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
+const objectIdMessage =
+  'must be a real 24-character hex id copied from a previous tool result. Do not invent ids — use find_tasks, get_task, get_workload, or list_projects to look up the real id first';
+const objectIdSchema = z.string().regex(OBJECT_ID_PATTERN, objectIdMessage);
 
 const subtaskInputSchema: z.ZodType<{
   title: string;
@@ -40,7 +49,22 @@ export interface ToolDefinition {
   description: string;
   parameters: Record<string, unknown>;
   zodShape: z.ZodRawShape;
-  execute: (userId: string, args: Record<string, unknown>) => Promise<ToolResult>;
+  execute: (
+    userId: string,
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext
+  ) => Promise<ToolResult>;
+}
+
+export interface ToolExecutionContext {
+  conversationId?: string;
+  proposalId?: string;
+  staged?: boolean;
+}
+
+function stagingContext(context?: ToolExecutionContext): StagingContext | undefined {
+  if (!context?.staged || !context.conversationId || !context.proposalId) return undefined;
+  return { conversationId: context.conversationId, proposalId: context.proposalId };
 }
 
 function ok(text: string): ToolResult {
@@ -67,8 +91,21 @@ export const toolDefinitions: ToolDefinition[] = [
         projectId: { type: 'string' },
         subtasks: {
           type: 'array',
-          description: 'Nested subtasks',
-          items: { type: 'object' },
+          description: 'Nested subtasks. Each item MUST have a "title".',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Subtask title (required)' },
+              description: { type: 'string' },
+              status: { type: 'string', enum: ['todo', 'in_progress', 'done', 'cancelled'] },
+              priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+              dueDate: { type: 'string', description: 'ISO 8601 due date' },
+              tags: { type: 'array', items: { type: 'string' } },
+              percentComplete: { type: 'number', minimum: 0, maximum: 100 },
+              subtasks: { type: 'array', items: { type: 'object' } },
+            },
+            required: ['title'],
+          },
         },
       },
       required: ['title'],
@@ -80,14 +117,15 @@ export const toolDefinitions: ToolDefinition[] = [
       priority: taskPrioritySchema.optional(),
       dueDate: z.string().optional().describe('ISO 8601 due date'),
       tags: z.array(z.string()).optional(),
-      projectId: z.string().optional(),
+      projectId: objectIdSchema.optional(),
       subtasks: z.array(subtaskInputSchema).optional().describe('Nested subtasks'),
     },
-    async execute(userId, input) {
+    async execute(userId, input, context) {
       const task = await taskService.createTask(
         userId,
         input as unknown as Parameters<typeof taskService.createTask>[1],
-        'ai'
+        'ai',
+        stagingContext(context)
       );
       return ok(JSON.stringify(task, null, 2));
     },
@@ -98,7 +136,11 @@ export const toolDefinitions: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: {
-        taskId: { type: 'string', description: 'Task ID to update' },
+        taskId: {
+          type: 'string',
+          description:
+            'Task ID to update: a 24-character hex id copied from a find_tasks/get_task result. Never invent this value.',
+        },
         title: { type: 'string' },
         description: { type: 'string' },
         status: { type: 'string', enum: ['todo', 'in_progress', 'done', 'cancelled'] },
@@ -113,7 +155,7 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['taskId'],
     },
     zodShape: {
-      taskId: z.string().describe('Task ID to update'),
+      taskId: objectIdSchema.describe('Task ID to update'),
       title: z.string().optional(),
       description: z.string().optional(),
       status: taskStatusSchema.optional(),
@@ -122,8 +164,8 @@ export const toolDefinitions: ToolDefinition[] = [
       tags: z.array(z.string()).optional(),
       percentComplete: z.number().min(0).max(100).optional(),
       percentCompleteOverride: z.number().min(0).max(100).nullable().optional(),
-      projectId: z.string().nullable().optional(),
-      assigneeId: z.string().nullable().optional(),
+      projectId: objectIdSchema.nullable().optional(),
+      assigneeId: objectIdSchema.nullable().optional(),
     },
     async execute(userId, input) {
       const { taskId, ...updates } = input;
@@ -154,8 +196,8 @@ export const toolDefinitions: ToolDefinition[] = [
       query: z.string().optional().describe('Natural-language search query'),
       status: z.union([taskStatusSchema, z.array(taskStatusSchema)]).optional(),
       priority: z.union([taskPrioritySchema, z.array(taskPrioritySchema)]).optional(),
-      projectId: z.string().optional(),
-      assigneeId: z.string().optional(),
+      projectId: objectIdSchema.optional(),
+      assigneeId: objectIdSchema.optional(),
       tags: z.array(z.string()).optional(),
       dueBefore: z.string().optional(),
       dueAfter: z.string().optional(),
@@ -173,12 +215,15 @@ export const toolDefinitions: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: {
-        taskId: { type: 'string', description: 'Task ID' },
+        taskId: {
+          type: 'string',
+          description: 'Task ID: a 24-character hex id from a previous tool result',
+        },
       },
       required: ['taskId'],
     },
     zodShape: {
-      taskId: z.string().describe('Task ID'),
+      taskId: objectIdSchema.describe('Task ID'),
     },
     async execute(userId, input) {
       const task = await taskService.getTask(userId, String(input.taskId));
@@ -196,7 +241,7 @@ export const toolDefinitions: ToolDefinition[] = [
       },
     },
     zodShape: {
-      assigneeId: z.string().optional().describe('Filter by assignee; defaults to all open tasks'),
+      assigneeId: objectIdSchema.optional().describe('Filter by assignee; defaults to all open tasks'),
     },
     async execute(userId, input) {
       const workload = await taskService.getWorkload(userId, input.assigneeId as string | undefined);
@@ -216,8 +261,8 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['taskId', 'assigneeId'],
     },
     zodShape: {
-      taskId: z.string(),
-      assigneeId: z.string(),
+      taskId: objectIdSchema,
+      assigneeId: objectIdSchema,
     },
     async execute(userId, input) {
       const task = await taskService.getTask(userId, String(input.taskId));
@@ -265,9 +310,9 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['projectId'],
     },
     zodShape: {
-      projectId: z.string(),
+      projectId: objectIdSchema,
       email: z.string().email().optional(),
-      userId: z.string().optional(),
+      userId: objectIdSchema.optional(),
       role: z.enum(['editor', 'executor', 'viewer']).optional(),
     },
     async execute(userId, input) {
@@ -302,9 +347,9 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['taskId'],
     },
     zodShape: {
-      taskId: z.string(),
+      taskId: objectIdSchema,
       email: z.string().email().optional(),
-      collaboratorId: z.string().optional(),
+      collaboratorId: objectIdSchema.optional(),
       role: z.enum(['editor', 'executor', 'viewer']).optional(),
     },
     async execute(userId, input) {
@@ -379,7 +424,7 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['projectId'],
     },
     zodShape: {
-      projectId: z.string(),
+      projectId: objectIdSchema,
     },
     async execute(userId, input) {
       const summary = await projectService.summarizeProject(userId, String(input.projectId));
@@ -399,8 +444,8 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['taskId', 'linkedTaskId', 'type'],
     },
     zodShape: {
-      taskId: z.string(),
-      linkedTaskId: z.string(),
+      taskId: objectIdSchema,
+      linkedTaskId: objectIdSchema,
       type: z.enum(['related', 'blocking', 'blocked_by']),
     },
     async execute(userId, input) {
@@ -429,11 +474,12 @@ export const toolDefinitions: ToolDefinition[] = [
       name: z.string().min(1).describe('Project name'),
       description: z.string().optional().describe('Project description'),
     },
-    async execute(userId, input) {
+    async execute(userId, input, context) {
       const project = await projectService.createProject(
         userId,
         String(input.name),
-        input.description as string | undefined
+        input.description as string | undefined,
+        stagingContext(context)
       );
       return ok(JSON.stringify(project, null, 2));
     },
@@ -459,6 +505,56 @@ export function isKnownTool(name: string): boolean {
   return toolMap.has(name);
 }
 
+function normalizeSubtaskItem(item: unknown): unknown {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return item;
+  }
+
+  const subtask = { ...(item as Record<string, unknown>) };
+
+  if (!subtask.title) {
+    if (typeof subtask.description === 'string' && subtask.description.trim()) {
+      subtask.title = subtask.description;
+      delete subtask.description;
+    } else if (typeof subtask.name === 'string' && subtask.name.trim()) {
+      subtask.title = subtask.name;
+      delete subtask.name;
+    } else if (typeof subtask.task_name === 'string' && subtask.task_name.trim()) {
+      subtask.title = subtask.task_name;
+      delete subtask.task_name;
+    } else if (typeof subtask.taskName === 'string' && subtask.taskName.trim()) {
+      subtask.title = subtask.taskName;
+      delete subtask.taskName;
+    }
+  }
+
+  if ('subtasks' in subtask) {
+    subtask.subtasks = normalizeSubtasksValue(subtask.subtasks);
+  }
+
+  return subtask;
+}
+
+function normalizeSubtasksValue(value: unknown): unknown {
+  let raw = value;
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    try {
+      raw = JSON.parse(trimmed) as unknown;
+    } catch {
+      return value;
+    }
+  }
+
+  if (!Array.isArray(raw)) {
+    return raw;
+  }
+
+  return raw.map(normalizeSubtaskItem);
+}
+
 export function normalizeToolArgs(
   name: string,
   args: Record<string, unknown>
@@ -481,9 +577,22 @@ export function normalizeToolArgs(
     }
   }
 
+  if (name === 'create_task' && 'subtasks' in normalized) {
+    const subtasks = normalizeSubtasksValue(normalized.subtasks);
+    if (subtasks === undefined) {
+      delete normalized.subtasks;
+    } else {
+      normalized.subtasks = subtasks;
+    }
+  }
+
   if (name === 'create_project' && !normalized.name && typeof normalized.project_name === 'string') {
     normalized.name = normalized.project_name;
     delete normalized.project_name;
+  }
+  if (name === 'create_project' && !normalized.name && typeof normalized.title === 'string') {
+    normalized.name = normalized.title;
+    delete normalized.title;
   }
 
   for (const key of ['projectId', 'dueDate', 'description', 'taskId', 'assigneeId']) {
@@ -535,7 +644,8 @@ export function getOllamaTools() {
 export async function executeTool(
   name: string,
   args: Record<string, unknown>,
-  userId: string
+  userId: string,
+  context?: ToolExecutionContext
 ): Promise<ToolResult> {
   const start = Date.now();
   const tool = toolMap.get(name);
@@ -553,7 +663,7 @@ export async function executeTool(
 
   try {
     log.debug('Executing tool', { name, args: validation.data });
-    const result = await tool.execute(userId, validation.data);
+    const result = await tool.execute(userId, validation.data, context);
     log.info('Tool executed', {
       name,
       success: result.success,

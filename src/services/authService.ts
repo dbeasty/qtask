@@ -19,12 +19,31 @@ function isEmailVerified(user: { emailVerified?: boolean | null }): boolean {
   return user.emailVerified !== false;
 }
 
+export interface UserPreferences {
+  autoApproveProposals: boolean;
+  skipConfirmations: boolean;
+}
+
+function serializePreferences(preferences?: {
+  autoApproveProposals?: boolean | null;
+  skipConfirmations?: boolean | null;
+} | null): UserPreferences {
+  return {
+    autoApproveProposals: preferences?.autoApproveProposals === true,
+    skipConfirmations: preferences?.skipConfirmations === true,
+  };
+}
+
 function serializeUser(user: {
   _id: unknown;
   email: string;
   displayName?: string | null;
   emailVerified?: boolean | null;
   mustChangePassword?: boolean | null;
+  preferences?: {
+    autoApproveProposals?: boolean | null;
+    skipConfirmations?: boolean | null;
+  } | null;
 }) {
   return {
     id: String(user._id),
@@ -32,6 +51,7 @@ function serializeUser(user: {
     displayName: user.displayName ?? undefined,
     emailVerified: isEmailVerified(user),
     mustChangePassword: user.mustChangePassword === true,
+    preferences: serializePreferences(user.preferences),
   };
 }
 
@@ -189,7 +209,16 @@ export class AuthService {
     return { message: 'Password updated.', token, user: serializeUser(user) };
   }
 
-  async updateProfile(userId: string, input: { displayName?: string | null }) {
+  async updateProfile(
+    userId: string,
+    input: {
+      displayName?: string | null;
+      preferences?: {
+        autoApproveProposals?: boolean;
+        skipConfirmations?: boolean;
+      };
+    }
+  ) {
     const user = await UserModel.findById(userId);
     if (!user) {
       throw new HttpError(404, 'User not found');
@@ -198,6 +227,22 @@ export class AuthService {
     if (input.displayName !== undefined) {
       const trimmed = input.displayName?.trim();
       user.displayName = trimmed || undefined;
+    }
+
+    if (input.preferences) {
+      if (!user.preferences) {
+        user.preferences = {
+          autoApproveProposals: false,
+          skipConfirmations: false,
+        };
+      }
+      if (input.preferences.autoApproveProposals !== undefined) {
+        user.preferences.autoApproveProposals = input.preferences.autoApproveProposals;
+      }
+      if (input.preferences.skipConfirmations !== undefined) {
+        user.preferences.skipConfirmations = input.preferences.skipConfirmations;
+      }
+      user.markModified('preferences');
     }
 
     await user.save();

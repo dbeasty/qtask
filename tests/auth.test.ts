@@ -65,6 +65,10 @@ describe('auth', () => {
 
     assert.equal(me.body.user.email, 'alice@example.com');
     assert.equal(me.body.user.emailVerified, true);
+    assert.deepEqual(me.body.user.preferences, {
+      autoApproveProposals: false,
+      skipConfirmations: false,
+    });
   });
 
   it('blocks login until email is verified', async () => {
@@ -167,6 +171,63 @@ describe('auth', () => {
       .expect(200);
 
     assert.equal(updated.body.user.displayName, 'Profile User');
+  });
+
+  it('persists and merges preferences via PATCH /me', async () => {
+    const token = await registerAndVerify('prefs@example.com', 'password1234');
+
+    const enabled = await request(app)
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ preferences: { autoApproveProposals: true } })
+      .expect(200);
+
+    assert.deepEqual(enabled.body.user.preferences, {
+      autoApproveProposals: true,
+      skipConfirmations: false,
+    });
+
+    const merged = await request(app)
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ preferences: { skipConfirmations: true } })
+      .expect(200);
+
+    assert.deepEqual(merged.body.user.preferences, {
+      autoApproveProposals: true,
+      skipConfirmations: true,
+    });
+
+    const me = await request(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    assert.deepEqual(me.body.user.preferences, {
+      autoApproveProposals: true,
+      skipConfirmations: true,
+    });
+
+    const disabled = await request(app)
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ preferences: { autoApproveProposals: false, skipConfirmations: false } })
+      .expect(200);
+
+    assert.deepEqual(disabled.body.user.preferences, {
+      autoApproveProposals: false,
+      skipConfirmations: false,
+    });
+  });
+
+  it('rejects invalid preference values on PATCH /me', async () => {
+    const token = await registerAndVerify('badprefs@example.com', 'password1234');
+
+    await request(app)
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ preferences: { autoApproveProposals: 'yes' } })
+      .expect(400);
   });
 
   it('rejects protected routes without a token', async () => {

@@ -15,9 +15,11 @@ import {
   login as loginRequest,
   register as registerRequest,
   setStoredToken,
+  updatePreferences as updatePreferencesRequest,
   updateProfile as updateProfileRequest,
   type AuthUser,
   type ChangePasswordResult,
+  type UserPreferences,
 } from './storage';
 
 interface AuthContextValue {
@@ -30,6 +32,7 @@ interface AuthContextValue {
   register: (email: string, password: string, displayName?: string, acceptLegal?: boolean) => Promise<{ message: string }>;
   logout: () => void;
   updateProfile: (displayName: string | null) => Promise<void>;
+  updatePreferences: (preferences: Partial<UserPreferences>) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<ChangePasswordResult>;
 }
 
@@ -78,6 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(result.user);
   }, []);
 
+  const updatePreferences = useCallback(async (preferences: Partial<UserPreferences>) => {
+    const result = await updatePreferencesRequest(preferences);
+    setUser(result.user);
+  }, []);
+
   const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
     const result = await changePasswordRequest(currentPassword, newPassword);
     if (result.token) {
@@ -91,8 +99,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, loading, mustChangePassword, login, register, logout, updateProfile, changePassword }),
-    [user, loading, mustChangePassword, login, register, logout, updateProfile, changePassword]
+    () => ({
+      user,
+      loading,
+      mustChangePassword,
+      login,
+      register,
+      logout,
+      updateProfile,
+      updatePreferences,
+      changePassword,
+    }),
+    [
+      user,
+      loading,
+      mustChangePassword,
+      login,
+      register,
+      logout,
+      updateProfile,
+      updatePreferences,
+      changePassword,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

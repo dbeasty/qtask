@@ -10,6 +10,7 @@ import type {
   UpdateSubtaskInput,
   UpdateTaskInput,
 } from '../types/task.js';
+import type { StagingContext } from '../types/staging.js';
 import { canEditProject, roleAtLeast, type ProjectRole } from '../types/project.js';
 import { HttpError } from '../utils/httpError.js';
 import { applyPercentComplete } from '../utils/percentComplete.js';
@@ -124,6 +125,7 @@ export class TaskService {
   ) {
     const task = await TaskModel.findById(taskId);
     if (!task) return null;
+    if (task.staging) return null;
 
     if (task.projectId) {
       const access = await (await projects()).getProjectAccess(userId, String(task.projectId));
@@ -153,12 +155,21 @@ export class TaskService {
     await (await projects()).assertProjectAccess(userId, projectId, 'editor');
   }
 
-  async createTask(userId: string, input: CreateTaskInput, source: 'user' | 'ai' = 'user') {
+  async createTask(
+    userId: string,
+    input: CreateTaskInput,
+    source: 'user' | 'ai' = 'user',
+    staging?: StagingContext
+  ) {
     const subtasks = (input.subtasks ?? []).map(buildSubtaskTree);
 
     let projectId = input.projectId;
     if (projectId) {
-      await this.requireProjectEdit(userId, projectId);
+      if (staging) {
+        await (await projects()).assertProjectAccessForStaging(userId, projectId, staging);
+      } else {
+        await this.requireProjectEdit(userId, projectId);
+      }
     } else {
       projectId = await (await projects()).ensureDefaultProject(userId);
     }
@@ -176,10 +187,11 @@ export class TaskService {
       percentCompleteOverride: input.percentCompleteOverride,
       subtasks,
       links: [],
+      staging: staging ? { ...staging, stagedAt: new Date() } : undefined,
     });
 
     if (projectId) {
-      const minTask = await TaskModel.findOne({ projectId })
+      const minTask = await TaskModel.findOne({ projectId, staging: { $exists: false } })
         .sort({ sortOrder: 1 })
         .select('sortOrder')
         .lean();
@@ -192,15 +204,17 @@ export class TaskService {
     taskDoc.subtasks = withPercent.subtasks as typeof taskDoc.subtasks;
 
     await taskDoc.save();
-    await enqueueEmbeddingJob(String(taskDoc._id));
+    if (!staging) {
+      await enqueueEmbeddingJob(String(taskDoc._id));
 
-    await logActivity({
-      taskId: String(taskDoc._id),
-      userId,
-      action: 'task.created',
-      details: { title: taskDoc.title },
-      source,
-    });
+      await logActivity({
+        taskId: String(taskDoc._id),
+        userId,
+        action: 'task.created',
+        details: { title: taskDoc.title },
+        source,
+      });
+    }
 
     return serializeTask(taskDoc.toObject());
   }
@@ -219,7 +233,10 @@ export class TaskService {
     }
 
     const accessQuery = await this.accessibleTaskQuery(userId);
-    const query: Record<string, unknown> = { ...accessQuery };
+    const query: Record<string, unknown> = {
+      ...accessQuery,
+      staging: { $exists: false },
+    };
 
     if (filters.status) {
       query.status = Array.isArray(filters.status) ? { $in: filters.status } : filters.status;
@@ -420,6 +437,7 @@ export class TaskService {
     const accessQuery = await this.accessibleTaskQuery(userId);
     const query: Record<string, unknown> = {
       ...accessQuery,
+      staging: { $exists: false },
       status: { $in: ['todo', 'in_progress'] },
     };
 
@@ -744,7 +762,10 @@ export class TaskService {
   async reorderProjectTask(userId: string, projectId: string, taskId: string, index: number) {
     await this.requireProjectEdit(userId, projectId);
 
-    const tasks = await TaskModel.find({ projectId }).sort({ sortOrder: 1, createdAt: -1 });
+    const tasks = await TaskModel.find({ projectId, staging: { $exists: false } }).sort({
+      sortOrder: 1,
+      createdAt: -1,
+    });
     const orderedIds = tasks.map((task) => String(task._id));
     const fromIndex = orderedIds.indexOf(taskId);
     if (fromIndex === -1) return null;

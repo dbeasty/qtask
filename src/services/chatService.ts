@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { loadAgentContext } from '../agent/loadContext.js';
 import { contentMentionsToolCall, parseTextToolCalls } from '../agent/parseTextToolCall.js';
-import { isWriteTool } from '../agent/toolPolicy.js';
+import {
+  buildFindTasksRecoveryArgs,
+  needsUpdateTaskIdRecovery,
+  wrapFindTasksRecoveryResult,
+} from '../agent/taskIdRecovery.js';
+import { isStagedCreateTool, isWriteTool } from '../agent/toolPolicy.js';
 import { executeTool, getOllamaTools, normalizeToolArgs, validateToolProposal } from '../agent/tools.js';
 import { config } from '../config/index.js';
 import type {
@@ -15,6 +20,7 @@ import type {
 import { createLogger } from '../utils/logger.js';
 import { conversationService } from './conversationService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
+import { stagingService } from './stagingService.js';
 
 const log = createLogger('chatService');
 const SYSTEM_PROMPT = loadAgentContext();
@@ -105,6 +111,127 @@ function createProposal(
     status: 'pending',
     toolCallIndex,
   };
+}
+
+function stagedToolContent(resultText: string): string {
+  return `${resultText}\n\nSTAGED: This entity exists with a real id but is hidden pending user approval. You may use this id in subsequent tool calls.`;
+}
+
+function stagedEntityId(resultText: string): string | null {
+  try {
+    const parsed = JSON.parse(resultText) as { _id?: unknown };
+    return typeof parsed._id === 'string' ? parsed._id : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameProposalArguments(
+  proposal: PendingProposal,
+  name: string,
+  args: Record<string, unknown>
+): boolean {
+  if (proposal.status !== 'pending' || proposal.name !== name) return false;
+  if (name === 'create_project') {
+    return proposal.arguments.name === args.name;
+  }
+  return JSON.stringify(proposal.arguments) === JSON.stringify(args);
+}
+
+async function stageCreateTool(
+  userId: string,
+  conversationId: string,
+  name: string,
+  args: Record<string, unknown>,
+  source: PendingProposal['source'],
+  existingProposals: PendingProposal[],
+  toolCallIndex?: number
+): Promise<{
+  proposal: PendingProposal | null;
+  result: { success: boolean; text: string };
+  isNew: boolean;
+}> {
+  const duplicate = existingProposals.find((proposal) =>
+    sameProposalArguments(proposal, name, args)
+  );
+  if (duplicate?.stagedEntity) {
+    return {
+      proposal: duplicate,
+      result: {
+        success: true,
+        text: JSON.stringify({ _id: duplicate.stagedEntity.id, staged: true }, null, 2),
+      },
+      isNew: false,
+    };
+  }
+
+  const proposal = createProposal(name, args, source, toolCallIndex);
+  const result = await executeTool(name, args, userId, {
+    conversationId,
+    proposalId: proposal.id,
+    staged: true,
+  });
+  if (!result.success) return { proposal: null, result, isNew: false };
+
+  const id = stagedEntityId(result.text);
+  if (!id) {
+    return {
+      proposal: null,
+      result: { success: false, text: 'Staged create returned no entity id' },
+      isNew: false,
+    };
+  }
+  proposal.stagedEntity = {
+    kind: name === 'create_task' ? 'task' : 'project',
+    id,
+  };
+  return { proposal, result, isNew: true };
+}
+
+async function* runUpdateTaskIdRecovery(
+  userId: string,
+  messagesForQuery: StoredMessage[],
+  updateArgs: Record<string, unknown>
+): AsyncGenerator<ChatStreamEvent, StoredMessage> {
+  const findArgs = buildFindTasksRecoveryArgs(updateArgs, messagesForQuery);
+  log.info('Recovering invalid update_task id via find_tasks', {
+    query: findArgs.query,
+    taskId: updateArgs.taskId,
+  });
+
+  yield { type: 'tool_call', name: 'find_tasks', arguments: findArgs };
+  const result = await executeTool('find_tasks', findArgs, userId);
+  const content = wrapFindTasksRecoveryResult(result.text);
+  yield { type: 'tool_result', name: 'find_tasks', success: result.success, content };
+
+  return {
+    role: 'tool',
+    content,
+    toolName: 'find_tasks',
+  };
+}
+
+/** Save pause state without dropping previously resolved proposal history. */
+async function savePausePreservingResolved(
+  userId: string,
+  conversationId: string,
+  data: {
+    messages: StoredMessage[];
+    pendingProposals: PendingProposal[];
+    pausedBatch?: PausedBatchState | null;
+  }
+) {
+  const current = await conversationService.getConversation(userId, conversationId);
+  const incomingIds = new Set(data.pendingProposals.map((p) => p.id));
+  const resolved = (current?.pendingProposals ?? []).filter(
+    (p) => p.status !== 'pending' && !incomingIds.has(p.id)
+  );
+
+  return conversationService.savePauseState(userId, conversationId, {
+    messages: data.messages,
+    pendingProposals: [...resolved, ...data.pendingProposals],
+    pausedBatch: data.pausedBatch ?? null,
+  });
 }
 
 export async function* streamOllamaChat(
@@ -374,8 +501,90 @@ export class ChatService {
             count: textProposals.length,
             names: textProposals.map((p) => p.name),
           });
-          const proposals = textProposals.map((p) => createProposal(p.name, p.arguments, 'text_fallback'));
-          for (const proposal of proposals) {
+
+          const current = await conversationService.getConversation(userId, conversationId);
+          const proposals: PendingProposal[] = [...(current?.pendingProposals ?? [])];
+          let hadValidationError = false;
+          let stagedCreateRan = false;
+          let requiresPause = false;
+
+          for (const parsed of textProposals) {
+            const validation = validateToolProposal(parsed.name, parsed.arguments);
+            if (!validation.success) {
+              hadValidationError = true;
+              const errorText = `${validation.error}. Fix the arguments and call the tool again.`;
+              log.warn('Text-fallback tool proposal validation failed', {
+                name: parsed.name,
+                error: validation.error,
+              });
+              yield {
+                type: 'tool_result',
+                name: parsed.name,
+                success: false,
+                content: errorText,
+              };
+              workingMessages.push({
+                role: 'tool',
+                content: errorText,
+                toolName: parsed.name,
+              });
+              if (needsUpdateTaskIdRecovery(parsed.name, validation.error)) {
+                const findMsg = yield* runUpdateTaskIdRecovery(
+                  userId,
+                  workingMessages,
+                  parsed.arguments
+                );
+                workingMessages.push(findMsg);
+              }
+              continue;
+            }
+
+            if (isStagedCreateTool(parsed.name)) {
+              yield { type: 'tool_call', name: parsed.name, arguments: validation.data };
+              const staged = await stageCreateTool(
+                userId,
+                conversationId,
+                parsed.name,
+                validation.data,
+                'text_fallback',
+                proposals
+              );
+              yield {
+                type: 'tool_result',
+                name: parsed.name,
+                success: staged.result.success,
+                content: staged.result.text,
+              };
+              workingMessages.push({
+                role: 'tool',
+                content: staged.result.success
+                  ? stagedToolContent(staged.result.text)
+                  : staged.result.text,
+                toolName: parsed.name,
+              });
+              if (staged.proposal && staged.isNew) {
+                proposals.push(staged.proposal);
+                yield {
+                  type: 'tool_proposal',
+                  id: staged.proposal.id,
+                  name: staged.proposal.name,
+                  arguments: staged.proposal.arguments,
+                  source: staged.proposal.source,
+                  staged: true,
+                };
+              }
+              stagedCreateRan = stagedCreateRan || staged.result.success;
+              await savePausePreservingResolved(userId, conversationId, {
+                messages: workingMessages,
+                pendingProposals: proposals,
+                pausedBatch: null,
+              });
+              continue;
+            }
+
+            const proposal = createProposal(parsed.name, validation.data, 'text_fallback');
+            proposals.push(proposal);
+            requiresPause = true;
             yield {
               type: 'tool_proposal',
               id: proposal.id,
@@ -384,14 +593,28 @@ export class ChatService {
               source: proposal.source,
             };
           }
-          await conversationService.savePauseState(userId, conversationId, {
-            messages: workingMessages,
-            pendingProposals: proposals,
-            pausedBatch: null,
-          });
-          yield { type: 'paused', conversationId, pendingCount: proposals.length };
-          yield { type: 'done', conversationId, content: finalAssistantContent, paused: true };
-          return;
+
+          if (requiresPause) {
+            await savePausePreservingResolved(userId, conversationId, {
+              messages: workingMessages,
+              pendingProposals: proposals,
+              pausedBatch: null,
+            });
+            yield {
+              type: 'paused',
+              conversationId,
+              pendingCount: proposals.filter((proposal) => proposal.status === 'pending').length,
+            };
+            yield { type: 'done', conversationId, content: finalAssistantContent, paused: true };
+            return;
+          }
+
+          if (hadValidationError) {
+            continue;
+          }
+          if (stagedCreateRan) {
+            continue;
+          }
         }
 
         if (contentMentionsToolCall(content)) {
@@ -401,6 +624,29 @@ export class ChatService {
             message:
               'The assistant described a tool call in text but it could not be parsed or executed. Try rephrasing your request.',
           };
+        }
+
+        const pendingConversation = await conversationService.getConversation(
+          userId,
+          conversationId
+        );
+        const pending = (pendingConversation?.pendingProposals ?? []).filter(
+          (proposal) => proposal.status === 'pending'
+        );
+        if (pending.length > 0) {
+          await savePausePreservingResolved(userId, conversationId, {
+            messages: workingMessages,
+            pendingProposals: pendingConversation?.pendingProposals ?? pending,
+            pausedBatch: null,
+          });
+          yield { type: 'paused', conversationId, pendingCount: pending.length };
+          yield {
+            type: 'done',
+            conversationId,
+            content: finalAssistantContent,
+            paused: true,
+          };
+          return;
         }
 
         break;
@@ -452,7 +698,13 @@ export class ChatService {
     startIndex: number,
     existingProposals: PendingProposal[] = []
   ): AsyncGenerator<ChatStreamEvent, boolean> {
-    const proposals: PendingProposal[] = [...existingProposals];
+    const current = await conversationService.getConversation(userId, conversationId);
+    const proposals: PendingProposal[] = [
+      ...(current?.pendingProposals ?? []),
+      ...existingProposals.filter(
+        (incoming) => !(current?.pendingProposals ?? []).some((saved) => saved.id === incoming.id)
+      ),
+    ];
 
     for (let i = startIndex; i < toolCalls.length; i++) {
       const toolCall = toolCalls[i]!;
@@ -462,7 +714,74 @@ export class ChatService {
       log.info('Processing tool call', { name, write: isWriteTool(name), index: i });
 
       if (isWriteTool(name)) {
-        const proposal = createProposal(name, args, 'native', i);
+        const validation = validateToolProposal(name, args);
+        if (!validation.success) {
+          const errorText = `${validation.error}. Fix the arguments and call the tool again.`;
+          log.warn('Write tool proposal validation failed', {
+            name,
+            error: validation.error,
+            index: i,
+          });
+          yield { type: 'tool_call', name, arguments: args };
+          yield { type: 'tool_result', name, success: false, content: errorText };
+          workingMessages.push({
+            role: 'tool',
+            content: errorText,
+            toolName: name,
+          });
+          if (needsUpdateTaskIdRecovery(name, validation.error)) {
+            const findMsg = yield* runUpdateTaskIdRecovery(userId, workingMessages, args);
+            workingMessages.push(findMsg);
+          }
+          continue;
+        }
+
+        if (isStagedCreateTool(name)) {
+          yield { type: 'tool_call', name, arguments: validation.data };
+          const staged = await stageCreateTool(
+            userId,
+            conversationId,
+            name,
+            validation.data,
+            'native',
+            proposals,
+            i
+          );
+          yield {
+            type: 'tool_result',
+            name,
+            success: staged.result.success,
+            content: staged.result.text,
+          };
+          workingMessages.push({
+            role: 'tool',
+            content: staged.result.success
+              ? stagedToolContent(staged.result.text)
+              : staged.result.text,
+            toolName: name,
+          });
+
+          if (staged.proposal && staged.isNew) {
+            proposals.push(staged.proposal);
+            yield {
+              type: 'tool_proposal',
+              id: staged.proposal.id,
+              name: staged.proposal.name,
+              arguments: staged.proposal.arguments,
+              source: staged.proposal.source,
+              staged: true,
+            };
+          }
+
+          await savePausePreservingResolved(userId, conversationId, {
+            messages: workingMessages,
+            pendingProposals: proposals,
+            pausedBatch: null,
+          });
+          continue;
+        }
+
+        const proposal = createProposal(name, validation.data, 'native', i);
         proposals.push(proposal);
         yield {
           type: 'tool_proposal',
@@ -478,7 +797,7 @@ export class ChatService {
           nextToolIndex: i,
         };
 
-        await conversationService.savePauseState(userId, conversationId, {
+        await savePausePreservingResolved(userId, conversationId, {
           messages: workingMessages,
           pendingProposals: proposals,
           pausedBatch,
@@ -507,7 +826,7 @@ export class ChatService {
     if (!conversation) return null;
 
     const pending = (conversation.pendingProposals ?? []).filter((p) => p.status === 'pending');
-    if (pending.length > 0 || conversation.pausedBatch) {
+    if ((conversation.pendingProposals ?? []).length > 0 || conversation.pausedBatch) {
       return conversation;
     }
 
@@ -611,6 +930,19 @@ export class ChatService {
 
     if (!conversation) {
       conversation = await conversationService.createConversation(userId);
+    } else {
+      const discarded = await stagingService.rollbackStaleForConversation(
+        userId,
+        conversation._id
+      );
+      if (discarded > 0) {
+        conversation =
+          (await conversationService.getConversation(userId, conversation._id)) ?? conversation;
+        conversation.messages.push({
+          role: 'system',
+          content: `${discarded} unapproved staged item(s) were discarded before this new message.`,
+        });
+      }
     }
 
     const workingMessages: StoredMessage[] = [...conversation.messages];
@@ -655,16 +987,94 @@ export class ChatService {
     log.info('Resolving proposal', { proposalId, action, tool: proposal.name });
 
     const extraMessages: StoredMessage[] = [];
+    let ranIdRecovery = false;
 
-    if (action === 'approve') {
+    if (proposal.stagedEntity) {
       yield { type: 'tool_call', name: proposal.name, arguments: proposal.arguments };
-      const result = await executeTool(proposal.name, proposal.arguments, userId);
-      yield { type: 'tool_result', name: proposal.name, success: result.success, content: result.text };
-      extraMessages.push({
-        role: 'tool',
-        content: result.text,
-        toolName: proposal.name,
-      });
+      try {
+        const content =
+          action === 'approve'
+            ? await stagingService.commitProposal(userId, conversationId, proposal)
+            : await stagingService.rollbackProposal(userId, conversationId, proposal);
+        yield {
+          type: 'tool_result',
+          name: proposal.name,
+          success: true,
+          content,
+        };
+        extraMessages.push({
+          role: 'tool',
+          content:
+            action === 'approve'
+              ? `${content}. The staged write is now visible.`
+              : `${content}. The staged id is now invalid.`,
+          toolName: proposal.name,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to resolve staged write';
+        yield {
+          type: 'tool_result',
+          name: proposal.name,
+          success: false,
+          content: message,
+        };
+        yield { type: 'error', message };
+        return;
+      }
+    } else if (action === 'approve') {
+      const validation = validateToolProposal(proposal.name, proposal.arguments);
+
+      if (!validation.success) {
+        const errorText = `${validation.error}. Fix the arguments and call the tool again.`;
+        log.warn('Approved proposal failed revalidation', {
+          proposalId,
+          name: proposal.name,
+          error: validation.error,
+        });
+        yield { type: 'tool_call', name: proposal.name, arguments: proposal.arguments };
+        yield { type: 'tool_result', name: proposal.name, success: false, content: errorText };
+        extraMessages.push({
+          role: 'tool',
+          content: errorText,
+          toolName: proposal.name,
+        });
+
+        if (needsUpdateTaskIdRecovery(proposal.name, validation.error)) {
+          const contextMessages = [...conversation.messages, ...extraMessages];
+          const findMsg = yield* runUpdateTaskIdRecovery(
+            userId,
+            contextMessages,
+            proposal.arguments
+          );
+          extraMessages.push(findMsg);
+          ranIdRecovery = true;
+        }
+      } else {
+        yield { type: 'tool_call', name: proposal.name, arguments: validation.data };
+        const result = await executeTool(proposal.name, validation.data, userId);
+        yield {
+          type: 'tool_result',
+          name: proposal.name,
+          success: result.success,
+          content: result.text,
+        };
+        extraMessages.push({
+          role: 'tool',
+          content: result.text,
+          toolName: proposal.name,
+        });
+
+        if (!result.success && needsUpdateTaskIdRecovery(proposal.name, result.text)) {
+          const contextMessages = [...conversation.messages, ...extraMessages];
+          const findMsg = yield* runUpdateTaskIdRecovery(
+            userId,
+            contextMessages,
+            proposal.arguments
+          );
+          extraMessages.push(findMsg);
+          ranIdRecovery = true;
+        }
+      }
     } else {
       extraMessages.push({
         role: 'tool',
@@ -688,6 +1098,18 @@ export class ChatService {
     const workingMessages: StoredMessage[] = [...updated.messages];
     const remainingPending = (updated.pendingProposals ?? []).filter((p) => p.status === 'pending');
 
+    // After id recovery, clear the paused write batch and let the model propose a
+    // corrected update_task (new approval card) from the find_tasks results.
+    if (ranIdRecovery) {
+      await savePausePreservingResolved(userId, conversationId, {
+        messages: workingMessages,
+        pendingProposals: updated.pendingProposals ?? [],
+        pausedBatch: null,
+      });
+      yield* this.runAgentLoop(userId, conversationId, workingMessages);
+      return;
+    }
+
     if (updated.pausedBatch) {
       const { toolCalls, nextToolIndex } = updated.pausedBatch;
 
@@ -705,7 +1127,7 @@ export class ChatService {
         return;
       }
     } else if (remainingPending.length > 0) {
-      await conversationService.savePauseState(userId, conversationId, {
+      await savePausePreservingResolved(userId, conversationId, {
         messages: workingMessages,
         pendingProposals: updated.pendingProposals ?? [],
         pausedBatch: null,

@@ -42,6 +42,12 @@ const changePasswordSchema = z.object({
 
 const updateProfileSchema = z.object({
   displayName: z.union([z.string().trim().min(1), z.null()]).optional(),
+  preferences: z
+    .object({
+      autoApproveProposals: z.boolean().optional(),
+      skipConfirmations: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 authRouter.get('/config', (_req, res) => {

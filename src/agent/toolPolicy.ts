@@ -8,8 +8,14 @@ const WRITE_TOOLS = new Set([
   'add_task_link',
 ]);
 
+const STAGED_CREATE_TOOLS = new Set(['create_task', 'create_project']);
+
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOLS.has(name);
+}
+
+export function isStagedCreateTool(name: string): boolean {
+  return STAGED_CREATE_TOOLS.has(name);
 }
 
 export const KNOWN_TOOL_NAMES = [

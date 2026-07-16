@@ -74,6 +74,71 @@ export class ConversationService {
     return docs.map((doc) => toSummary(doc as Parameters<typeof toSummary>[0]));
   }
 
+  async deleteConversation(userId: string, conversationId: string): Promise<boolean> {
+    const result = await ConversationModel.deleteOne({ _id: conversationId, userId });
+    return result.deletedCount === 1;
+  }
+
+  async resetConversation(userId: string, conversationId: string): Promise<Conversation | null> {
+    const existing = await ConversationModel.findOne({ _id: conversationId, userId }).lean();
+    if (!existing) return null;
+
+    const firstUserMessage = (existing.messages ?? []).find(
+      (message) => message.role === 'user' && typeof message.content === 'string'
+    );
+    const preservedMessages = firstUserMessage
+      ? [
+          {
+            role: 'user' as const,
+            content: firstUserMessage.content,
+          },
+        ]
+      : [];
+
+    const doc = await ConversationModel.findOneAndUpdate(
+      { _id: conversationId, userId },
+      {
+        $set: {
+          messages: preservedMessages,
+          pendingProposals: [],
+          pausedBatch: null,
+        },
+      },
+      { new: true }
+    ).lean();
+
+    if (!doc) return null;
+    return toConversation(doc as Parameters<typeof toConversation>[0]);
+  }
+
+  async duplicateConversation(
+    userId: string,
+    conversationId: string
+  ): Promise<Conversation | null> {
+    const existing = await ConversationModel.findOne({ _id: conversationId, userId }).lean();
+    if (!existing) return null;
+
+    const baseTitle = existing.title?.trim() || 'New conversation';
+    const title = baseTitle.endsWith(' (copy)') ? baseTitle : `${baseTitle} (copy)`;
+
+    const messages = (existing.messages ?? []).map((message) => ({
+      role: message.role as StoredMessage['role'],
+      content: message.content,
+      toolCalls: message.toolCalls,
+      toolName: message.toolName ?? undefined,
+    }));
+
+    const doc = await ConversationModel.create({
+      userId,
+      title,
+      messages,
+      pendingProposals: [],
+      pausedBatch: null,
+    });
+
+    return toConversation(doc.toObject() as Parameters<typeof toConversation>[0]);
+  }
+
   async appendMessages(
     userId: string,
     conversationId: string,
@@ -163,6 +228,7 @@ export class ConversationService {
 
     proposal.status = status;
     doc.messages.push(...extraMessages);
+    doc.markModified('pendingProposals');
     await doc.save();
 
     return toConversation(doc.toObject() as Parameters<typeof toConversation>[0]);

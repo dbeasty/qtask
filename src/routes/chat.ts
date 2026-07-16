@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getUserId } from '../middleware/index.js';
 import { chatService } from '../services/chatService.js';
 import { conversationService } from '../services/conversationService.js';
+import { stagingService } from '../services/stagingService.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('chatRoute');
@@ -36,6 +37,74 @@ chatRouter.get('/conversations/:id', async (req, res, next) => {
       res.status(404).json({ error: 'Conversation not found' });
       return;
     }
+    res.json({ conversation });
+  } catch (error) {
+    next(error);
+  }
+});
+
+chatRouter.delete('/conversations/:id', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const conversationId = req.params.id!;
+    const conversation = await conversationService.getConversation(userId, conversationId);
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    const discardedStagedCount = await stagingService.rollbackStaleForConversation(
+      userId,
+      conversationId
+    );
+    const deleted = await conversationService.deleteConversation(userId, conversationId);
+    if (!deleted) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    res.json({ discardedStagedCount });
+  } catch (error) {
+    next(error);
+  }
+});
+
+chatRouter.post('/conversations/:id/reset', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const conversationId = req.params.id!;
+    const existing = await conversationService.getConversation(userId, conversationId);
+    if (!existing) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    const discardedStagedCount = await stagingService.rollbackStaleForConversation(
+      userId,
+      conversationId
+    );
+    const conversation = await conversationService.resetConversation(userId, conversationId);
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    res.json({ conversation, discardedStagedCount });
+  } catch (error) {
+    next(error);
+  }
+});
+
+chatRouter.post('/conversations/:id/duplicate', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const conversationId = req.params.id!;
+    const conversation = await conversationService.duplicateConversation(userId, conversationId);
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
     res.json({ conversation });
   } catch (error) {
     next(error);

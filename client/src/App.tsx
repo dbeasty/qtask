@@ -23,7 +23,7 @@ function getAuthPathname(): string {
 }
 
 export function App() {
-  const { user, loading, mustChangePassword, logout, updateProfile } = useAuth();
+  const { user, loading, mustChangePassword, logout, updateProfile, updatePreferences } = useAuth();
   const [view, setView] = useState<View>('chat');
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
@@ -133,6 +133,7 @@ export function App() {
                 anchorRef={userMenuTriggerRef}
                 onChangePassword={() => setChangePasswordOpen(true)}
                 onUpdateDisplayName={updateProfile}
+                onUpdatePreferences={updatePreferences}
                 onSignOut={logout}
                 onClose={() => setUserMenuOpen(false)}
               />

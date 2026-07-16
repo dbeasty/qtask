@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   approveProposal,
+  deleteConversation,
+  duplicateConversation,
   getConversation,
   listConversations,
   listProjects,
+  resetConversation,
   streamChat,
   submitProposal,
 } from '../api/client';
+import { useAuth } from '../auth/AuthContext';
+import { getUserPreferences } from '../auth/storage';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ConversationMenu } from '../components/ConversationMenu';
 import type { ChatStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
 import { suggestProjectFromMessages } from '../utils/project';
 
@@ -14,6 +21,10 @@ interface ChatPageProps {
   onTasksChanged: () => void;
   onProjectSuggested?: (name: string) => void;
 }
+
+type PendingConfirm =
+  | { kind: 'delete'; conversation: ConversationSummary }
+  | { kind: 'reset'; conversation: ConversationSummary };
 
 function visibleMessages(messages: UiMessage[]) {
   return messages.filter((message) => message.role === 'user' || message.role === 'assistant');
@@ -135,6 +146,7 @@ function handleStreamEvent(
                   arguments: event.arguments,
                   source: event.source,
                   status: 'pending' as const,
+                  staged: event.staged,
                 },
               ],
             }
@@ -188,6 +200,8 @@ function handleStreamEvent(
 }
 
 export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) {
+  const { user, updatePreferences } = useAuth();
+  const preferences = getUserPreferences(user);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [conversationId, setConversationId] = useState<string | undefined>();
@@ -199,9 +213,18 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
   const [editDraft, setEditDraft] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
   const [submittingProposal, setSubmittingProposal] = useState(false);
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
+  const [resettingConversationId, setResettingConversationId] = useState<string | null>(null);
+  const [duplicatingConversationId, setDuplicatingConversationId] = useState<string | null>(null);
+  const [openMenuConversationId, setOpenMenuConversationId] = useState<string | null>(null);
+  const [dontAskAgainApprove, setDontAskAgainApprove] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const autoApproveInFlightRef = useRef(false);
 
   useEffect(() => {
     listConversations()
@@ -405,9 +428,23 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
   async function handleProposalAction(
     messageId: string,
     proposal: UiProposal,
-    action: 'approve' | 'reject'
+    action: 'approve' | 'reject',
+    options?: { dontAskAgain?: boolean }
   ) {
-    if (!conversationId || approvingId || !isPersistedProposal(proposal)) return;
+    if (!conversationId || approvingId || !isPersistedProposal(proposal)) {
+      autoApproveInFlightRef.current = false;
+      return;
+    }
+
+    if (action === 'approve' && options?.dontAskAgain && !preferences.autoApproveProposals) {
+      try {
+        await updatePreferences({ autoApproveProposals: true });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not save preference');
+        autoApproveInFlightRef.current = false;
+        return;
+      }
+    }
 
     setApprovingId(proposal.id);
     setError(null);
@@ -452,8 +489,23 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
       setError(err instanceof Error ? err.message : 'Approval failed');
     } finally {
       setApprovingId(null);
+      autoApproveInFlightRef.current = false;
     }
   }
+
+  useEffect(() => {
+    if (!preferences.autoApproveProposals || !conversationId || sending || approvingId) return;
+    if (autoApproveInFlightRef.current) return;
+
+    const pending = getPendingProposals(messages);
+    const first = pending[0];
+    if (!first) return;
+
+    autoApproveInFlightRef.current = true;
+    void handleProposalAction(first.messageId, first.proposal, 'approve');
+    // handleProposalAction closes over latest state; effect is keyed on pending work signals
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferences.autoApproveProposals, conversationId, sending, approvingId, messages]);
 
   function startNewConversation() {
     setConversationId(undefined);
@@ -463,7 +515,119 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
     setEditError(null);
   }
 
+  async function performDeleteConversation(conversation: ConversationSummary) {
+    const deletingSelectedConversation = conversation._id === conversationId;
+    setDeletingConversationId(conversation._id);
+    setError(null);
+
+    try {
+      await deleteConversation(conversation._id);
+      setConversations((items) => items.filter((item) => item._id !== conversation._id));
+      if (deletingSelectedConversation) {
+        startNewConversation();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete chat');
+    } finally {
+      setDeletingConversationId(null);
+    }
+  }
+
+  async function performResetConversation(conversation: ConversationSummary) {
+    setResettingConversationId(conversation._id);
+    setError(null);
+
+    try {
+      const { conversation: reset } = await resetConversation(conversation._id);
+      if (conversation._id === conversationId) {
+        const visibleStored = reset.messages.filter(
+          (message: StoredMessage) => message.role === 'user' || message.role === 'assistant'
+        );
+        setMessages(
+          visibleStored.map((message: StoredMessage, index: number) => ({
+            id: `${conversation._id}-${index}`,
+            role: message.role as 'user' | 'assistant',
+            content: message.content,
+          }))
+        );
+        setEditingKey(null);
+        setEditError(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reset chat');
+    } finally {
+      setResettingConversationId(null);
+    }
+  }
+
+  function requestDeleteConversation(conversation: ConversationSummary) {
+    if (preferences.skipConfirmations) {
+      void performDeleteConversation(conversation);
+      return;
+    }
+    setPendingConfirm({ kind: 'delete', conversation });
+  }
+
+  function requestResetConversation(conversation: ConversationSummary) {
+    if (preferences.skipConfirmations) {
+      void performResetConversation(conversation);
+      return;
+    }
+    setPendingConfirm({ kind: 'reset', conversation });
+  }
+
+  async function handleDuplicateConversation(conversation: ConversationSummary) {
+    setDuplicatingConversationId(conversation._id);
+    setError(null);
+
+    try {
+      const { conversation: duplicated } = await duplicateConversation(conversation._id);
+      setConversations((items) => [
+        {
+          _id: duplicated._id,
+          userId: duplicated.userId,
+          title: duplicated.title,
+          createdAt: duplicated.createdAt,
+          updatedAt: duplicated.updatedAt,
+        },
+        ...items,
+      ]);
+      await loadConversation(duplicated._id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not duplicate chat');
+    } finally {
+      setDuplicatingConversationId(null);
+    }
+  }
+
+  async function handleConfirmDialog(dontAskAgain: boolean) {
+    if (!pendingConfirm) return;
+    setConfirmBusy(true);
+    try {
+      if (dontAskAgain && !preferences.skipConfirmations) {
+        await updatePreferences({ skipConfirmations: true });
+      }
+      if (pendingConfirm.kind === 'delete') {
+        await performDeleteConversation(pendingConfirm.conversation);
+      } else {
+        await performResetConversation(pendingConfirm.conversation);
+      }
+      setPendingConfirm(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save preference');
+    } finally {
+      setConfirmBusy(false);
+    }
+  }
+
   const pendingProposals = getPendingProposals(messages);
+  const conversationActionsBusy =
+    sending ||
+    approvingId !== null ||
+    submittingProposal ||
+    deletingConversationId !== null ||
+    resettingConversationId !== null ||
+    duplicatingConversationId !== null;
 
   return (
     <div className="chat-layout">
@@ -472,17 +636,52 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
           New chat
         </button>
         <ul className="conversation-list">
-          {conversations.map((conversation) => (
-            <li key={conversation._id}>
-              <button
-                type="button"
-                className={conversation._id === conversationId ? 'active' : ''}
-                onClick={() => loadConversation(conversation._id)}
-              >
-                {conversation.title}
-              </button>
-            </li>
-          ))}
+          {conversations.map((conversation) => {
+            const menuOpen = openMenuConversationId === conversation._id;
+            const rowBusy =
+              deletingConversationId === conversation._id ||
+              resettingConversationId === conversation._id ||
+              duplicatingConversationId === conversation._id;
+
+            return (
+              <li key={conversation._id} className="conversation-list-item">
+                <button
+                  type="button"
+                  className={`conversation-select ${conversation._id === conversationId ? 'active' : ''}`}
+                  onClick={() => loadConversation(conversation._id)}
+                  disabled={conversationActionsBusy}
+                >
+                  {conversation.title}
+                </button>
+                <button
+                  type="button"
+                  className="conversation-menu-trigger"
+                  ref={menuOpen ? menuTriggerRef : undefined}
+                  aria-label={`Chat actions for ${conversation.title}`}
+                  aria-expanded={menuOpen}
+                  title="Chat actions"
+                  disabled={conversationActionsBusy}
+                  onClick={() =>
+                    setOpenMenuConversationId(menuOpen ? null : conversation._id)
+                  }
+                >
+                  {rowBusy ? '…' : '⋮'}
+                </button>
+                {menuOpen && (
+                  <ConversationMenu
+                    anchorRef={menuTriggerRef}
+                    busy={conversationActionsBusy}
+                    onReset={() => requestResetConversation(conversation)}
+                    onDuplicate={() => {
+                      void handleDuplicateConversation(conversation);
+                    }}
+                    onDelete={() => requestDeleteConversation(conversation)}
+                    onClose={() => setOpenMenuConversationId(null)}
+                  />
+                )}
+              </li>
+            );
+          })}
         </ul>
       </aside>
 
@@ -555,6 +754,9 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
                           <span className="tool-proposal-source">
                             {proposalSourceLabel(proposal.source)}
                           </span>
+                          {(proposal.staged || proposal.stagedEntity) && proposal.status === 'pending' && (
+                            <span className="tool-proposal-source">staged — awaiting commit</span>
+                          )}
                           {proposal.status !== 'pending' && (
                             <span className={`tool-proposal-status ${proposal.status}`}>
                               {proposal.status}
@@ -598,24 +800,59 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
                             </pre>
                             <div className="tool-proposal-actions">
                               {proposal.status === 'pending' && isPersistedProposal(proposal) && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="primary-button"
-                                    disabled={approvingId !== null}
-                                    onClick={() => handleProposalAction(message.id, proposal, 'approve')}
-                                  >
-                                    {approvingId === proposal.id ? 'Running…' : 'Approve'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="secondary-button"
-                                    disabled={approvingId !== null}
-                                    onClick={() => handleProposalAction(message.id, proposal, 'reject')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
+                                preferences.autoApproveProposals ? (
+                                  <>
+                                    <p className="auto-approve-hint">
+                                      {approvingId === proposal.id ? 'Auto-approving…' : 'Auto-approve enabled'}
+                                    </p>
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      disabled={approvingId !== null}
+                                      onClick={() => handleProposalAction(message.id, proposal, 'reject')}
+                                    >
+                                      Reject
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="primary-button"
+                                      disabled={approvingId !== null}
+                                      onClick={() =>
+                                        handleProposalAction(message.id, proposal, 'approve', {
+                                          dontAskAgain: dontAskAgainApprove,
+                                        })
+                                      }
+                                    >
+                                      {approvingId === proposal.id
+                                        ? proposal.staged || proposal.stagedEntity
+                                          ? 'Committing…'
+                                          : 'Running…'
+                                        : proposal.staged || proposal.stagedEntity
+                                          ? 'Commit'
+                                          : 'Approve'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      disabled={approvingId !== null}
+                                      onClick={() => handleProposalAction(message.id, proposal, 'reject')}
+                                    >
+                                      Reject
+                                    </button>
+                                    <label className="dont-ask-again">
+                                      <input
+                                        type="checkbox"
+                                        checked={dontAskAgainApprove}
+                                        disabled={approvingId !== null}
+                                        onChange={(event) => setDontAskAgainApprove(event.target.checked)}
+                                      />
+                                      <span>Don&apos;t ask again</span>
+                                    </label>
+                                  </>
+                                )
                               )}
                               <button
                                 type="button"
@@ -669,22 +906,59 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
             <div className="approval-bar-actions">
               {pendingProposals.slice(0, 1).map(({ messageId, proposal }) => (
                 <span key={proposal.id} className="approval-bar-buttons">
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={approvingId !== null}
-                    onClick={() => handleProposalAction(messageId, proposal, 'approve')}
-                  >
-                    {approvingId === proposal.id ? 'Running…' : 'Approve'}
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={approvingId !== null}
-                    onClick={() => handleProposalAction(messageId, proposal, 'reject')}
-                  >
-                    Reject
-                  </button>
+                  {preferences.autoApproveProposals ? (
+                    <>
+                      <p className="auto-approve-hint">
+                        {approvingId === proposal.id ? 'Auto-approving…' : 'Auto-approve enabled'}
+                      </p>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={approvingId !== null}
+                        onClick={() => handleProposalAction(messageId, proposal, 'reject')}
+                      >
+                        Reject
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={approvingId !== null}
+                        onClick={() =>
+                          handleProposalAction(messageId, proposal, 'approve', {
+                            dontAskAgain: dontAskAgainApprove,
+                          })
+                        }
+                      >
+                        {approvingId === proposal.id
+                          ? proposal.staged || proposal.stagedEntity
+                            ? 'Committing…'
+                            : 'Running…'
+                          : proposal.staged || proposal.stagedEntity
+                            ? 'Commit'
+                            : 'Approve'}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={approvingId !== null}
+                        onClick={() => handleProposalAction(messageId, proposal, 'reject')}
+                      >
+                        Reject
+                      </button>
+                      <label className="dont-ask-again">
+                        <input
+                          type="checkbox"
+                          checked={dontAskAgainApprove}
+                          disabled={approvingId !== null}
+                          onChange={(event) => setDontAskAgainApprove(event.target.checked)}
+                        />
+                        <span>Don&apos;t ask again</span>
+                      </label>
+                    </>
+                  )}
                 </span>
               ))}
             </div>
@@ -698,7 +972,9 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
             onChange={(event) => setInput(event.target.value)}
             placeholder={
               pendingProposals.length > 0
-                ? 'Type a message, or "approve" to confirm the pending action…'
+                ? preferences.autoApproveProposals
+                  ? 'Pending actions will be approved automatically…'
+                  : 'Type a message, or "approve" to confirm the pending action…'
                 : 'Create tasks, search work, summarize a project…'
             }
             rows={3}
@@ -709,6 +985,23 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
           </button>
         </form>
       </section>
+
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.kind === 'delete' ? 'Delete chat' : 'Reset chat'}
+          message={
+            pendingConfirm.kind === 'delete'
+              ? `Delete "${pendingConfirm.conversation.title}"?\n\nThis removes the chat history. Existing tasks stay, but unapproved drafts from this chat will be discarded.`
+              : `Reset "${pendingConfirm.conversation.title}"?\n\nThis clears the chat history so you can reuse this chat. The original prompt is kept when available. Existing tasks stay, but unapproved drafts from this chat will be discarded.`
+          }
+          confirmLabel={pendingConfirm.kind === 'delete' ? 'Delete' : 'Reset'}
+          busy={confirmBusy}
+          onCancel={() => {
+            if (!confirmBusy) setPendingConfirm(null);
+          }}
+          onConfirm={(dontAskAgain) => handleConfirmDialog(dontAskAgain)}
+        />
+      )}
     </div>
   );
 }

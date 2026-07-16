@@ -20,6 +20,8 @@ import {
   updateTask,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { getUserPreferences } from '../auth/storage';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import {
   emptyFormValues,
   parseOptionalNumber,
@@ -49,6 +51,10 @@ interface TasksPageProps {
   /** Bumped when another view (e.g. chat) mutates tasks; triggers refetch without remounting. */
   externalRefreshKey?: number;
 }
+
+type PendingConfirm =
+  | { kind: 'delete-item'; label: string }
+  | { kind: 'delete-project'; message: string };
 
 interface DetailItem {
   title: string;
@@ -175,7 +181,8 @@ function subtaskParentPath(selection: Selection): string[] {
 }
 
 export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }: TasksPageProps) {
-  const { user } = useAuth();
+  const { user, updatePreferences } = useAuth();
+  const preferences = getUserPreferences(user);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -190,6 +197,8 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [taskListExpanded, setTaskListExpanded] = useState(true);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const lastExternalRefreshKey = useRef(externalRefreshKey);
 
   useEffect(() => {
@@ -491,11 +500,8 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
     setProjects((current) => current.map((item) => (item._id === projectId ? project : item)));
   };
 
-  const handleDelete = async (): Promise<boolean> => {
+  const performDelete = async (): Promise<boolean> => {
     if (!selection || !selectedTask) return false;
-
-    const label = selection.kind === 'task' ? 'task' : 'subtask';
-    if (!window.confirm(`Delete this ${label}? This cannot be undone.`)) return false;
 
     setSaving(true);
     setActionError(null);
@@ -519,6 +525,18 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDelete = async (): Promise<boolean> => {
+    if (!selection || !selectedTask) return false;
+
+    if (preferences.skipConfirmations) {
+      return performDelete();
+    }
+
+    const label = selection.kind === 'task' ? 'task' : 'subtask';
+    setPendingConfirm({ kind: 'delete-item', label });
+    return false;
   };
 
   const selectedTask = useMemo(
@@ -579,16 +597,9 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
 
   const activeProjectTasks = activeProjectGroup?.tasks ?? [];
 
-  const handleDeleteProject = async () => {
+  const performDeleteProject = async () => {
     if (!resolvedActiveProjectId || !activeProject) return;
     if (!activeProject.canManageMembers) return;
-
-    const taskCount = activeProjectTasks.length;
-    const message =
-      taskCount > 0
-        ? `Delete project "${activeProject.name}" and all ${taskCount} tasks? This cannot be undone.`
-        : `Delete project "${activeProject.name}"? This cannot be undone.`;
-    if (!window.confirm(message)) return;
 
     setSaving(true);
     setActionError(null);
@@ -607,6 +618,43 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       setSaving(false);
     }
   };
+
+  const handleDeleteProject = async () => {
+    if (!resolvedActiveProjectId || !activeProject) return;
+    if (!activeProject.canManageMembers) return;
+
+    if (preferences.skipConfirmations) {
+      await performDeleteProject();
+      return;
+    }
+
+    const taskCount = activeProjectTasks.length;
+    const message =
+      taskCount > 0
+        ? `Delete project "${activeProject.name}" and all ${taskCount} tasks? This cannot be undone.`
+        : `Delete project "${activeProject.name}"? This cannot be undone.`;
+    setPendingConfirm({ kind: 'delete-project', message });
+  };
+
+  async function handleConfirmDialog(dontAskAgain: boolean) {
+    if (!pendingConfirm) return;
+    setConfirmBusy(true);
+    try {
+      if (dontAskAgain && !preferences.skipConfirmations) {
+        await updatePreferences({ skipConfirmations: true });
+      }
+      if (pendingConfirm.kind === 'delete-item') {
+        await performDelete();
+      } else {
+        await performDeleteProject();
+      }
+      setPendingConfirm(null);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not save preference');
+    } finally {
+      setConfirmBusy(false);
+    }
+  }
 
   const replaceProject = (project: Project) => {
     setProjects((current) => current.map((item) => (item._id === project._id ? project : item)));
@@ -877,6 +925,23 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             )}
           </div>
         </>
+      )}
+
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.kind === 'delete-project' ? 'Delete project' : 'Delete'}
+          message={
+            pendingConfirm.kind === 'delete-project'
+              ? pendingConfirm.message
+              : `Delete this ${pendingConfirm.label}? This cannot be undone.`
+          }
+          confirmLabel="Delete"
+          busy={confirmBusy || saving}
+          onCancel={() => {
+            if (!confirmBusy && !saving) setPendingConfirm(null);
+          }}
+          onConfirm={(dontAskAgain) => handleConfirmDialog(dontAskAgain)}
+        />
       )}
     </section>
   );

@@ -77,7 +77,11 @@ export interface PendingProposal {
   name: string;
   arguments: Record<string, unknown>;
   source: 'native' | 'text_fallback' | 'manual';
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  stagedEntity?: {
+    kind: 'task' | 'project';
+    id: string;
+  };
 }
 
 export interface ConversationSummary {
@@ -104,6 +108,7 @@ export type ChatStreamEvent =
       name: string;
       arguments: Record<string, unknown>;
       source: 'native' | 'text_fallback' | 'manual';
+      staged?: boolean;
     }
   | { type: 'warning'; message: string }
   | { type: 'paused'; conversationId: string; pendingCount: number }
@@ -121,7 +126,12 @@ export interface UiProposal {
   name: string;
   arguments: Record<string, unknown>;
   source: 'native' | 'text_fallback' | 'manual';
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  staged?: boolean;
+  stagedEntity?: {
+    kind: 'task' | 'project';
+    id: string;
+  };
 }
 
 export interface UiMessage {

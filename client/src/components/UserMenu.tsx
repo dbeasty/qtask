@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import type { AuthUser } from '../auth/storage';
+import { getUserPreferences, type AuthUser, type UserPreferences } from '../auth/storage';
 
 interface UserMenuProps {
   user: AuthUser;
   anchorRef: RefObject<HTMLButtonElement | null>;
   onChangePassword: () => void;
   onUpdateDisplayName: (displayName: string | null) => Promise<void>;
+  onUpdatePreferences: (preferences: Partial<UserPreferences>) => Promise<void>;
   onSignOut: () => void;
   onClose: () => void;
 }
@@ -16,6 +17,7 @@ export function UserMenu({
   anchorRef,
   onChangePassword,
   onUpdateDisplayName,
+  onUpdatePreferences,
   onSignOut,
   onClose,
 }: UserMenuProps) {
@@ -28,7 +30,9 @@ export function UserMenu({
   const [editingName, setEditingName] = useState(false);
   const [displayName, setDisplayName] = useState(user.displayName ?? '');
   const [saving, setSaving] = useState(false);
+  const [prefSaving, setPrefSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const preferences = getUserPreferences(user);
 
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
@@ -89,6 +93,18 @@ export function UserMenu({
     }
   }
 
+  async function handleTogglePreference(key: keyof UserPreferences, value: boolean) {
+    setPrefSaving(true);
+    setError(null);
+    try {
+      await onUpdatePreferences({ [key]: value });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update preferences');
+    } finally {
+      setPrefSaving(false);
+    }
+  }
+
   return createPortal(
     <div
       ref={menuRef}
@@ -142,6 +158,32 @@ export function UserMenu({
       )}
 
       {error && <p className="user-menu-error">{error}</p>}
+
+      <div className="user-menu-section-label">Preferences</div>
+      <label className="user-menu-toggle">
+        <input
+          type="checkbox"
+          checked={preferences.autoApproveProposals}
+          disabled={prefSaving || saving}
+          onChange={(event) =>
+            void handleTogglePreference('autoApproveProposals', event.target.checked)
+          }
+        />
+        <span>Auto-approve agent actions</span>
+      </label>
+      <label className="user-menu-toggle">
+        <input
+          type="checkbox"
+          checked={preferences.skipConfirmations}
+          disabled={prefSaving || saving}
+          onChange={(event) =>
+            void handleTogglePreference('skipConfirmations', event.target.checked)
+          }
+        />
+        <span>Skip delete confirmations</span>
+      </label>
+
+      <div className="user-menu-divider" role="separator" />
 
       <button
         type="button"

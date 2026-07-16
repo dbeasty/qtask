@@ -17,8 +17,12 @@ export interface PendingProposal {
   name: string;
   arguments: Record<string, unknown>;
   source: 'native' | 'text_fallback' | 'manual';
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
   toolCallIndex?: number;
+  stagedEntity?: {
+    kind: 'task' | 'project';
+    id: string;
+  };
 }
 
 export interface PausedBatchState {
@@ -53,6 +57,7 @@ export type ChatStreamEvent =
       name: string;
       arguments: Record<string, unknown>;
       source: 'native' | 'text_fallback' | 'manual';
+      staged?: boolean;
     }
   | { type: 'warning'; message: string }
   | { type: 'paused'; conversationId: string; pendingCount: number }

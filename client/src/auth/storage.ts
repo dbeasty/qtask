@@ -12,12 +12,30 @@ export function clearStoredToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+export interface UserPreferences {
+  autoApproveProposals: boolean;
+  skipConfirmations: boolean;
+}
+
 export interface AuthUser {
   id: string;
   email: string;
   displayName?: string;
   emailVerified?: boolean;
   mustChangePassword?: boolean;
+  preferences?: UserPreferences;
+}
+
+export const DEFAULT_PREFERENCES: UserPreferences = {
+  autoApproveProposals: false,
+  skipConfirmations: false,
+};
+
+export function getUserPreferences(user: AuthUser | null | undefined): UserPreferences {
+  return {
+    autoApproveProposals: user?.preferences?.autoApproveProposals === true,
+    skipConfirmations: user?.preferences?.skipConfirmations === true,
+  };
 }
 
 async function parseAuthResponse(response: Response, fallbackError: string) {
@@ -138,6 +156,21 @@ export async function updateProfile(displayName: string | null): Promise<{ user:
     body: JSON.stringify({ displayName }),
   });
   return parseAuthResponse(response, 'Could not update profile') as Promise<{ user: AuthUser }>;
+}
+
+export async function updatePreferences(
+  preferences: Partial<UserPreferences>
+): Promise<{ user: AuthUser }> {
+  const token = getStoredToken();
+  const response = await fetch('/api/auth/me', {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ preferences }),
+  });
+  return parseAuthResponse(response, 'Could not update preferences') as Promise<{ user: AuthUser }>;
 }
 
 export async function fetchMe(token: string): Promise<AuthUser> {
