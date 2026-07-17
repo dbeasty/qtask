@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent, type RefObject } from 'react';
 import { TaskMoveMenu } from './TaskMoveMenu';
 import { TaskProgressIndicator } from './TaskProgressIndicator';
-import type { Subtask, Task } from '../types';
+import type { Subtask, Task, TaskStatus } from '../types';
 import {
   ancestorKeys,
   buildSubtaskPath,
@@ -50,6 +50,8 @@ interface TaskHierarchyTreeProps {
     index?: number
   ) => void;
   onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
+  canToggleDone: boolean;
+  onToggleDone: (taskId: string, path: string[], done: boolean) => void;
 }
 
 function isSelectionActive(selection: Selection | null, taskId: string, path: string[]): boolean {
@@ -64,6 +66,43 @@ function isSelectionActive(selection: Selection | null, taskId: string, path: st
 
 function stopDragPropagation(event: DragEvent) {
   event.stopPropagation();
+}
+
+interface DoneToggleProps {
+  status: TaskStatus;
+  percentComplete: number;
+  saving: boolean;
+  canToggle: boolean;
+  onToggle: (done: boolean) => void;
+}
+
+function DoneToggle({ status, percentComplete, saving, canToggle, onToggle }: DoneToggleProps) {
+  const indicator = <TaskProgressIndicator status={status} percentComplete={percentComplete} />;
+
+  if (!canToggle) {
+    return <span className="task-done-toggle task-done-toggle--static">{indicator}</span>;
+  }
+
+  const isDone = status === 'done';
+  const label = isDone ? 'Mark as not done' : 'Mark as done';
+
+  return (
+    <button
+      type="button"
+      className={`task-done-toggle${isDone ? ' task-done-toggle--done' : ''}`}
+      title={label}
+      aria-label={label}
+      disabled={saving}
+      draggable={false}
+      onDragStart={stopDragPropagation}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle(!isDone);
+      }}
+    >
+      {indicator}
+    </button>
+  );
 }
 
 interface UseTreeDragDropOptions {
@@ -187,6 +226,8 @@ interface SubtaskTreeNodeProps {
   onPromoteSubtask: TaskHierarchyTreeProps['onPromoteSubtask'];
   onAttach: (fromPath: string[], target: AttachTarget) => void;
   onDelete: TaskHierarchyTreeProps['onDelete'];
+  canToggleDone: boolean;
+  onToggleDone: TaskHierarchyTreeProps['onToggleDone'];
   dragHandlers: ReturnType<typeof useTreeDragDrop>;
 }
 
@@ -208,6 +249,8 @@ function SubtaskTreeNode({
   onPromoteSubtask,
   onAttach,
   onDelete,
+  canToggleDone,
+  onToggleDone,
   dragHandlers,
 }: SubtaskTreeNodeProps) {
   const key = nodeKey(task._id, path);
@@ -265,6 +308,13 @@ function SubtaskTreeNode({
           ) : (
             <span className="task-tree-chevron-spacer" />
           )}
+          <DoneToggle
+            status={subtask.status}
+            percentComplete={subtask.percentComplete}
+            saving={saving}
+            canToggle={canToggleDone}
+            onToggle={(done) => onToggleDone(task._id, path, done)}
+          />
           <button
             type="button"
             className={`task-tree-label subtask-list-item${isActive ? ' active' : ''}`}
@@ -273,7 +323,6 @@ function SubtaskTreeNode({
             onClick={() => onSelect({ kind: 'subtask', taskId: task._id, path })}
           >
             <span className="task-tree-label-header">
-              <TaskProgressIndicator status={subtask.status} percentComplete={subtask.percentComplete} />
               <span className="subtask-list-title">{subtask.title}</span>
             </span>
           </button>
@@ -304,6 +353,9 @@ function SubtaskTreeNode({
                 }
                 canOutdent={path.length >= 2}
                 attachTargets={attachTargets}
+                showMarkDone={canToggleDone}
+                isDone={subtask.status === 'done'}
+                onToggleDone={() => onToggleDone(task._id, path, subtask.status !== 'done')}
                 onMoveUp={() => onMoveUp(task._id, path)}
                 onMoveDown={() =>
                   siblingContext &&
@@ -341,6 +393,8 @@ function SubtaskTreeNode({
               onPromoteSubtask={onPromoteSubtask}
               onAttach={onAttach}
               onDelete={onDelete}
+              canToggleDone={canToggleDone}
+              onToggleDone={onToggleDone}
               dragHandlers={dragHandlers}
             />
           ))}
@@ -361,6 +415,8 @@ export function TaskHierarchyTree({
   onMoveTask,
   onAttachTask,
   onDelete,
+  canToggleDone,
+  onToggleDone,
 }: TaskHierarchyTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [openMoveMenuKey, setOpenMoveMenuKey] = useState<string | null>(null);
@@ -453,6 +509,13 @@ export function TaskHierarchyTree({
                 ) : (
                   <span className="task-tree-chevron-spacer" />
                 )}
+                <DoneToggle
+                  status={task.status}
+                  percentComplete={task.percentComplete}
+                  saving={saving}
+                  canToggle={canToggleDone}
+                  onToggle={(done) => onToggleDone(task._id, [], done)}
+                />
                 <button
                   type="button"
                   className={`task-tree-label task-list-item${isActive ? ' active' : ''}`}
@@ -461,7 +524,6 @@ export function TaskHierarchyTree({
                   onClick={() => onSelect({ kind: 'task', taskId: task._id })}
                 >
                   <span className="task-tree-label-header">
-                    <TaskProgressIndicator status={task.status} percentComplete={task.percentComplete} />
                     <span className="task-list-title">{task.title}</span>
                   </span>
                   {hasChildren && (
@@ -493,6 +555,9 @@ export function TaskHierarchyTree({
                       canMoveDown={taskIndex < tasks.length - 1}
                       canOutdent={false}
                       attachTargets={attachTargets}
+                      showMarkDone={canToggleDone}
+                      isDone={task.status === 'done'}
+                      onToggleDone={() => onToggleDone(task._id, [], task.status !== 'done')}
                       onMoveUp={() => onMoveTask(task._id, taskIndex - 1)}
                       onMoveDown={() => onMoveTask(task._id, taskIndex + 1)}
                       onPromote={() => {}}
@@ -530,6 +595,8 @@ export function TaskHierarchyTree({
                     onPromoteSubtask={onPromoteSubtask}
                     onAttach={(fromPath, target) => onMoveSubtask(task._id, fromPath, target.parentPath)}
                     onDelete={onDelete}
+                    canToggleDone={canToggleDone}
+                    onToggleDone={onToggleDone}
                     dragHandlers={dragHandlers}
                   />
                 ))}

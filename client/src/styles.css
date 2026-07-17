@@ -1427,6 +1427,39 @@ main {
   display: block;
 }
 
+.task-done-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  line-height: 0;
+}
+
+button.task-done-toggle {
+  cursor: pointer;
+}
+
+button.task-done-toggle:disabled {
+  cursor: default;
+}
+
+button.task-done-toggle:hover:not(:disabled) {
+  background: #1b2738;
+}
+
+button.task-done-toggle:not(.task-done-toggle--done):hover:not(:disabled)
+  .task-progress-indicator--not-started svg circle,
+button.task-done-toggle:not(.task-done-toggle--done):hover:not(:disabled)
+  .task-progress-indicator--cancelled svg circle {
+  stroke: #22c55e;
+}
+
 .task-list-row {
   display: flex;
   flex-direction: column;

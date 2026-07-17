@@ -33,7 +33,7 @@ import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectToolbar } from '../components/ProjectToolbar';
 import { TaskListPanel } from '../components/TaskListPanel';
 import { type Selection } from '../components/TaskHierarchyTree';
-import type { CollaboratorRole, Project, Subtask, Task, UpdateTaskInput } from '../types';
+import type { CollaboratorRole, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
 import {
   getDefaultProject,
   groupTasksByProject,
@@ -495,6 +495,29 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
     }
   };
 
+  const handleToggleDone = async (taskId: string, path: string[], done: boolean) => {
+    setSaving(true);
+    setActionError(null);
+    try {
+      const status: TaskStatus = done ? 'done' : 'todo';
+      // Un-checking also resets progress so the indicator doesn't stay at 100%.
+      // Executors may only send status; the server rejects other fields for them.
+      const patch =
+        !done && activeProject?.canEdit
+          ? { status, percentComplete: 0, lastProgressField: 'percent' as const }
+          : { status };
+      const { task } =
+        path.length === 0
+          ? await updateTask(taskId, patch)
+          : await updateSubtask(taskId, path, patch);
+      applyTaskUpdate(task);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update status');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleRenameProject = async (projectId: string, name: string) => {
     const { project } = await updateProject(projectId, { name });
     setProjects((current) => current.map((item) => (item._id === projectId ? project : item)));
@@ -869,6 +892,8 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
                 onAddSubtaskClick={handleAddSubtaskClick}
                 onDelete={handleDelete}
                 onSelect={handleSelect}
+                canToggleDone={Boolean(activeProject?.canEdit || activeProject?.canUpdateStatus)}
+                onToggleDone={handleToggleDone}
                 onMoveSubtask={handleMoveSubtask}
                 onMoveUp={handleMoveUp}
                 onPromoteSubtask={handlePromoteSubtask}

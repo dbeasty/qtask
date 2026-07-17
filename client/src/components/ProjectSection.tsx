@@ -6,6 +6,8 @@ interface ProjectSectionProps {
   selection: Selection | null;
   saving: boolean;
   onSelect: (selection: Selection) => void;
+  canToggleDone: boolean;
+  onToggleDone: (taskId: string, path: string[], done: boolean) => void;
   onMoveSubtask: (
     taskId: string,
     fromPath: string[],
@@ -29,6 +31,8 @@ export function ProjectSection({
   selection,
   saving,
   onSelect,
+  canToggleDone,
+  onToggleDone,
   onMoveSubtask,
   onMoveUp,
   onPromoteSubtask,
@@ -44,6 +48,8 @@ export function ProjectSection({
           selection={selection}
           saving={saving}
           onSelect={onSelect}
+          canToggleDone={canToggleDone}
+          onToggleDone={onToggleDone}
           onMoveSubtask={onMoveSubtask}
           onMoveUp={onMoveUp}
           onPromoteSubtask={onPromoteSubtask}

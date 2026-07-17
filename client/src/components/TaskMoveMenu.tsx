@@ -17,6 +17,9 @@ interface TaskMoveMenuProps {
   canMoveDown: boolean;
   canOutdent: boolean;
   attachTargets: MoveAttachTarget[];
+  showMarkDone: boolean;
+  isDone: boolean;
+  onToggleDone: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onPromote: () => void;
@@ -35,6 +38,9 @@ export function TaskMoveMenu({
   canMoveDown,
   canOutdent,
   attachTargets,
+  showMarkDone,
+  isDone,
+  onToggleDone,
   onMoveUp,
   onMoveDown,
   onPromote,
@@ -117,6 +123,20 @@ export function TaskMoveMenu({
       role="menu"
       style={{ top: menuStyle.top, left: menuStyle.left, visibility: menuStyle.visibility }}
     >
+      {showMarkDone && (
+        <>
+          <button
+            type="button"
+            className="task-move-menu-item"
+            role="menuitem"
+            disabled={saving}
+            onClick={() => run(onToggleDone)}
+          >
+            {isDone ? 'Mark as not done' : 'Mark as done'}
+          </button>
+          <div className="task-move-menu-divider" role="separator" />
+        </>
+      )}
       <button
         type="button"
         className="task-move-menu-item"
