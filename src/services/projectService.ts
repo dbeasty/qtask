@@ -1,3 +1,4 @@
+import { isValidObjectId } from 'mongoose';
 import { ProjectModel, TaskModel, UserModel } from '../models/index.js';
 import { config } from '../config/index.js';
 import { HttpError } from '../utils/httpError.js';
@@ -134,6 +135,10 @@ export class ProjectService {
     userId: string,
     projectId: string
   ): Promise<{ project: LeanProject; role: ProjectRole } | null> {
+    // Guard against orphaned/invalid projectId values (e.g. a stray title string)
+    // so callers get a clean "not found" instead of a Mongoose CastError (HTTP 500).
+    if (!isValidObjectId(projectId)) return null;
+
     const project = await ProjectModel.findOne({
       _id: projectId,
       ...this.accessibleProjectFilter(userId),

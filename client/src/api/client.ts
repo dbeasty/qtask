@@ -158,8 +158,15 @@ export async function updateTask(
   return request(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
 }
 
-export async function deleteTask(id: string): Promise<void> {
-  await request(`/api/tasks/${id}`, { method: 'DELETE' });
+export async function deleteTask(
+  id: string,
+  options: { keepChildren?: boolean } = {}
+): Promise<{ promotedTasks?: import('../types').Task[] } | void> {
+  const query = options.keepChildren ? '?keepChildren=true' : '';
+  if (options.keepChildren) {
+    return request(`/api/tasks/${id}${query}`, { method: 'DELETE' });
+  }
+  await request(`/api/tasks/${id}${query}`, { method: 'DELETE' });
 }
 
 function subtaskPathQuery(path: string[]): string {
@@ -188,8 +195,19 @@ export async function updateSubtask(
   });
 }
 
-export async function deleteSubtask(taskId: string, path: string[]): Promise<void> {
-  await request(`/api/tasks/${taskId}/subtasks${subtaskPathQuery(path)}`, { method: 'DELETE' });
+export async function deleteSubtask(
+  taskId: string,
+  path: string[],
+  options: { keepChildren?: boolean } = {}
+): Promise<{ task?: import('../types').Task } | void> {
+  const pathQuery = subtaskPathQuery(path);
+  const keepQuery = options.keepChildren
+    ? `${pathQuery ? '&' : '?'}keepChildren=true`
+    : '';
+  if (options.keepChildren) {
+    return request(`/api/tasks/${taskId}/subtasks${pathQuery}${keepQuery}`, { method: 'DELETE' });
+  }
+  await request(`/api/tasks/${taskId}/subtasks${pathQuery}${keepQuery}`, { method: 'DELETE' });
 }
 
 export async function moveSubtask(

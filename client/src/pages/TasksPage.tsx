@@ -53,7 +53,7 @@ interface TasksPageProps {
 }
 
 type PendingConfirm =
-  | { kind: 'delete-item'; label: string }
+  | { kind: 'delete-item'; label: string; keepChildren: boolean; hasChildren: boolean }
   | { kind: 'delete-project'; message: string };
 
 interface DetailItem {
@@ -500,22 +500,46 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
     setProjects((current) => current.map((item) => (item._id === projectId ? project : item)));
   };
 
-  const performDelete = async (): Promise<boolean> => {
+  const selectedTask = useMemo(
+    () => (selection ? tasks.find((task) => task._id === selection.taskId) ?? null : null),
+    [selection, tasks]
+  );
+
+  const performDelete = async (keepChildren = false): Promise<boolean> => {
     if (!selection || !selectedTask) return false;
 
     setSaving(true);
     setActionError(null);
     try {
       if (selection.kind === 'task') {
-        await deleteTask(selectedTask._id);
-        const remaining = tasks.filter((task) => task._id !== selectedTask._id);
-        setTasks(remaining);
-        setSelection(remaining.length > 0 ? { kind: 'task', taskId: remaining[0]._id } : null);
+        const result = await deleteTask(selectedTask._id, { keepChildren });
+        if (keepChildren) {
+          const response = await listTasks();
+          setTasks(response.tasks);
+          const promotedId =
+            result && 'promotedTasks' in result && result.promotedTasks?.[0]?._id;
+          setSelection(
+            promotedId
+              ? { kind: 'task', taskId: promotedId }
+              : response.tasks.length > 0
+                ? { kind: 'task', taskId: response.tasks[0]._id }
+                : null
+          );
+        } else {
+          const remaining = tasks.filter((task) => task._id !== selectedTask._id);
+          setTasks(remaining);
+          setSelection(remaining.length > 0 ? { kind: 'task', taskId: remaining[0]._id } : null);
+        }
       } else {
-        await deleteSubtask(selectedTask._id, selection.path);
-        const response = await listTasks();
-        setTasks(response.tasks);
-        setSelection({ kind: 'task', taskId: selectedTask._id });
+        const result = await deleteSubtask(selectedTask._id, selection.path, { keepChildren });
+        if (keepChildren && result && 'task' in result && result.task) {
+          applyTaskUpdate(result.task);
+          setSelection({ kind: 'task', taskId: selectedTask._id });
+        } else {
+          const response = await listTasks();
+          setTasks(response.tasks);
+          setSelection({ kind: 'task', taskId: selectedTask._id });
+        }
       }
       resetHierarchyModes();
       return true;
@@ -527,22 +551,21 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
     }
   };
 
-  const handleDelete = async (): Promise<boolean> => {
+  const handleDelete = async (keepChildren = false): Promise<boolean> => {
     if (!selection || !selectedTask) return false;
 
     if (preferences.skipConfirmations) {
-      return performDelete();
+      return performDelete(keepChildren);
     }
 
+    const hasChildren =
+      selection.kind === 'task'
+        ? selectedTask.subtasks.length > 0
+        : (findSubtaskByPath(selectedTask.subtasks, selection.path)?.subtasks.length ?? 0) > 0;
     const label = selection.kind === 'task' ? 'task' : 'subtask';
-    setPendingConfirm({ kind: 'delete-item', label });
+    setPendingConfirm({ kind: 'delete-item', label, keepChildren, hasChildren });
     return false;
   };
-
-  const selectedTask = useMemo(
-    () => (selection ? tasks.find((task) => task._id === selection.taskId) ?? null : null),
-    [selection, tasks]
-  );
 
   useEffect(() => {
     if (!selectedTask?.projectId) return;
@@ -644,7 +667,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
         await updatePreferences({ skipConfirmations: true });
       }
       if (pendingConfirm.kind === 'delete-item') {
-        await performDelete();
+        await performDelete(pendingConfirm.keepChildren);
       } else {
         await performDeleteProject();
       }
@@ -933,7 +956,11 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
           message={
             pendingConfirm.kind === 'delete-project'
               ? pendingConfirm.message
-              : `Delete this ${pendingConfirm.label}? This cannot be undone.`
+              : pendingConfirm.keepChildren
+                ? `Delete this ${pendingConfirm.label}? Its subtasks will be kept.`
+                : pendingConfirm.hasChildren
+                  ? `Delete this ${pendingConfirm.label} and its subtasks? This cannot be undone.`
+                  : `Delete this ${pendingConfirm.label}? This cannot be undone.`
           }
           confirmLabel="Delete"
           busy={confirmBusy || saving}

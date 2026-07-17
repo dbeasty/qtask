@@ -21,7 +21,7 @@ interface ProjectSectionProps {
     parentPath: string[],
     index?: number
   ) => void;
-  onDelete: () => void | Promise<boolean>;
+  onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
 }
 
 export function ProjectSection({

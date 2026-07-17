@@ -49,7 +49,7 @@ interface TaskHierarchyTreeProps {
     parentPath: string[],
     index?: number
   ) => void;
-  onDelete: () => void | Promise<boolean>;
+  onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
 }
 
 function isSelectionActive(selection: Selection | null, taskId: string, path: string[]): boolean {
@@ -297,6 +297,7 @@ function SubtaskTreeNode({
                 anchorRef={moveTriggerRef}
                 kind="subtask"
                 saving={saving}
+                hasChildren={hasChildren}
                 canMoveUp={canMoveUp(task, path)}
                 canMoveDown={
                   !!siblingContext && siblingContext.index < siblingContext.siblings.length - 1
@@ -487,6 +488,7 @@ export function TaskHierarchyTree({
                       anchorRef={moveTriggerRef}
                       kind="task"
                       saving={saving}
+                      hasChildren={hasChildren}
                       canMoveUp={taskIndex > 0}
                       canMoveDown={taskIndex < tasks.length - 1}
                       canOutdent={false}

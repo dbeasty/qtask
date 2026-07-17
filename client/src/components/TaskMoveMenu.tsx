@@ -12,6 +12,7 @@ interface TaskMoveMenuProps {
   anchorRef: RefObject<HTMLButtonElement | null>;
   kind: 'task' | 'subtask';
   saving: boolean;
+  hasChildren: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   canOutdent: boolean;
@@ -21,7 +22,7 @@ interface TaskMoveMenuProps {
   onPromote: () => void;
   onOutdent: () => void;
   onAttach: (target: MoveAttachTarget) => void;
-  onDelete: () => void | Promise<boolean>;
+  onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
   onClose: () => void;
 }
 
@@ -29,6 +30,7 @@ export function TaskMoveMenu({
   anchorRef,
   kind,
   saving,
+  hasChildren,
   canMoveUp,
   canMoveDown,
   canOutdent,
@@ -69,7 +71,7 @@ export function TaskMoveMenu({
     }
 
     setMenuStyle({ top, left, visibility: 'visible' });
-  }, [anchorRef, attachTargets.length, kind]);
+  }, [anchorRef, attachTargets.length, kind, hasChildren]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -101,8 +103,8 @@ export function TaskMoveMenu({
     onClose();
   };
 
-  const handleDelete = async () => {
-    const deleted = await onDelete();
+  const handleDelete = async (keepChildren = false) => {
+    const deleted = await onDelete(keepChildren);
     if (deleted) {
       onClose();
     }
@@ -139,10 +141,21 @@ export function TaskMoveMenu({
         className="task-move-menu-item task-move-menu-item-danger"
         role="menuitem"
         disabled={saving}
-        onClick={() => void handleDelete()}
+        onClick={() => void handleDelete(false)}
       >
         Delete
       </button>
+      {hasChildren && (
+        <button
+          type="button"
+          className="task-move-menu-item task-move-menu-item-danger"
+          role="menuitem"
+          disabled={saving}
+          onClick={() => void handleDelete(true)}
+        >
+          Delete, keep subtasks
+        </button>
+      )}
       {kind === 'subtask' && (
         <>
           <button

@@ -585,7 +585,6 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
       setConversations((items) => [
         {
           _id: duplicated._id,
-          userId: duplicated.userId,
           title: duplicated.title,
           createdAt: duplicated.createdAt,
           updatedAt: duplicated.updatedAt,

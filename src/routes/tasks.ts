@@ -6,6 +6,13 @@ import type { TaskLinkType } from '../types/task.js';
 
 export const tasksRouter = Router();
 
+function parseKeepChildren(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
 tasksRouter.get('/', async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -80,9 +87,14 @@ tasksRouter.patch('/:id', async (req, res, next) => {
 tasksRouter.delete('/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const deleted = await taskService.deleteTask(userId, req.params.id!);
-    if (!deleted) {
+    const keepChildren = parseKeepChildren(req.query.keepChildren);
+    const result = await taskService.deleteTask(userId, req.params.id!, { keepChildren });
+    if (!result) {
       res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    if (keepChildren) {
+      res.json({ promotedTasks: result.promotedTasks });
       return;
     }
     res.status(204).send();
@@ -271,9 +283,14 @@ tasksRouter.delete('/:id/subtasks', async (req, res, next) => {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
-    const task = await taskService.deleteSubtask(userId, req.params.id!, path);
+    const keepChildren = parseKeepChildren(req.query.keepChildren);
+    const task = await taskService.deleteSubtask(userId, req.params.id!, path, { keepChildren });
     if (!task) {
       res.status(404).json({ error: 'Task or subtask not found' });
+      return;
+    }
+    if (keepChildren) {
+      res.json({ task });
       return;
     }
     res.status(204).send();

@@ -127,13 +127,17 @@ export class TaskService {
     if (!task) return null;
     if (task.staging) return null;
 
-    if (task.projectId) {
+    // Only treat the task as project-scoped when it has a real project reference.
+    // An orphaned/invalid projectId (e.g. a stray title string) falls through to the
+    // ownership check so the owner can still manage and delete the task.
+    if (task.projectId && Types.ObjectId.isValid(String(task.projectId))) {
       const access = await (await projects()).getProjectAccess(userId, String(task.projectId));
-      if (!access) return null;
-      if (!roleAtLeast(access.role, minRole)) {
-        throw new HttpError(403, 'Insufficient project permissions');
+      if (access) {
+        if (!roleAtLeast(access.role, minRole)) {
+          throw new HttpError(403, 'Insufficient project permissions');
+        }
+        return { task, role: access.role };
       }
-      return { task, role: access.role };
     }
 
     if (task.userId !== userId) return null;
@@ -371,21 +375,98 @@ export class TaskService {
     return serializeTask(task.toObject());
   }
 
-  async deleteTask(userId: string, taskId: string) {
+  async deleteTask(userId: string, taskId: string, options: { keepChildren?: boolean } = {}) {
     const task = await this.loadAccessibleTask(userId, taskId, 'editor');
-    if (!task) return false;
+    if (!task) return null;
 
     const title = task.title;
+    const keepChildren = Boolean(options.keepChildren) && (task.subtasks?.length ?? 0) > 0;
+
+    if (!keepChildren) {
+      await task.deleteOne();
+      await logActivity({
+        taskId,
+        userId,
+        action: 'task.deleted',
+        details: { title },
+      });
+      return { deleted: true as const, promotedTasks: [] as ReturnType<typeof serializeTask>[] };
+    }
+
+    let projectId =
+      task.projectId && Types.ObjectId.isValid(String(task.projectId))
+        ? String(task.projectId)
+        : undefined;
+    if (!projectId) {
+      projectId = await (await projects()).ensureDefaultProject(userId);
+    }
+
+    const parentSortOrder = task.sortOrder ?? 0;
+    const children = (task.subtasks ?? []).map((child) => {
+      const maybeDoc = child as { toObject?: () => Record<string, unknown> };
+      return maybeDoc.toObject ? maybeDoc.toObject() : (child as unknown as Record<string, unknown>);
+    });
+
+    const promotedDocs = children.map((child, index) => {
+      const doc = new TaskModel({
+        userId: task.userId,
+        projectId,
+        title: child.title,
+        description: child.description,
+        status: child.status ?? 'todo',
+        priority: child.priority ?? 'medium',
+        dueDate: child.dueDate,
+        tags: child.tags ?? [],
+        percentComplete: child.percentComplete ?? 0,
+        percentCompleteOverride: child.percentCompleteOverride,
+        progressShare: child.progressShare,
+        hoursSpent: child.hoursSpent,
+        hoursRemaining: child.hoursRemaining,
+        lastProgressField: child.lastProgressField,
+        subtasks: child.subtasks ?? [],
+        links: child.links ?? [],
+        sortOrder: parentSortOrder + index,
+      });
+
+      const withPercent = applyPercentComplete(
+        doc.toObject() as Parameters<typeof applyPercentComplete>[0]
+      );
+      doc.status = withPercent.status as typeof doc.status;
+      doc.percentComplete = withPercent.percentComplete;
+      doc.subtasks = withPercent.subtasks as typeof doc.subtasks;
+      return doc;
+    });
+
+    // Shift later siblings so promoted children keep relative order after the parent slot.
+    if (promotedDocs.length > 1) {
+      await TaskModel.updateMany(
+        {
+          projectId,
+          _id: { $ne: task._id },
+          sortOrder: { $gt: parentSortOrder },
+        },
+        { $inc: { sortOrder: promotedDocs.length - 1 } }
+      );
+    }
+
+    await Promise.all(promotedDocs.map((doc) => doc.save()));
     await task.deleteOne();
+
+    const promotedTasks = promotedDocs.map((doc) => serializeTask(doc.toObject()));
+    await Promise.all(promotedTasks.map((promoted) => enqueueEmbeddingJob(promoted._id)));
 
     await logActivity({
       taskId,
       userId,
-      action: 'task.deleted',
-      details: { title },
+      action: 'task.deleted_keep_children',
+      details: {
+        title,
+        promotedTaskIds: promotedTasks.map((promoted) => promoted._id),
+        promotedTitles: promotedTasks.map((promoted) => promoted.title),
+      },
     });
 
-    return true;
+    return { deleted: true as const, promotedTasks };
   }
 
   async addLink(userId: string, taskId: string, linkedTaskId: string, type: TaskLinkType) {
@@ -626,7 +707,10 @@ export class TaskService {
     const [node] = currentParentArray.splice(fromIndex, 1);
     const nodeObj = node as Record<string, unknown>;
 
-    let projectId = task.projectId ? String(task.projectId) : undefined;
+    let projectId =
+      task.projectId && Types.ObjectId.isValid(String(task.projectId))
+        ? String(task.projectId)
+        : undefined;
     if (!projectId) {
       projectId = await (await projects()).ensureDefaultProject(userId);
     }
@@ -788,37 +872,50 @@ export class TaskService {
     return this.listTasks(userId, { projectId });
   }
 
-  async deleteSubtask(userId: string, taskId: string, subtaskPath: string[]) {
+  async deleteSubtask(
+    userId: string,
+    taskId: string,
+    subtaskPath: string[],
+    options: { keepChildren?: boolean } = {}
+  ) {
     const task = await this.loadAccessibleTask(userId, taskId, 'editor');
     if (!task || subtaskPath.length === 0) return null;
 
     const subtaskId = subtaskPath[subtaskPath.length - 1]!;
-    let deletedTitle: string | undefined;
+    const parentPath = subtaskPath.slice(0, -1);
+    const parentArray = this.getParentArray(task, parentPath);
+    if (!parentArray) return null;
 
-    if (subtaskPath.length === 1) {
-      const index = task.subtasks.findIndex((s) => String(s._id) === subtaskId);
-      if (index === -1) return null;
-      deletedTitle = task.subtasks[index]?.title;
-      task.subtasks.splice(index, 1);
-    } else {
-      const parent = this.findSubtaskByPath(task.subtasks, subtaskPath.slice(0, -1));
-      if (!parent) return null;
-      parent.subtasks = parent.subtasks ?? [];
-      const index = parent.subtasks.findIndex((s) => String(s._id) === subtaskId);
-      if (index === -1) return null;
-      deletedTitle = (parent.subtasks[index] as { title?: string })?.title;
-      parent.subtasks.splice(index, 1);
+    const index = parentArray.findIndex((s) => String(s._id) === subtaskId);
+    if (index === -1) return null;
+
+    const node = parentArray[index] as {
+      title?: string;
+      subtasks?: Array<{ _id: Types.ObjectId; subtasks?: unknown[] }>;
+    };
+    const deletedTitle = node.title;
+    const children = [...(node.subtasks ?? [])];
+    const keepChildren = Boolean(options.keepChildren) && children.length > 0;
+
+    parentArray.splice(index, 1);
+    if (keepChildren) {
+      parentArray.splice(index, 0, ...children);
     }
 
     finalizeTaskProgress(task);
     task.markModified('subtasks');
     await task.save();
+    await enqueueEmbeddingJob(taskId);
 
     await logActivity({
       taskId,
       userId,
-      action: 'subtask.deleted',
-      details: { title: deletedTitle, path: subtaskPath },
+      action: keepChildren ? 'subtask.deleted_keep_children' : 'subtask.deleted',
+      details: {
+        title: deletedTitle,
+        path: subtaskPath,
+        promotedChildIds: keepChildren ? children.map((child) => String(child._id)) : undefined,
+      },
     });
 
     return serializeTask(task.toObject());

@@ -12,7 +12,7 @@ interface TaskListPanelProps {
   addDisabled: boolean;
   onAddTaskClick: () => void;
   onAddSubtaskClick: () => void;
-  onDelete: () => void | Promise<boolean>;
+  onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
   onSelect: (selection: Selection) => void;
   onMoveSubtask: (
     taskId: string,
