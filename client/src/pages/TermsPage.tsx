@@ -8,7 +8,7 @@ export function TermsPage() {
     <div className="auth-page">
       <div className="auth-card auth-card-wide legal-page">
         <h1>Terms &amp; Disclaimer</h1>
-        <p className="muted legal-version">Version 1.0</p>
+        <p className="muted legal-version">Version 1.1</p>
 
         <section className="legal-section">
           <h2>About QTask</h2>
@@ -33,12 +33,24 @@ export function TermsPage() {
         </section>
 
         <section className="legal-section">
+          <h2>Data safety</h2>
+          <p>
+            QTask does not guarantee the safety, integrity, availability, or confidentiality of your
+            data. Data you store in or through QTask may be lost, corrupted, deleted, or accessed without
+            authorization — including as a result of hacking, misconfiguration, hardware or software
+            failure, or other causes. You are responsible for maintaining your own backups and must not
+            rely on QTask as the sole copy of important information.
+          </p>
+        </section>
+
+        <section className="legal-section">
           <h2>Limitation of liability</h2>
           <p>
             To the fullest extent permitted by law, the authors and contributors of QTask shall not be
             liable for any direct, indirect, incidental, special, consequential, or punitive damages
-            arising from your use of the software, including but not limited to data loss, service
-            downtime, security breaches, unauthorized access, or errors in AI-generated output.
+            arising from your use of the software. This includes, without limitation, liability for data
+            going missing or being lost, data being hacked or otherwise accessed without authorization,
+            security breaches, service downtime, or errors in AI-generated output.
           </p>
         </section>
 
