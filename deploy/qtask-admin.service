@@ -10,6 +10,9 @@ Group=qtask
 WorkingDirectory=/opt/qtask
 Environment=NODE_ENV=production
 EnvironmentFile=/opt/qtask/.env
+# Uncomment when SECRETS_BACKEND=vault (AppRole bootstrap only — not app passwords):
+# LoadCredential=vault_role_id:/etc/credstore/qtask-vault-role-id
+# LoadCredential=vault_secret_id:/etc/credstore/qtask-vault-secret-id
 ExecStart=/usr/bin/node /opt/qtask/dist/admin/index.js
 Restart=on-failure
 RestartSec=5

@@ -1,0 +1,14 @@
+# Standalone MongoDB compose when MONGO_ENCRYPT_AT_REST=true.
+# Bind-mounts a LUKS-backed host directory (MONGO_ENCRYPT_MOUNT) to /data/db.
+# Do not combine with docker-compose.mongodb.yml (named volume would conflict).
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-}
+    volumes:
+      - ${MONGO_ENCRYPT_MOUNT:-/var/lib/qtask/mongo-data}:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"

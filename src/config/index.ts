@@ -1,4 +1,12 @@
 import dotenv from 'dotenv';
+import { loadSecrets, resolveSecretsBackend } from './secrets.js';
+
+export {
+  loadSecrets,
+  resolveSecretsBackend,
+  SECRET_ENV_KEYS,
+  type SecretsBackend,
+} from './secrets.js';
 
 // Test processes set NODE_ENV before importing config and must not inherit
 // developer/production secrets from local dotenv files.
@@ -6,6 +14,9 @@ if (process.env.NODE_ENV !== 'test' && process.env.QTASK_SKIP_DOTENV !== 'true')
   dotenv.config();
   dotenv.config({ path: '.env.local', override: true });
 }
+
+// Optional Vault merge into process.env (no-op when SECRETS_BACKEND=env, the default).
+await loadSecrets();
 
 function requireSecret(name: string, value: string | undefined, devFallback: string): string {
   if (value) return value;
@@ -44,8 +55,10 @@ export function resolveMailFrom(
 
 const mailProvider = resolveMailProvider();
 const adminAuthMode: AdminAuthMode = process.env.ADMIN_AUTH_MODE === 'mtls' ? 'mtls' : 'password';
+const secretsBackend = resolveSecretsBackend();
 
 export const config = {
+  secretsBackend,
   port: parseInt(process.env.PORT ?? '3000', 10),
   nodeEnv: process.env.NODE_ENV ?? 'development',
   mongodbUri: process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/qtask',
@@ -101,4 +114,6 @@ export const config = {
     dockerContainer: process.env.OLLAMA_DOCKER_CONTAINER ?? 'qtask-ollama-1',
     dcgmMetricsUrl: process.env.DCGM_METRICS_URL,
   },
+  mongoEncryptAtRest: process.env.MONGO_ENCRYPT_AT_REST === 'true',
+  mongoEncryptMount: process.env.MONGO_ENCRYPT_MOUNT ?? '/var/lib/qtask/mongo-data',
 } as const;

@@ -1,0 +1,47 @@
+# Ollama + docker-proxy for Jetson (Orin Nano 8GB / similar).
+# Run on the Jetson only — not the app host. App host points at this machine via
+# OLLAMA_BASE_URL and OLLAMA_DOCKER_STATS_URL (see docs/DEPLOY.md).
+#
+#   docker compose -f deploy/docker-compose.jetson.yml up -d
+#
+# Requires NVIDIA Container Toolkit on Jetson for GPU. Without it, remove
+# `runtime: nvidia` and the NVIDIA_* env vars to run CPU-only.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: qtask-ollama
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - qtask_ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - qtask_jetson
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: qtask-ollama-docker-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      PING: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "2375:2375"
+    networks:
+      - qtask_jetson
+
+networks:
+  qtask_jetson:
+    driver: bridge
+
+volumes:
+  qtask_ollama_data:

@@ -1,0 +1,19 @@
+[Unit]
+Description=QTask MongoDB (Docker)
+After=network.target docker.service
+Wants=docker.service
+Before=qtask.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/qtask
+EnvironmentFile=-/opt/qtask/.env
+# Uncomment when SECRETS_BACKEND=vault:
+# LoadCredential=vault_role_id:/etc/credstore/qtask-vault-role-id
+# LoadCredential=vault_secret_id:/etc/credstore/qtask-vault-secret-id
+ExecStart=/opt/qtask/deploy/start-mongodb.sh
+ExecStop=/bin/bash -c 'f=/opt/qtask/deploy/docker-compose.mongodb.yml; [[ "${MONGO_ENCRYPT_AT_REST:-false}" == "true" ]] && f=/opt/qtask/deploy/docker-compose.mongodb.encrypted.yml; docker compose -f "$f" stop'
+
+[Install]
+WantedBy=multi-user.target

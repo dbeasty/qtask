@@ -1,7 +1,12 @@
+# MongoDB for standalone / systemd deployments.
+# Auth is optional: set MONGO_ROOT_USER and MONGO_ROOT_PASSWORD (via .env or Vault-rendered env).
 services:
   mongodb:
     image: mongo:7
     restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-}
     volumes:
       - qtask_mongo_data:/data/db
     ports:

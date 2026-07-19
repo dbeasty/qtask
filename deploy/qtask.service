@@ -1,6 +1,6 @@
 [Unit]
 Description=QTask API and web client
-After=network.target docker.service
+After=network.target docker.service qtask-mongodb.service
 Wants=docker.service
 
 [Service]
@@ -9,6 +9,9 @@ User=qtask
 Group=qtask
 WorkingDirectory=/opt/qtask
 EnvironmentFile=/opt/qtask/.env
+# Uncomment when SECRETS_BACKEND=vault (AppRole bootstrap only — not app passwords):
+# LoadCredential=vault_role_id:/etc/credstore/qtask-vault-role-id
+# LoadCredential=vault_secret_id:/etc/credstore/qtask-vault-secret-id
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5

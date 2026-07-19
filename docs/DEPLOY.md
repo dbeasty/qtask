@@ -15,7 +15,8 @@ The official production deployment is at **https://qtask.dev**. Source code and 
 5. [Reverse proxy and HTTPS](#5-reverse-proxy-and-https)
 6. [MCP in Cursor](#6-mcp-in-cursor)
 7. [Backups and MongoDB hardening](#7-backups-and-mongodb-hardening)
-8. [AWS stack](#8-aws-stack) *(planned)*
+8. [HashiCorp Vault (optional)](#8-hashicorp-vault-optional)
+9. [AWS stack](#9-aws-stack) *(planned)*
 
 ---
 
@@ -76,14 +77,21 @@ Copy `.env.example` to `.env` and adjust as needed.
 
 **Local development:** put secrets and machine-specific overrides in **`.env.local`** (copy from [`.env.local.example`](../.env.local.example)). The app loads `.env` first, then `.env.local` with override. Never commit `.env` or `.env.local`.
 
-**Production (systemd / Docker):** put all runtime config — including `JWT_SECRET`, Resend keys, and domain URLs — in the server **`.env`** (e.g. `/opt/qtask/.env`). The systemd unit loads that file via `EnvironmentFile`. Do not rely on `.env.local` on the server; keep production secrets in `.env` only.
+**Production (systemd / Docker):** put runtime config in the server **`.env`** (e.g. `/opt/qtask/.env`). By default (`SECRETS_BACKEND=env`), secrets such as `JWT_SECRET` live in that file and systemd loads it via `EnvironmentFile`. Optionally set `SECRETS_BACKEND=vault` to load secrets from HashiCorp Vault instead (see [§8](#8-hashicorp-vault-optional)). Do not rely on `.env.local` on the server.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SECRETS_BACKEND` | `env` | `env` = secrets from `.env`; `vault` = fetch from HashiCorp Vault |
+| `VAULT_ADDR` | `http://127.0.0.1:8200` | Vault API address (vault mode) |
+| `VAULT_SECRET_PATH` | `secret/data/qtask/production` | KV v2 API path (vault mode) |
+| `VAULT_ROLE_ID` / `VAULT_SECRET_ID` | — | AppRole credentials (prefer systemd credentials over env) |
 | `PORT` | `3000` | API listen port |
 | `NODE_ENV` | `development` | Runtime environment |
 | `MONGODB_URI` | `mongodb://localhost:27017/qtask` | MongoDB connection string |
-| `JWT_SECRET` | *(dev fallback)* | **Required in production.** Signs auth tokens |
+| `MONGO_ROOT_USER` / `MONGO_ROOT_PASSWORD` | — | Optional Mongo root auth for Compose / `start-mongodb.sh` |
+| `MONGO_ENCRYPT_AT_REST` | `false` | `true` = LUKS-backed bind mount for Mongo data (see §7) |
+| `MONGO_ENCRYPT_MOUNT` | `/var/lib/qtask/mongo-data` | Host mount path when encryption is enabled |
+| `JWT_SECRET` | *(dev fallback)* | **Required in production** (from `.env` or Vault). Signs auth tokens |
 | `JWT_EXPIRES_IN` | `7d` | Token lifetime |
 | `CORS_ORIGIN` | `http://localhost:5173` | Allowed web client origin |
 | `APP_URL` | `http://localhost:5173` | Public web URL for email links |
@@ -100,9 +108,12 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `REGISTRATION_ENABLED` | `true` | Set `false` to disable new account creation (capacity). Restart after changing. |
 | `TRUST_PROXY` | `false` | Set `true` behind reverse proxy |
 | `SERVE_CLIENT` | `true` | Serve `client/dist` from API in production |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
-| `OLLAMA_MODEL` | `llama3.1` | Chat / tool-calling model |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL (Jetson LAN IP in production; see §4.1.1) |
+| `OLLAMA_MODEL` | `llama3.1` | Chat / tool-calling model (`llama3.2:3b` recommended on Jetson 8GB) |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.41`) |
+| `OLLAMA_DOCKER_CONTAINER` | `qtask-ollama` | Container name for Docker stats |
+| `DCGM_METRICS_URL` | — | Discrete GPU metrics; leave unset for Jetson |
 | `LOG_LEVEL` | `debug` | `debug` \| `info` \| `warn` \| `error` |
 | `MCP_JWT` | — | JWT for MCP stdio server (see §6) |
 | `ADMIN_HOST` | `127.0.0.1` | Admin app bind address (keep loopback) |
@@ -198,8 +209,9 @@ One Node process on **3003** serves both the React web UI (static JS/CSS) and th
 | QTask admin | 3004 on `127.0.0.1` | No — localhost only (restricted nginx hostname) |
 | MongoDB | Docker-internal or `127.0.0.1:27017` | No |
 | Ollama (Jetson) | 11434 on LAN | No — LAN only |
+| Jetson docker-proxy (Compose) | 2375 on LAN | No — LAN only |
 
-Forward only **80** and **443** on your router. Do not forward 3003, 3004, or 27017.
+Forward only **80** and **443** on your router. Do not forward 3003, 3004, 27017, 11434, or 2375.
 
 **MCP in Cursor** runs locally on your machine via stdio — it does not need a server port opened for remote access. Use the web UI at `https://qtask.dev` for browser-based chat.
 
@@ -235,11 +247,7 @@ docker compose \
   up -d --build
 ```
 
-When Ollama runs on a Jetson Nano (or another LAN host) instead of the Docker `ollama` profile, set in `.env`:
-
-```
-OLLAMA_BASE_URL=http://192.168.1.100:11434
-```
+When Ollama runs on a Jetson (native or Compose), set `OLLAMA_BASE_URL` to the Jetson LAN IP. See [§4.1.1 Jetson Ollama](#411-jetson-ollama) for Docker install, native vs Compose paths, systemd, and monitoring.
 
 **Deploy updates via git** on the server:
 
@@ -253,7 +261,126 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app up
 |---------|--------------|-------|
 | API + web UI | 3003 (`127.0.0.1` in prod) | Serves API and static client on one port |
 | MongoDB | 27017 (dev only) | Not published in prod override |
-| Ollama | 11434 | Optional `--profile ollama`, or external LAN host |
+| Ollama | 11434 | Optional `--profile ollama`, or Jetson LAN host |
+| Jetson docker-proxy | 2375 | Compose Jetson only — LAN stats for admin; do not internet-forward |
+
+#### 4.1.1 Jetson Ollama
+
+Target board for these notes: **Jetson Orin Nano 8GB** (classic Jetson Nano is 4GB — use smaller models there). The Jetson runs **only** the SLM (Ollama). The app host runs API, admin, and MongoDB and calls the Jetson over the LAN.
+
+| Port on Jetson | Purpose | Internet? |
+|----------------|---------|-----------|
+| 11434 | Ollama API | No — LAN only |
+| 2375 | docker-proxy (Compose path, CPU/RAM stats) | No — LAN only |
+
+Do not port-forward 11434 or 2375 on your router.
+
+##### Docker on an existing JetPack install
+
+These steps assume Jetson Linux / JetPack is already installed (no OS flash).
+
+```bash
+# Docker Engine + Compose plugin (Ubuntu/Debian packages on Jetson)
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-v2
+
+# NVIDIA Container Toolkit (Jetson / JetPack)
+# Follow NVIDIA's current Jetson container toolkit docs for your L4T version if
+# the package names differ. Typical flow:
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+
+# Verify GPU runtime (optional; skip if running CPU-only)
+sudo docker run --rm --runtime nvidia nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
+```
+
+Add your user to the `docker` group if you want non-root Compose:
+
+```bash
+sudo usermod -aG docker "$USER"
+# log out and back in
+```
+
+If GPU passthrough fails, edit [`deploy/docker-compose.jetson.yml`](../deploy/docker-compose.jetson.yml): remove `runtime: nvidia` and the `NVIDIA_*` environment variables, then restart the stack (CPU-only).
+
+##### Path A — Native Ollama on Jetson
+
+Install Ollama on the Jetson host (not in Docker), then pull models:
+
+```bash
+# Install from https://ollama.com (ARM64 / Jetson-compatible release)
+ollama pull llama3.2:3b
+ollama pull nomic-embed-text
+# Optional heavier chat model (tight on 8GB with embeddings):
+# ollama pull llama3.1
+```
+
+Ensure Ollama listens on the LAN (not only localhost). Then on the **app host** `.env`:
+
+```bash
+OLLAMA_BASE_URL=http://192.168.1.100:11434
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# Native path has no docker-proxy — leave stats blank unless you add your own collector:
+OLLAMA_DOCKER_STATS_URL=
+# DCGM_METRICS_URL=   # leave unset — DCGM is not used on Jetson
+```
+
+##### Path B — Compose Ollama on Jetson
+
+Copy the Jetson deploy files to the Jetson (lightweight install — no full app tree required):
+
+```bash
+# On the Jetson
+sudo mkdir -p /opt/qtask-ollama/deploy
+# From your machine / repo, copy at least:
+#   deploy/docker-compose.jetson.yml
+#   deploy/start-ollama-jetson.sh
+#   deploy/qtask-ollama.service
+#   deploy/.env.jetson.example
+sudo chmod +x /opt/qtask-ollama/deploy/start-ollama-jetson.sh
+
+cd /opt/qtask-ollama
+sudo docker compose -f deploy/docker-compose.jetson.yml up -d
+
+# Pull models into the container
+sudo docker exec qtask-ollama ollama pull llama3.2:3b
+sudo docker exec qtask-ollama ollama pull nomic-embed-text
+```
+
+Enable boot via systemd:
+
+```bash
+sudo cp /opt/qtask-ollama/deploy/qtask-ollama.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now qtask-ollama.service
+sudo systemctl status qtask-ollama.service
+```
+
+App-host `.env` for Compose Jetson + admin Docker CPU/RAM metrics:
+
+```bash
+OLLAMA_BASE_URL=http://192.168.1.100:11434
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_DOCKER_STATS_URL=http://192.168.1.100:2375/v1.41
+OLLAMA_DOCKER_CONTAINER=qtask-ollama
+# DCGM_METRICS_URL=   # leave unset — DCGM targets discrete GPUs, not Jetson
+```
+
+##### Health checks
+
+```bash
+# From the app host or any LAN machine
+curl -s http://192.168.1.100:11434/api/tags
+# Compose path — docker-proxy should answer (LAN only)
+curl -s http://192.168.1.100:2375/v1.41/_ping
+```
+
+In the admin UI, Ollama status should show the Jetson models. With Path B, container CPU/RAM resources should be available; the GPU (DCGM) panel stays unavailable on Jetson by design.
+
+See also [`deploy/.env.jetson.example`](../deploy/.env.jetson.example).
 
 ### 4.2 Release tar (bootstrap / offline)
 
@@ -351,10 +478,16 @@ curl http://127.0.0.1:3003/health
 For standalone (non-Docker app) deployments, run MongoDB in Docker on the same server:
 
 ```bash
+# Preferred helper (respects SECRETS_BACKEND and MONGO_ENCRYPT_AT_REST):
+./deploy/start-mongodb.sh
+
+# Or plain Compose (named volume, env from shell / .env):
 docker compose -f deploy/docker-compose.mongodb.yml up -d
 ```
 
-The API connects via `MONGODB_URI=mongodb://localhost:27017/qtask` (see [`deploy/.env.production.example`](../deploy/.env.production.example)).
+Optional systemd oneshot: copy [`deploy/qtask-mongodb.service`](../deploy/qtask-mongodb.service) and `systemctl enable --now qtask-mongodb`.
+
+The API connects via `MONGODB_URI` (see [`deploy/.env.production.example`](../deploy/.env.production.example)). With Mongo root auth enabled, use a URI such as `mongodb://qtask:<password>@127.0.0.1:27017/qtask?authSource=admin`.
 
 ### 4.5 Manual production build (no Docker, no tar)
 
@@ -624,10 +757,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
 ```
 
 For NVIDIA utilization, VRAM, temperature, and power, additionally enable
-`--profile gpu-monitoring` on a host with the NVIDIA container runtime. When
-Ollama runs on a remote Jetson or another machine, local Docker/GPU collectors
-correctly show unavailable; deploy compatible metrics exporters on that host
-and set `OLLAMA_DOCKER_STATS_URL` / `DCGM_METRICS_URL` if needed.
+`--profile gpu-monitoring` on a host with the NVIDIA container runtime (discrete
+GPUs / DCGM). When Ollama runs on a remote Jetson, use
+[`deploy/docker-compose.jetson.yml`](../deploy/docker-compose.jetson.yml) so
+docker-proxy listens on the Jetson LAN address, then set on the app host:
+
+```bash
+OLLAMA_DOCKER_STATS_URL=http://192.168.1.100:2375/v1.41
+OLLAMA_DOCKER_CONTAINER=qtask-ollama
+# Leave DCGM_METRICS_URL unset — Jetson does not use DCGM
+```
+
+See [§4.1.1 Jetson Ollama](#411-jetson-ollama). Local Docker/GPU collectors on the
+app host correctly show unavailable when Ollama is remote and those URLs are unset.
 
 ### Caddy (alternative)
 
@@ -699,7 +841,25 @@ The Docker production stack enables MongoDB root auth via `MONGO_ROOT_USER` and 
 mongodb://qtask:<password>@mongodb:27017/qtask?authSource=admin
 ```
 
-Use `docker-compose.prod.yml` to avoid publishing MongoDB to the host network.
+Use `docker-compose.prod.yml` to avoid publishing MongoDB to the host network. For standalone Mongo, set the same vars in `/opt/qtask/.env` (or in Vault when `SECRETS_BACKEND=vault`) and start with `./deploy/start-mongodb.sh`.
+
+### Encryption at rest (optional)
+
+Community MongoDB does not encrypt data files itself. QTask can optionally place `/data/db` on a **LUKS-encrypted** host directory:
+
+```bash
+# As root — block device, or sparse file for labs:
+sudo ./deploy/setup-mongo-encrypted-volume.sh /dev/sdX1
+# sudo ./deploy/setup-mongo-encrypted-volume.sh --file /var/lib/qtask/mongo.luks 20G
+
+# In /opt/qtask/.env:
+MONGO_ENCRYPT_AT_REST=true
+MONGO_ENCRYPT_MOUNT=/var/lib/qtask/mongo-data
+
+./deploy/start-mongodb.sh
+```
+
+Default is `MONGO_ENCRYPT_AT_REST=false` (Docker named volume `qtask_mongo_data`). Persist the LUKS mapper across reboot with `crypttab` + `fstab`. Keep backups encrypted or off-host as well.
 
 ### Backup
 
@@ -743,11 +903,76 @@ docker compose exec mongodb mongorestore \
 - Never commit `.env` or `.env.local` files
 - Rotate `JWT_SECRET` periodically (invalidates all sessions)
 - Use strong `MONGO_ROOT_PASSWORD` in production
+- Default: keep secrets in `.env` (`SECRETS_BACKEND=env`)
+- Optional: move secrets to Vault (`SECRETS_BACKEND=vault`) and remove them from `.env` (see §8)
 
 ---
 
-## 8. AWS stack
+## 8. HashiCorp Vault (optional)
+
+By default QTask reads secrets from the config file (`.env`). Set `SECRETS_BACKEND=vault` only when you want HashiCorp Vault to hold passwords and API keys.
+
+### What stays in `.env` vs Vault
+
+| In `.env` (non-secrets + flags) | In Vault KV (when enabled) |
+|---------------------------------|----------------------------|
+| `PORT`, URLs, `OLLAMA_*`, feature flags | `JWT_SECRET`, `ADMIN_*` secrets |
+| `SECRETS_BACKEND=vault` | `RESEND_API_KEY`, `SMTP_PASS` / `SMTP_USER` |
+| `VAULT_ADDR`, `VAULT_SECRET_PATH` | `MONGO_ROOT_*`, `MONGODB_URI` |
+
+AppRole `role_id` / `secret_id` are **not** stored in `.env`. Use systemd credentials.
+
+### Start Vault
+
+```bash
+docker compose -f deploy/docker-compose.vault.yml up -d
+# Install vault CLI, then init/unseal once:
+export VAULT_ADDR=http://127.0.0.1:8200
+vault operator init    # save unseal keys + root token securely
+vault operator unseal  # repeat with enough key shares
+export VAULT_TOKEN=<root-token>
+./deploy/vault/bootstrap.sh
+```
+
+After reboot you must unseal Vault again (unless you add auto-unseal later). Do not put unseal keys in `.env`.
+
+### systemd credentials for AppRole
+
+```bash
+# From bootstrap.sh output:
+echo -n "$ROLE_ID" | sudo systemd-creds encrypt - /etc/credstore/qtask-vault-role-id
+echo -n "$SECRET_ID" | sudo systemd-creds encrypt - /etc/credstore/qtask-vault-secret-id
+```
+
+Uncomment `LoadCredential=` lines in:
+
+- [`deploy/qtask.service`](../deploy/qtask.service)
+- [`deploy/qtask-admin.service`](../deploy/qtask-admin.service)
+- [`deploy/qtask-mongodb.service`](../deploy/qtask-mongodb.service) (if used)
+
+Then in `/opt/qtask/.env`:
+
+```bash
+SECRETS_BACKEND=vault
+VAULT_ADDR=http://127.0.0.1:8200
+VAULT_SECRET_PATH=secret/data/qtask/production
+```
+
+Remove secret values from `.env`, reinstall units, and restart:
+
+```bash
+sudo cp /opt/qtask/deploy/qtask.service /etc/systemd/system/
+sudo cp /opt/qtask/deploy/qtask-admin.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart qtask qtask-admin
+```
+
+Rotate the AppRole secret-id periodically (`vault write -f auth/approle/role/qtask/secret-id`) and re-encrypt with `systemd-creds`.
+
+---
+
+## 9. AWS stack
 
 > **Status:** Not implemented yet. See [QTask_Product_Requirements.md](QTask_Product_Requirements.md) Delivery Phase 5.
 
-For self-hosted deployment, use sections 4–7 above. AWS migration will be documented when ready.
+For self-hosted deployment, use sections 4–8 above. AWS migration will be documented when ready.
