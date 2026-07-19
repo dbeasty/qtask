@@ -4,6 +4,7 @@ import { ActiveProjectMenu } from './components/ActiveProjectMenu';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { UserMenu } from './components/UserMenu';
 import { ChatPage } from './pages/ChatPage';
+import { HelpPage } from './pages/HelpPage';
 import { LoginPage } from './pages/LoginPage';
 import { PrivacyPage } from './pages/PrivacyPage';
 import { ProjectsPage } from './pages/ProjectsPage';
@@ -22,7 +23,7 @@ import {
 import { getDefaultProject } from './utils/project';
 import './styles.css';
 
-type View = 'projects' | 'chat' | 'tasks';
+type View = 'projects' | 'chat' | 'tasks' | 'help';
 
 const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
 
@@ -179,6 +180,7 @@ export function App() {
                 user={user}
                 anchorRef={userMenuTriggerRef}
                 onChangePassword={() => setChangePasswordOpen(true)}
+                onOpenHelp={() => setView('help')}
                 onUpdateDisplayName={updateProfile}
                 onUpdatePreferences={updatePreferences}
                 onSignOut={logout}
@@ -270,6 +272,8 @@ export function App() {
             onProjectSuggested={setSuggestedProjectName}
             onNeedProject={() => setView('projects')}
           />
+        ) : view === 'help' ? (
+          <HelpPage onBack={() => setView('projects')} />
         ) : (
           <TasksPage
             activeProjectId={activeProjectId}

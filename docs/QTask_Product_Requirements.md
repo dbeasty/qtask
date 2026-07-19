@@ -2,8 +2,10 @@
 
 *AI-native, MCP-powered, open-source task management*
 
-Version 0.1 — Draft
+Version 0.2 — Draft
 Phase: Backend-first, local development → AWS migration path
+
+*0.2: nested projects, progress rollup, and Projects UI shipped in the web client.*
 
 ---
 
@@ -62,35 +64,49 @@ Small collaborative teams (2–10 people) sharing projects or individual tasks, 
 - Task linking: tasks can reference other tasks as related, blocking, or blocked-by — not just parent/child subtask relationships.
 - Activity log per task: status changes, comments, assignment changes, and AI actions are all recorded.
 - Comments: threaded comments on any task, visible to all collaborators with access.
-- Attachments: files can be attached to a task and stored in the configured storage backend (see 3.4).
+- Attachments: files can be attached to a task and stored in the configured storage backend (see 3.5).
+- Tasks may belong to one or more projects; users can move, share (link), unlink, or duplicate a task across projects.
 
-### 3.2 AI / LLM Integration (Central, not bolt-on)
+### 3.2 Project Hierarchy
+
+Projects form an optional tree (not only a flat list of workspaces). Nested projects are available in the web client.
+
+- Nesting: each project may have an optional `parentId`. Users can create root projects or child projects under an existing parent.
+- Move / reparent: a project can be moved under another parent (or to root). Cycles are rejected (a project cannot become a descendant of itself).
+- Delete: deleting a project reparents its direct children to the deleted project’s former parent (or to root). Tasks that belong only to the deleted project are removed; tasks also linked to other projects are unlinked from the deleted project only.
+- Progress and status rollup:
+  - Leaf projects (no child projects): percent complete is derived from linked tasks (equal-weight average); status is derived from task statuses.
+  - Parent projects: percent complete is a weighted rollup of child projects using optional per-child `progressShare` (same weighting model as task subtasks); status is derived from children.
+- Active project: the web UI maintains an active project that scopes Chat and Tasks views; the picker is hierarchy-aware.
+- Access control remains per project (collaborator list and roles). Nesting does not replace or inherit ACL across the tree automatically.
+
+### 3.3 AI / LLM Integration (Central, not bolt-on)
 
 The AI layer is implemented as an MCP server exposed by the QTask backend. Any MCP-compatible client can connect — a local small language model (SLM) via Ollama, or Claude via the Anthropic API. The choice of model is a user/deployment setting, not a hardcoded dependency.
 
-#### 3.2.1 MCP Tools Exposed by the Backend
+#### 3.3.1 MCP Tools Exposed by the Backend
 
 - `create_task` — create a task, optionally generating subtasks from a natural-language goal.
 - `update_task` — update fields such as status, priority, due date, percent complete.
-- `find_tasks` — hybrid semantic + structured search (see 3.3).
+- `find_tasks` — hybrid semantic + structured search (see 3.4).
 - `get_task` — fetch a single task with its subtasks, links, and comments.
 - `get_workload` — list tasks for a given user, with status and percent complete.
 - `assign_task` / `share_task` — assign or share a task or project with a collaborator.
 - `summarize_project` — generate a natural-language status digest for a project.
 
-#### 3.2.2 Conversational Interface
+#### 3.3.2 Conversational Interface
 
 - Users can interact with QTask via natural language ("finish the login page by Friday, block it on the design review") and have the AI translate this into the appropriate tool calls.
 - Per-user conversation history is stored so the AI retains context across a session without the user repeating themselves.
 - Responses stream incrementally to the client for responsiveness.
 
-#### 3.2.3 Model Flexibility
+#### 3.3.3 Model Flexibility
 
 - Local SLM (e.g. via Ollama: Phi-3, Mistral, Llama) for default, privacy-preserving operation.
 - Claude (Anthropic API) as an optional, swappable, more capable model for complex reasoning or summarization.
 - Architecture must not assume a single hardcoded model — the MCP boundary keeps this swappable by design.
 
-### 3.3 Intelligent Task Retrieval
+### 3.4 Intelligent Task Retrieval
 
 The AI must be able to locate relevant existing tasks (not just create new ones), including open/incomplete tasks, by querying the database intelligently rather than guessing.
 
@@ -100,7 +116,7 @@ The AI must be able to locate relevant existing tasks (not just create new ones)
 - Indexing pipeline: on task create/update, an embedding job is queued asynchronously, generates a vector via a local embedding model (e.g. nomic-embed-text or all-MiniLM via Ollama), and stores it back on the task document.
 - Vector storage: MongoDB Atlas Vector Search in the cloud, or local cosine-similarity search against stored embeddings during local development (no Atlas dependency required for local dev).
 
-### 3.4 Cloud Account Sync (Google / Microsoft / Apple)
+### 3.5 Cloud Account Sync (Google / Microsoft / Apple)
 
 When a user signs in with a Google, Microsoft, or Apple account, QTask should be able to additionally store or sync task data to that provider's associated services, where applicable, alongside QTask's own database, which remains the system of record.
 
@@ -110,20 +126,20 @@ When a user signs in with a Google, Microsoft, or Apple account, QTask should be
 - Sync is opt-in per user and per provider; QTask's own MongoDB store always remains authoritative regardless of sync state.
 - File attachments may be stored in the user's connected cloud drive (Google Drive / OneDrive) instead of, or in addition to, QTask's own object storage.
 
-### 3.5 Collaboration & Sharing
+### 3.6 Collaboration & Sharing
 
 Sharing is a core feature, not an afterthought. Collaborators may use different identity providers, or no linked account at all — QTask's own backend is the source of truth for who has access to what, independent of which cloud account (if any) a user signed in with.
 
-- Sharer / collaborator list: every project (and optionally every individual task) has a list of collaborators with defined roles (owner, editor, executor, viewer).
+- Sharer / collaborator list: every project (and optionally every individual task) has a list of collaborators with defined roles (owner, editor, executor, viewer). Access is evaluated per project; nesting does not automatically grant access to ancestors or descendants.
 - Invite by email: a person without any existing QTask, Google, Microsoft, or Apple account can be invited by email; QTask sends an invite link and creates a pending collaborator record.
 - Cross-provider identity: a collaborator's identity (Google-signed-in, Microsoft-signed-in, Apple-signed-in, or email-only) is tracked independently of how the resource owner signed in — access control lives entirely in QTask's backend, not in any single provider's system.
 - Task delegation: a user can hand off an entire task (reassign) or share a subset (e.g. specific subtasks) with another collaborator.
 - Real-time collaboration: live presence and updates when multiple collaborators view/edit the same project.
 - Notifications: in-app, and optionally email/push, when a task is assigned, shared, commented on, or completed.
 
-### 3.6 Search
+### 3.7 Search
 
-Initial search is served by the hybrid structured + semantic retrieval described in 3.3, backed by MongoDB (with Atlas Vector Search in the cloud or local vector comparison in development).
+Initial search is served by the hybrid structured + semantic retrieval described in 3.4, backed by MongoDB (with Atlas Vector Search in the cloud or local vector comparison in development).
 
 - OpenSearch is a candidate future addition once usage outgrows MongoDB's native text/vector search — particularly useful for large shared workspaces needing advanced full-text relevance (fuzzy matching, faceting) and for AWS-native deployment via Amazon OpenSearch Service.
 - Decision: defer OpenSearch to a later phase; do not add it to the initial backend to keep the local dev stack lean.
@@ -164,7 +180,7 @@ The backend exposes an MCP server so that AI clients (local SLM or Claude) conne
 | Collection | Purpose |
 |---|---|
 | `users` | Account info, linked identity providers (Google/MS/Apple/email), preferences |
-| `projects` | Workspaces/projects, collaborator list with roles |
+| `projects` | Workspaces/projects with optional `parentId` (tree), `sortOrder`, `status`, `percentComplete`, optional `progressShare`, collaborator list with roles |
 | `tasks` | Task documents incl. subtasks (nested or referenced), links, percent complete, embedding vector |
 | `comments` | Threaded comments per task |
 | `activity` | Audit log of changes per task/project, including AI-driven actions |
@@ -175,7 +191,7 @@ The backend exposes an MCP server so that AI clients (local SLM or Claude) conne
 
 ## 5. Delivery Phases
 
-1. **Backend core + conversational UI (current focus):** local Node.js + MongoDB, task/subtask/link CRUD, percent-complete logic, MCP server with core tools, local SLM via Ollama, chat agent API with streaming, early React web client for chat + task verification.
+1. **Backend core + conversational UI (current focus):** local Node.js + MongoDB, task/subtask/link CRUD, nested projects with progress rollup, percent-complete logic, MCP server with core tools, local SLM via Ollama, chat agent API with streaming, React web client for Projects / Tasks / Chat.
 2. **Cloud account sync:** Google/Microsoft/Apple OAuth, optional sync to provider task/drive APIs.
 3. **Collaboration:** sharer/collaborator lists, email invites, role-based access, real-time updates.
 4. **Production clients:** polished React web app and React Native iOS/Android, sharing API and component logic (extends the early web client).

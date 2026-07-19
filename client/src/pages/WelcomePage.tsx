@@ -20,7 +20,7 @@ export function WelcomePage() {
           <h2>Features</h2>
           <ul className="welcome-list">
             <li>Nested tasks with status, priority, and progress tracking</li>
-            <li>Projects to group related work</li>
+            <li>Nested projects with progress rollup</li>
             <li>AI chat with proposal approval before changes are applied</li>
             <li>Semantic search across your tasks</li>
             <li>Self-hosted — your data stays on your infrastructure</li>

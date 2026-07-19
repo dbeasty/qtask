@@ -587,6 +587,47 @@ button {
   color: #b8c4d6;
 }
 
+.help-page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 0.5rem 1rem 2rem;
+}
+
+.help-page-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.help-intro {
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.help-section {
+  margin-bottom: 1.25rem;
+}
+
+.help-section h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.help-section p {
+  margin: 0 0 0.6rem;
+  line-height: 1.55;
+  color: #b8c4d6;
+}
+
+.help-section p:last-child {
+  margin-bottom: 0;
+}
+
+.help-section a {
+  color: #8ba3c7;
+}
+
 .legal-crosslink {
   margin: 0 0 1rem;
   font-size: 0.9rem;

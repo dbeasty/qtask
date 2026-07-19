@@ -6,6 +6,7 @@ interface UserMenuProps {
   user: AuthUser;
   anchorRef: RefObject<HTMLButtonElement | null>;
   onChangePassword: () => void;
+  onOpenHelp: () => void;
   onUpdateDisplayName: (displayName: string | null) => Promise<void>;
   onUpdatePreferences: (preferences: Partial<UserPreferences>) => Promise<void>;
   onSignOut: () => void;
@@ -16,6 +17,7 @@ export function UserMenu({
   user,
   anchorRef,
   onChangePassword,
+  onOpenHelp,
   onUpdateDisplayName,
   onUpdatePreferences,
   onSignOut,
@@ -184,6 +186,18 @@ export function UserMenu({
       </label>
 
       <div className="user-menu-divider" role="separator" />
+
+      <button
+        type="button"
+        className="user-menu-item"
+        role="menuitem"
+        onClick={() => {
+          onOpenHelp();
+          onClose();
+        }}
+      >
+        Help
+      </button>
 
       <button
         type="button"
