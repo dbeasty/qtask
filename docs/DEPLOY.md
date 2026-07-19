@@ -105,8 +105,17 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
 | `LOG_LEVEL` | `debug` | `debug` \| `info` \| `warn` \| `error` |
 | `MCP_JWT` | — | JWT for MCP stdio server (see §6) |
+| `ADMIN_HOST` | `127.0.0.1` | Admin app bind address (keep loopback) |
+| `ADMIN_PORT` | `3004` | Admin app listen port |
+| `ADMIN_AUTH_MODE` | `password` | `password` or `mtls` (see §5) |
+| `ADMIN_PASSWORD` | — | **Required** when `ADMIN_AUTH_MODE=password` |
+| `ADMIN_JWT_SECRET` | — | **Required.** Separate from `JWT_SECRET` |
+| `ADMIN_COOKIE_SECURE` | `true` | Set `true` behind HTTPS |
+| `ADMIN_PROXY_SECRET` | — | Required for mTLS proxy mode |
+| `ADMIN_DELETE_CONFIRM_EMAIL` | `false` | Require typing account email before admin delete |
+| `LLM_METRICS_RETENTION_DAYS` | `30` | Days to keep detailed per-call LLM metrics |
 
-For Docker production, also see [`.env.docker.example`](.env.docker.example).
+For standalone/systemd production, copy [`deploy/.env.production.example`](../deploy/.env.production.example). For Docker production, also see [`.env.docker.example`](.env.docker.example). Admin setup details are in §5.
 
 ---
 
@@ -186,10 +195,11 @@ One Node process on **3003** serves both the React web UI (static JS/CSS) and th
 |-------|------|--------------------------|
 | nginx (HTTPS) | 443 (+ 80 for cert renewal) | Yes — only public entry |
 | QTask (API + web UI) | 3003 on `127.0.0.1` | No — localhost only |
+| QTask admin | 3004 on `127.0.0.1` | No — localhost only (restricted nginx hostname) |
 | MongoDB | Docker-internal or `127.0.0.1:27017` | No |
 | Ollama (Jetson) | 11434 on LAN | No — LAN only |
 
-Forward only **80** and **443** on your router. Do not forward 3003 or 27017.
+Forward only **80** and **443** on your router. Do not forward 3003, 3004, or 27017.
 
 **MCP in Cursor** runs locally on your machine via stdio — it does not need a server port opened for remote access. Use the web UI at `https://qtask.dev` for browser-based chat.
 
@@ -253,7 +263,7 @@ Build a deployable archive on your dev machine:
 npm run release
 ```
 
-This auto-bumps the patch version (e.g. `0.1.0` → `0.1.1`), syncs `client/package.json`, and produces `release/qtask-<version>-linux.tar.gz` with compiled API, built client, and `deploy/` scripts. Commit the bumped `package.json` and lockfiles before deploying.
+This auto-bumps the patch version across root, `client`, and `admin-client` (e.g. `0.1.0` → `0.1.1`) and produces `release/qtask-<version>-linux.tar.gz` with compiled API (including `dist/admin`), built client, built admin-client, and `deploy/` scripts. Commit the bumped `package.json` and lockfiles before deploying.
 
 Copy to your Ubuntu server and install:
 
@@ -265,7 +275,18 @@ cd qtask-<version>
 ./deploy/install.sh          # installs to /opt/qtask by default
 ```
 
-Then edit `/opt/qtask/.env`, start MongoDB, and enable the systemd service (the install script prints exact commands).
+Then follow the install script's next steps: edit `/opt/qtask/.env` (JWT, admin secrets, mail, domain, `OLLAMA_BASE_URL`), start MongoDB, and enable **both** systemd units:
+
+```bash
+sudo cp /opt/qtask/deploy/qtask.service /etc/systemd/system/
+sudo cp /opt/qtask/deploy/qtask-admin.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now qtask
+sudo systemctl enable --now qtask-admin
+curl http://127.0.0.1:3003/health && curl http://127.0.0.1:3004/health
+```
+
+See §5 for admin auth, reverse proxy, and firewall details.
 
 #### Updating a release install (systemd + MongoDB Docker)
 
@@ -288,10 +309,11 @@ tar xzf qtask-<version>-linux.tar.gz
 cd qtask-<version>
 ./deploy/install.sh              # rsyncs into /opt/qtask, keeps /opt/qtask/.env
 sudo systemctl restart qtask
-curl http://127.0.0.1:3003/health
+sudo systemctl restart qtask-admin
+curl http://127.0.0.1:3003/health && curl http://127.0.0.1:3004/health
 ```
 
-MongoDB does not need to be restarted for app-only updates. The `install.sh` script runs `npm ci --omit=dev` and replaces `dist/`, `client/dist/`, and `deploy/`.
+MongoDB does not need to be restarted for app-only updates. The `install.sh` script runs `npm ci --omit=dev` and replaces `dist/` (including admin), `client/dist/`, `admin-client/dist/`, and `deploy/`.
 
 **Hotfix without a full release** (e.g. a single missing file): copy the fix into `/opt/qtask`, fix ownership, and restart:
 
@@ -310,7 +332,7 @@ cd /opt/qtask
 ./deploy/update-from-git.sh
 ```
 
-This runs `git pull`, rebuilds API and client, reinstalls production dependencies, and restarts the `qtask` systemd service if it is running.
+This runs `git pull`, rebuilds API, client, and admin-client, reinstalls production dependencies, and restarts the `qtask` and `qtask-admin` systemd services if they are running.
 
 **Combo workflow:** use the release tar for first install, then either repeat the release-tar update steps above, or convert to a git checkout (`git clone` into `/opt/qtask` and copy `.env`) and use `update-from-git.sh` for day-to-day updates.
 
@@ -515,7 +537,21 @@ delete accounts, report per-user/global MongoDB usage, and show Ollama call/reso
 statistics. Never expose port `3004` directly; bind it to loopback and give it a
 separate nginx hostname reachable only through your firewall or VPN.
 
-Build and run it outside Docker:
+**Systemd (release tar / bare-metal):** `deploy/install.sh` ships both unit files under
+`/opt/qtask/deploy/`. After editing `/opt/qtask/.env` (admin secrets included), install
+and enable the admin service:
+
+```bash
+sudo cp /opt/qtask/deploy/qtask-admin.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now qtask-admin
+curl http://127.0.0.1:3004/health
+```
+
+`./deploy/update-from-git.sh` rebuilds `admin-client` and restarts `qtask-admin` when
+the unit is already active.
+
+Build and run it outside Docker without systemd:
 
 ```bash
 npm run build:all
