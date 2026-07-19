@@ -8,12 +8,16 @@ import {
   deleteProject,
   deleteSubtask,
   deleteTask,
+  duplicateTask,
   listProjects,
   listTasks,
   moveSubtask,
+  moveTaskToProject,
   promoteSubtask,
   removeProjectCollaborator,
   reorderProjectTask,
+  shareTaskToProject,
+  unlinkTaskFromProject,
   updateProject,
   updateProjectCollaborator,
   updateSubtask,
@@ -39,7 +43,11 @@ import {
   groupTasksByProject,
   projectIdToName,
   resolveProjectId,
+  taskBelongsToProject,
+  taskProjectIds,
 } from '../utils/project';
+import { buildProjectTree, flattenProjectTree } from '../utils/projectTree';
+import { TaskProjectDialog } from '../components/TaskProjectDialog';
 import {
   findPathBySubtaskId,
   findSubtaskByPath,
@@ -50,6 +58,9 @@ interface TasksPageProps {
   suggestedProjectName?: string;
   /** Bumped when another view (e.g. chat) mutates tasks; triggers refetch without remounting. */
   externalRefreshKey?: number;
+  activeProjectId: string | null;
+  onActiveProjectChange: (projectId: string | null) => void;
+  onNeedProject?: () => void;
 }
 
 type PendingConfirm =
@@ -133,7 +144,7 @@ function taskToFormValues(task: Task, projects: Project[]): TaskFormValues {
     description: task.description ?? '',
     status: task.status,
     priority: task.priority,
-    projectName: projectIdToName(task.projectId ?? '', projects),
+    projectName: projectIdToName(taskProjectIds(task)[0] ?? '', projects),
     tags: task.tags.join(', '),
     percentComplete: task.percentComplete,
     progressShare: '',
@@ -180,7 +191,13 @@ function subtaskParentPath(selection: Selection): string[] {
   return selection.kind === 'subtask' ? selection.path : [];
 }
 
-export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }: TasksPageProps) {
+export function TasksPage({
+  suggestedProjectName = '',
+  externalRefreshKey = 0,
+  activeProjectId,
+  onActiveProjectChange,
+  onNeedProject,
+}: TasksPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -190,13 +207,11 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [creatingTaskForProjectId, setCreatingTaskForProjectId] = useState<string | null>(null);
-  const [creatingProject, setCreatingProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [taskListExpanded, setTaskListExpanded] = useState(true);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [projectDialogTaskId, setProjectDialogTaskId] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const lastExternalRefreshKey = useRef(externalRefreshKey);
@@ -287,30 +302,10 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       });
       setTasks((current) => [task, ...current]);
       setSelection({ kind: 'task', taskId: task._id });
-      setActiveProjectId(forProjectId);
+      onActiveProjectChange(forProjectId);
       setCreatingTaskForProjectId(null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to create task');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleCreateProject = async () => {
-    const trimmed = newProjectName.trim();
-    if (!trimmed) return;
-
-    setSaving(true);
-    setActionError(null);
-    try {
-      const { project } = await createProject({ name: trimmed });
-      setProjects((current) => [...current, project]);
-      setActiveProjectId(project._id);
-      setCreatingProject(false);
-      setNewProjectName('');
-      setCreatingTaskForProjectId(project._id);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to create project');
     } finally {
       setSaving(false);
     }
@@ -419,8 +414,9 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
         return [promotedTask, ...withoutPromoted];
       });
       setSelection({ kind: 'task', taskId: promotedTask._id });
-      if (promotedTask.projectId) {
-        setActiveProjectId(promotedTask.projectId);
+      const promotedProjectId = taskProjectIds(promotedTask)[0];
+      if (promotedProjectId) {
+        onActiveProjectChange(promotedProjectId);
       }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to move subtask to project');
@@ -591,9 +587,24 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   };
 
   useEffect(() => {
-    if (!selectedTask?.projectId) return;
-    setActiveProjectId(selectedTask.projectId);
-  }, [selectedTask?.projectId]);
+    // Keep selection within the active project's tasks when the scoped project changes.
+    if (!activeProjectId) {
+      setSelection(null);
+      return;
+    }
+    setSelection((current) => {
+      if (!current) {
+        const first = tasks.find((task) => taskBelongsToProject(task, activeProjectId));
+        return first ? { kind: 'task', taskId: first._id } : null;
+      }
+      const selected = tasks.find((task) => task._id === current.taskId);
+      if (!selected || !taskBelongsToProject(selected, activeProjectId)) {
+        const first = tasks.find((task) => taskBelongsToProject(task, activeProjectId));
+        return first ? { kind: 'task', taskId: first._id } : null;
+      }
+      return current;
+    });
+  }, [activeProjectId, tasks]);
 
   const detail = selectedTask && selection ? getDetailItem(selectedTask, selection) : null;
   const breadcrumbs = selectedTask && selection ? buildBreadcrumb(selectedTask, selection) : [];
@@ -616,9 +627,6 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   const projectGroups = useMemo(() => groupTasksByProject(tasks, projects), [tasks, projects]);
 
   const resolvedActiveProjectId = useMemo(() => {
-    if (selectedTask?.projectId && projects.some((p) => p._id === selectedTask.projectId)) {
-      return selectedTask.projectId;
-    }
     if (activeProjectId && projects.some((p) => p._id === activeProjectId)) {
       return activeProjectId;
     }
@@ -629,7 +637,18 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       if (matched) return matched._id;
     }
     return getDefaultProject(projects)?._id ?? projects[0]?._id ?? null;
-  }, [selectedTask, activeProjectId, projects, suggestedProjectName]);
+  }, [activeProjectId, projects, suggestedProjectName]);
+
+  useEffect(() => {
+    if (resolvedActiveProjectId && resolvedActiveProjectId !== activeProjectId) {
+      onActiveProjectChange(resolvedActiveProjectId);
+    }
+  }, [resolvedActiveProjectId, activeProjectId, onActiveProjectChange]);
+
+  const editableProjects = useMemo(
+    () => flattenProjectTree(buildProjectTree(projects.filter((project) => project.canEdit))),
+    [projects]
+  );
 
   const activeProject = useMemo(
     () => projects.find((p) => p._id === resolvedActiveProjectId) ?? null,
@@ -643,6 +662,11 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
 
   const activeProjectTasks = activeProjectGroup?.tasks ?? [];
 
+  const projectDialogTask = useMemo(
+    () => (projectDialogTaskId ? tasks.find((task) => task._id === projectDialogTaskId) ?? null : null),
+    [projectDialogTaskId, tasks]
+  );
+
   const performDeleteProject = async () => {
     if (!resolvedActiveProjectId || !activeProject) return;
     if (!activeProject.canManageMembers) return;
@@ -654,7 +678,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       const [taskResponse, projectResponse] = await Promise.all([listTasks(), listProjects()]);
       setTasks(taskResponse.tasks);
       setProjects(projectResponse.projects);
-      setActiveProjectId(nextProjectId);
+      onActiveProjectChange(nextProjectId);
       setSelection(null);
       setCreatingTaskForProjectId(null);
       resetHierarchyModes();
@@ -740,7 +764,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
         const [taskResponse, projectResponse] = await Promise.all([listTasks(), listProjects()]);
         setTasks(taskResponse.tasks);
         setProjects(projectResponse.projects);
-        setActiveProjectId(projectResponse.projects[0]?._id ?? null);
+        onActiveProjectChange(projectResponse.projects[0]?._id ?? null);
         setSelection(null);
       } else {
         replaceProject(result.project);
@@ -757,7 +781,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
   };
 
   const handleSelectProject = (projectId: string) => {
-    setActiveProjectId(projectId);
+    onActiveProjectChange(projectId);
     resetHierarchyModes();
     setCreatingTaskForProjectId(null);
 
@@ -769,12 +793,12 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
 
     if (selection) {
       const selected = tasks.find((task) => task._id === selection.taskId);
-      if (selected?.projectId === projectId) {
+      if (selected && taskBelongsToProject(selected, projectId)) {
         return;
       }
     }
 
-    setSelection({ kind: 'task', taskId: group.tasks[0]._id });
+    setSelection({ kind: 'task', taskId: group.tasks[0]!._id });
   };
 
   const handleStartAddTask = (projectId: string) => {
@@ -819,23 +843,23 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
       {actionError && <p className="error-banner">{actionError}</p>}
       {loading && <p className="muted">Loading…</p>}
 
-      {!loading && tasks.length === 0 && projects.length === 0 && !creatingProject && (
+      {!loading && !activeProjectId && (
         <div className="tasks-empty-state">
-          <p className="muted">No projects or tasks yet.</p>
+          <p className="muted">Select a project to view its tasks.</p>
           <div className="tasks-empty-state-actions">
             <button
               type="button"
               className="primary-button"
-              onClick={() => setCreatingProject(true)}
+              onClick={() => onNeedProject?.()}
               disabled={saving}
             >
-              New project
+              Open projects
             </button>
           </div>
         </div>
       )}
 
-      {projects.length > 0 && !loading && (
+      {projects.length > 0 && activeProjectId && !loading && (
         <>
           <ProjectToolbar
             projects={projects}
@@ -844,8 +868,6 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             taskCount={activeProjectTasks.length}
             saving={saving}
             loading={loading}
-            creatingProject={creatingProject}
-            newProjectName={newProjectName}
             taskListExpanded={taskListExpanded}
             selectedTaskTitle={detail?.title}
             onTaskListExpandedChange={setTaskListExpanded}
@@ -854,16 +876,7 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             onDeleteProject={handleDeleteProject}
             onManageMembers={() => setMembersOpen(true)}
             onRefresh={refresh}
-            onToggleCreateProject={() => {
-              setCreatingProject((current) => !current);
-              setActionError(null);
-            }}
-            onNewProjectNameChange={setNewProjectName}
-            onCreateProject={handleCreateProject}
-            onCancelCreateProject={() => {
-              setCreatingProject(false);
-              setNewProjectName('');
-            }}
+            onOpenProjects={() => onNeedProject?.()}
           />
 
           {membersOpen && activeProject && user && (
@@ -899,6 +912,8 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
                 onPromoteSubtask={handlePromoteSubtask}
                 onMoveTask={handleMoveTask}
                 onAttachTask={handleAttachTask}
+                canManageProjects={Boolean(activeProject?.canEdit)}
+                onOpenProjectDialog={setProjectDialogTaskId}
               />
             )}
 
@@ -973,6 +988,60 @@ export function TasksPage({ suggestedProjectName = '', externalRefreshKey = 0 }:
             )}
           </div>
         </>
+      )}
+
+      {projectDialogTask && (
+        <TaskProjectDialog
+          task={projectDialogTask}
+          projects={projects}
+          editableProjects={editableProjects}
+          currentProjectId={resolvedActiveProjectId}
+          saving={saving}
+          onClose={() => setProjectDialogTaskId(null)}
+          onMove={async (projectId) => {
+            setSaving(true);
+            setActionError(null);
+            try {
+              const { task } = await moveTaskToProject(projectDialogTask._id, projectId);
+              applyTaskUpdate(task);
+              onActiveProjectChange(projectId);
+            } finally {
+              setSaving(false);
+            }
+          }}
+          onShare={async (projectId) => {
+            setSaving(true);
+            setActionError(null);
+            try {
+              const { task } = await shareTaskToProject(projectDialogTask._id, projectId);
+              applyTaskUpdate(task);
+            } finally {
+              setSaving(false);
+            }
+          }}
+          onDuplicate={async (projectId) => {
+            setSaving(true);
+            setActionError(null);
+            try {
+              const { task } = await duplicateTask(projectDialogTask._id, projectId);
+              setTasks((current) => [task, ...current]);
+              setSelection({ kind: 'task', taskId: task._id });
+              onActiveProjectChange(projectId);
+            } finally {
+              setSaving(false);
+            }
+          }}
+          onUnlink={async (projectId) => {
+            setSaving(true);
+            setActionError(null);
+            try {
+              const { task } = await unlinkTaskFromProject(projectDialogTask._id, projectId);
+              applyTaskUpdate(task);
+            } finally {
+              setSaving(false);
+            }
+          }}
+        />
       )}
 
       {pendingConfirm && (

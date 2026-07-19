@@ -34,12 +34,22 @@ projectsRouter.get('/', async (req, res, next) => {
 projectsRouter.post('/', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const { name, description } = req.body as { name?: string; description?: string };
+    const { name, description, parentId } = req.body as {
+      name?: string;
+      description?: string;
+      parentId?: string | null;
+    };
     if (!name) {
       res.status(400).json({ error: 'name is required' });
       return;
     }
-    const project = await projectService.createProject(userId, name, description);
+    const project = await projectService.createProject(
+      userId,
+      name,
+      description,
+      undefined,
+      parentId
+    );
     res.status(201).json({ project });
   } catch (error) {
     next(error);
@@ -49,12 +59,42 @@ projectsRouter.post('/', async (req, res, next) => {
 projectsRouter.patch('/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const { name, description } = req.body as { name?: string; description?: string | null };
-    const project = await projectService.updateProject(userId, req.params.id!, { name, description });
+    const { name, description, parentId, sortOrder, progressShare } = req.body as {
+      name?: string;
+      description?: string | null;
+      parentId?: string | null;
+      sortOrder?: number;
+      progressShare?: number | null;
+    };
+    const project = await projectService.updateProject(userId, req.params.id!, {
+      name,
+      description,
+      parentId,
+      sortOrder,
+      progressShare,
+    });
     if (!project) {
       res.status(404).json({ error: 'Project not found' });
       return;
     }
+    res.json({ project });
+  } catch (error) {
+    next(error);
+  }
+});
+
+projectsRouter.post('/:id/move', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { parentId, index } = req.body as { parentId?: string | null; index?: number };
+    if (parentId === undefined) {
+      res.status(400).json({ error: 'parentId is required (use null for root)' });
+      return;
+    }
+    const project = await projectService.moveProject(userId, req.params.id!, {
+      parentId,
+      index,
+    });
     res.json({ project });
   } catch (error) {
     next(error);

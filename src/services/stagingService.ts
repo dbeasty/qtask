@@ -61,6 +61,8 @@ export class StagingService {
       if (result.matchedCount === 0) {
         throw new Error('Staged project no longer exists');
       }
+      const { projectService } = await import('./projectService.js');
+      await projectService.recalculateProjectAndAncestors(entity.id);
       return `Project ${entity.id} committed`;
     }
 
@@ -72,22 +74,29 @@ export class StagingService {
     }).lean();
     if (!task) throw new Error('Staged task no longer exists');
 
-    if (task.projectId) {
-      const parent = await ProjectModel.findOne({
-        _id: task.projectId,
-        userId,
-        'staging.conversationId': conversationId,
-      })
-        .select('staging.proposalId')
-        .lean();
-      if (parent?.staging?.proposalId) {
-        await ProjectModel.updateOne({ _id: parent._id }, { $unset: { staging: 1 } });
-        await setProposalStatuses(
+    if (task.projectId || (Array.isArray(task.projectIds) && task.projectIds.length > 0)) {
+      const parentIds = [
+        ...(Array.isArray(task.projectIds) ? task.projectIds.map(String) : []),
+        ...(task.projectId ? [String(task.projectId)] : []),
+      ];
+      for (const parentId of [...new Set(parentIds)]) {
+        const parent = await ProjectModel.findOne({
+          _id: parentId,
           userId,
-          conversationId,
-          [parent.staging.proposalId],
-          'approved'
-        );
+          'staging.conversationId': conversationId,
+        })
+          .select('staging.proposalId')
+          .lean();
+        if (parent?.staging?.proposalId) {
+          await ProjectModel.updateOne({ _id: parent._id }, { $unset: { staging: 1 } });
+          await setProposalStatuses(
+            userId,
+            conversationId,
+            [parent.staging.proposalId],
+            'approved'
+          );
+          break;
+        }
       }
     }
 
@@ -110,6 +119,14 @@ export class StagingService {
       details: { title: task.title },
       source: 'ai',
     });
+
+    const { projectService } = await import('./projectService.js');
+    const projectIds = [
+      ...(Array.isArray(task.projectIds) ? task.projectIds.map(String) : []),
+      ...(task.projectId ? [String(task.projectId)] : []),
+    ];
+    await projectService.recalculateProjects(projectIds);
+
     return `Task ${entity.id} committed`;
   }
 
@@ -133,7 +150,7 @@ export class StagingService {
 
     const children = await TaskModel.find({
       userId,
-      projectId: entity.id,
+      $or: [{ projectIds: entity.id }, { projectId: entity.id }],
       'staging.conversationId': conversationId,
     })
       .select('staging.proposalId')
@@ -144,7 +161,7 @@ export class StagingService {
 
     await TaskModel.deleteMany({
       userId,
-      projectId: entity.id,
+      $or: [{ projectIds: entity.id }, { projectId: entity.id }],
       'staging.conversationId': conversationId,
     });
     await ProjectModel.deleteOne({

@@ -8,8 +8,6 @@ interface ProjectToolbarProps {
   taskCount: number;
   saving: boolean;
   loading: boolean;
-  creatingProject: boolean;
-  newProjectName: string;
   taskListExpanded: boolean;
   selectedTaskTitle?: string;
   onTaskListExpandedChange: (expanded: boolean) => void;
@@ -18,10 +16,7 @@ interface ProjectToolbarProps {
   onDeleteProject: () => void;
   onManageMembers: () => void;
   onRefresh: () => void;
-  onToggleCreateProject: () => void;
-  onNewProjectNameChange: (name: string) => void;
-  onCreateProject: () => void;
-  onCancelCreateProject: () => void;
+  onOpenProjects?: () => void;
 }
 
 export function ProjectToolbar({
@@ -31,8 +26,6 @@ export function ProjectToolbar({
   taskCount,
   saving,
   loading,
-  creatingProject,
-  newProjectName,
   taskListExpanded,
   selectedTaskTitle,
   onTaskListExpandedChange,
@@ -41,10 +34,7 @@ export function ProjectToolbar({
   onDeleteProject,
   onManageMembers,
   onRefresh,
-  onToggleCreateProject,
-  onNewProjectNameChange,
-  onCreateProject,
-  onCancelCreateProject,
+  onOpenProjects,
 }: ProjectToolbarProps) {
   const canManageMembers = activeProject?.canManageMembers ?? false;
   const memberCount = 1 + (activeProject?.collaborators.length ?? 0);
@@ -59,12 +49,6 @@ export function ProjectToolbar({
     setName(projectName);
     lastSavedRef.current = projectName;
   }, [activeProject?.name, activeProjectId]);
-
-  useEffect(() => {
-    if (creatingProject) {
-      setExpanded(true);
-    }
-  }, [creatingProject]);
 
   const scheduleRename = (nextName: string) => {
     if (!activeProjectId) return;
@@ -137,7 +121,7 @@ export function ProjectToolbar({
       {expanded && (
         <div className="project-toolbar">
           <label className="project-toolbar-field">
-            <span className="project-toolbar-label">Project</span>
+            <span className="project-toolbar-label">Current project</span>
             <select
               className="project-toolbar-select"
               value={activeProjectId ?? ''}
@@ -180,14 +164,16 @@ export function ProjectToolbar({
           )}
 
           <div className="project-toolbar-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={onToggleCreateProject}
-              disabled={loading || saving}
-            >
-              {creatingProject ? 'Cancel' : 'New project'}
-            </button>
+            {onOpenProjects && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onOpenProjects}
+                disabled={loading || saving}
+              >
+                Manage projects
+              </button>
+            )}
             {activeProject && (
               <button
                 type="button"
@@ -213,43 +199,6 @@ export function ProjectToolbar({
             </button>
           </div>
           {saveError && <span className="project-toolbar-error">{saveError}</span>}
-        </div>
-      )}
-
-      {creatingProject && (
-        <div className="inline-form-panel project-create-panel">
-          <h3 className="panel-title">New project</h3>
-          <div className="project-create-form">
-            <label className="task-form-field">
-              Project name
-              <input
-                type="text"
-                value={newProjectName}
-                onChange={(event) => onNewProjectNameChange(event.target.value)}
-                placeholder="Enter project name"
-                disabled={saving}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    onCreateProject();
-                  }
-                }}
-              />
-            </label>
-            <div className="task-form-actions">
-              <button
-                type="button"
-                className="primary-button"
-                onClick={onCreateProject}
-                disabled={saving || !newProjectName.trim()}
-              >
-                Create project
-              </button>
-              <button type="button" className="secondary-button" onClick={onCancelCreateProject} disabled={saving}>
-                Cancel
-              </button>
-            </div>
-          </div>
         </div>
       )}
     </div>

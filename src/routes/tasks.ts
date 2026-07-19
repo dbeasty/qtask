@@ -84,6 +84,82 @@ tasksRouter.patch('/:id', async (req, res, next) => {
   }
 });
 
+tasksRouter.post('/:id/move-project', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { projectId } = req.body as { projectId?: string };
+    if (!projectId) {
+      res.status(400).json({ error: 'projectId is required' });
+      return;
+    }
+    const task = await taskService.moveTaskToProject(userId, req.params.id!, projectId);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json({ task });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/share-project', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { projectId } = req.body as { projectId?: string };
+    if (!projectId) {
+      res.status(400).json({ error: 'projectId is required' });
+      return;
+    }
+    const task = await taskService.shareTaskToProject(userId, req.params.id!, projectId);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json({ task });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/unlink-project', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { projectId } = req.body as { projectId?: string };
+    if (!projectId) {
+      res.status(400).json({ error: 'projectId is required' });
+      return;
+    }
+    const task = await taskService.unlinkTaskFromProject(userId, req.params.id!, projectId);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json({ task });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/duplicate', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { projectId } = req.body as { projectId?: string };
+    if (!projectId) {
+      res.status(400).json({ error: 'projectId is required' });
+      return;
+    }
+    const task = await taskService.duplicateTask(userId, req.params.id!, projectId);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.status(201).json({ task });
+  } catch (error) {
+    next(error);
+  }
+});
+
 tasksRouter.delete('/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);

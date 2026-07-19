@@ -10,6 +10,7 @@ import type {
 function toSummary(doc: {
   _id: unknown;
   userId: string;
+  projectId?: string | null;
   title: string;
   createdAt: Date;
   updatedAt: Date;
@@ -17,6 +18,7 @@ function toSummary(doc: {
   return {
     _id: String(doc._id),
     userId: doc.userId,
+    projectId: doc.projectId ? String(doc.projectId) : undefined,
     title: doc.title,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
@@ -26,6 +28,7 @@ function toSummary(doc: {
 function toConversation(doc: {
   _id: unknown;
   userId: string;
+  projectId?: string | null;
   title: string;
   messages: Array<{
     role: StoredMessage['role'];
@@ -52,9 +55,19 @@ function toConversation(doc: {
 }
 
 export class ConversationService {
-  async createConversation(userId: string, title = 'New conversation'): Promise<Conversation> {
+  async createConversation(
+    userId: string,
+    title = 'New conversation',
+    projectId?: string
+  ): Promise<Conversation> {
+    if (!projectId) {
+      const { projectService } = await import('./projectService.js');
+      projectId = await projectService.ensureDefaultProject(userId);
+    }
+
     const doc = await ConversationModel.create({
       userId,
+      projectId,
       title,
       messages: [],
       pendingProposals: [],
@@ -69,8 +82,10 @@ export class ConversationService {
     return toConversation(doc as Parameters<typeof toConversation>[0]);
   }
 
-  async listConversations(userId: string): Promise<ConversationSummary[]> {
-    const docs = await ConversationModel.find({ userId }).sort({ updatedAt: -1 }).lean();
+  async listConversations(userId: string, projectId?: string): Promise<ConversationSummary[]> {
+    const filter: Record<string, unknown> = { userId };
+    if (projectId) filter.projectId = projectId;
+    const docs = await ConversationModel.find(filter).sort({ updatedAt: -1 }).lean();
     return docs.map((doc) => toSummary(doc as Parameters<typeof toSummary>[0]));
   }
 
@@ -130,6 +145,7 @@ export class ConversationService {
 
     const doc = await ConversationModel.create({
       userId,
+      projectId: existing.projectId,
       title,
       messages,
       pendingProposals: [],

@@ -86,7 +86,9 @@ const subtaskSchema = new Schema(
 const taskSchema = new Schema(
   {
     userId: { type: String, required: true, index: true },
+    /** @deprecated Prefer projectIds. Kept temporarily for migration. */
     projectId: { type: String, index: true },
+    projectIds: { type: [String], default: [], index: true },
     title: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
     status: {
@@ -173,6 +175,15 @@ const projectSchema = new Schema(
     userId: { type: String, required: true, index: true },
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
+    parentId: { type: String, default: null, index: true },
+    sortOrder: { type: Number, default: 0 },
+    status: {
+      type: String,
+      enum: ['todo', 'in_progress', 'done', 'cancelled'] satisfies TaskStatus[],
+      default: 'todo',
+    },
+    percentComplete: { type: Number, default: 0, min: 0, max: 100 },
+    progressShare: { type: Number, min: 0, max: 100 },
     collaborators: { type: [projectCollaboratorSchema], default: [] },
     staging: { type: stagingSchema },
   },
@@ -180,6 +191,7 @@ const projectSchema = new Schema(
 );
 
 projectSchema.index({ 'collaborators.userId': 1 });
+projectSchema.index({ parentId: 1, sortOrder: 1 });
 
 export const ProjectModel = model('Project', projectSchema);
 
@@ -196,6 +208,7 @@ const conversationMessageSchema = new Schema(
 const conversationSchema = new Schema(
   {
     userId: { type: String, required: true, index: true },
+    projectId: { type: String, index: true },
     title: { type: String, default: 'New conversation' },
     messages: { type: [conversationMessageSchema], default: [] },
     pendingProposals: { type: [Schema.Types.Mixed], default: [] },
@@ -203,6 +216,8 @@ const conversationSchema = new Schema(
   },
   { timestamps: true }
 );
+
+conversationSchema.index({ userId: 1, projectId: 1, updatedAt: -1 });
 
 export const ConversationModel = model('Conversation', conversationSchema);
 

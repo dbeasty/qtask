@@ -31,7 +31,9 @@ export interface Subtask {
 export interface Task {
   _id: string;
   userId: string;
+  /** @deprecated Prefer projectIds. */
   projectId?: string;
+  projectIds: string[];
   title: string;
   description?: string;
   status: TaskStatus;
@@ -66,6 +68,7 @@ export interface CreateTaskInput {
   hoursRemaining?: number;
   lastProgressField?: ProgressField;
   projectId?: string;
+  projectIds?: string[];
   subtasks?: CreateSubtaskInput[];
 }
 
@@ -99,6 +102,7 @@ export interface UpdateTaskInput {
   hoursRemaining?: number | null;
   lastProgressField?: ProgressField | null;
   projectId?: string | null;
+  projectIds?: string[] | null;
   assigneeId?: string | null;
 }
 

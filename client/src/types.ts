@@ -5,7 +5,9 @@ export type ProgressField = 'percent' | 'hoursSpent' | 'hoursRemaining';
 export interface Task {
   _id: string;
   userId: string;
+  /** @deprecated Prefer projectIds. */
   projectId?: string;
+  projectIds: string[];
   title: string;
   description?: string;
   status: TaskStatus;
@@ -56,6 +58,11 @@ export interface Project {
   ownerDisplayName?: string;
   name: string;
   description?: string;
+  parentId?: string | null;
+  sortOrder: number;
+  status: TaskStatus;
+  percentComplete: number;
+  progressShare?: number;
   role: ProjectRole;
   canEdit: boolean;
   canUpdateStatus: boolean;
@@ -86,6 +93,7 @@ export interface PendingProposal {
 
 export interface ConversationSummary {
   _id: string;
+  projectId?: string;
   title: string;
   createdAt: string;
   updatedAt: string;
@@ -152,6 +160,7 @@ export interface CreateTaskInput {
   priority?: TaskPriority;
   tags?: string[];
   projectId?: string;
+  projectIds?: string[];
 }
 
 export interface CreateSubtaskInput {
@@ -168,6 +177,7 @@ export interface UpdateTaskInput {
   priority?: TaskPriority;
   tags?: string[];
   projectId?: string | null;
+  projectIds?: string[] | null;
   percentComplete?: number;
   percentCompleteOverride?: number | null;
   progressShare?: number | null;

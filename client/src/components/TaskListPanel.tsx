@@ -31,6 +31,8 @@ interface TaskListPanelProps {
     parentPath: string[],
     index?: number
   ) => void;
+  canManageProjects?: boolean;
+  onOpenProjectDialog?: (taskId: string) => void;
 }
 
 export function TaskListPanel({
@@ -52,6 +54,8 @@ export function TaskListPanel({
   onPromoteSubtask,
   onMoveTask,
   onAttachTask,
+  canManageProjects,
+  onOpenProjectDialog,
 }: TaskListPanelProps) {
   return (
     <aside className="task-list-panel">
@@ -92,6 +96,8 @@ export function TaskListPanel({
           onMoveTask={onMoveTask}
           onAttachTask={onAttachTask}
           onDelete={onDelete}
+          canManageProjects={canManageProjects}
+          onOpenProjectDialog={onOpenProjectDialog}
         />
       </div>
     </aside>

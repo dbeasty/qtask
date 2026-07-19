@@ -1,20 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './auth/AuthContext';
+import { ActiveProjectMenu } from './components/ActiveProjectMenu';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { UserMenu } from './components/UserMenu';
 import { ChatPage } from './pages/ChatPage';
 import { LoginPage } from './pages/LoginPage';
 import { PrivacyPage } from './pages/PrivacyPage';
+import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { TasksPage } from './pages/TasksPage';
 import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
 import { WelcomePage } from './pages/WelcomePage';
-import { checkHealth } from './api/client';
+import { checkHealth, listProjects } from './api/client';
+import type { Project } from './types';
+import {
+  getStoredActiveProjectId,
+  setStoredActiveProjectId,
+} from './utils/projectTree';
+import { getDefaultProject } from './utils/project';
 import './styles.css';
 
-type View = 'chat' | 'tasks';
+type View = 'projects' | 'chat' | 'tasks';
 
 const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
 
@@ -24,13 +32,26 @@ function getAuthPathname(): string {
 
 export function App() {
   const { user, loading, mustChangePassword, logout, updateProfile, updatePreferences } = useAuth();
-  const [view, setView] = useState<View>('chat');
+  const [view, setView] = useState<View>('projects');
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
+  const [projectsVersion, setProjectsVersion] = useState(0);
   const [suggestedProjectName, setSuggestedProjectName] = useState('');
+  const [activeProjectId, setActiveProjectIdState] = useState<string | null>(() =>
+    getStoredActiveProjectId()
+  );
+  const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
+  const [headerProjects, setHeaderProjects] = useState<Project[]>([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [activeProjectMenuOpen, setActiveProjectMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const userMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const activeProjectMenuTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const setActiveProjectId = useCallback((projectId: string | null) => {
+    setActiveProjectIdState(projectId);
+    setStoredActiveProjectId(projectId);
+  }, []);
 
   const refreshHealth = useCallback(() => {
     setHealthy(null);
@@ -43,7 +64,6 @@ export function App() {
     refreshHealth();
   }, [refreshHealth]);
 
-  // Keep the address bar in sync once signed in (login never navigated away).
   useEffect(() => {
     if (!user) return;
     if (AUTH_PATHS.has(getAuthPathname())) {
@@ -51,11 +71,39 @@ export function App() {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!user) return;
+    listProjects()
+      .then(({ projects }) => {
+        setHeaderProjects(projects);
+        if (projects.length === 0) {
+          setActiveProjectId(null);
+          setActiveProjectName(null);
+          return;
+        }
+        const matched = activeProjectId
+          ? projects.find((project) => project._id === activeProjectId)
+          : undefined;
+        const next = matched ?? getDefaultProject(projects) ?? projects[0]!;
+        if (next._id !== activeProjectId) {
+          setActiveProjectId(next._id);
+        }
+        setActiveProjectName(next.name);
+      })
+      .catch(() => {
+        // project list is optional for shell chrome
+      });
+  }, [user, activeProjectId, setActiveProjectId, projectsVersion, tasksVersion]);
+
   const apiStatusLabel =
     healthy == null ? 'Checking API…' : healthy ? 'API connected' : 'API offline';
 
   const handleTasksChanged = useCallback(() => {
     setTasksVersion((version) => version + 1);
+  }, []);
+
+  const handleProjectsChanged = useCallback(() => {
+    setProjectsVersion((version) => version + 1);
   }, []);
 
   if (loading) {
@@ -91,7 +139,6 @@ export function App() {
   }
 
   if (mustChangePassword) {
-    // Block the entire app until the temporary password has been replaced.
     return (
       <div className="auth-page">
         <ChangePasswordDialog forced />
@@ -142,7 +189,42 @@ export function App() {
         </div>
 
         <div className="header-row header-row-bottom">
-          <p className="header-tagline muted">AI-native task management</p>
+          <p className="header-tagline muted">
+            AI-native task management
+            {activeProjectName ? (
+              <>
+                {' '}
+                ·{' '}
+                <button
+                  ref={activeProjectMenuTriggerRef}
+                  type="button"
+                  className="header-active-project"
+                  aria-expanded={activeProjectMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => setActiveProjectMenuOpen((open) => !open)}
+                >
+                  {activeProjectName}
+                  <span className="header-active-project-chevron" aria-hidden="true">
+                    ▾
+                  </span>
+                </button>
+                {activeProjectMenuOpen && (
+                  <ActiveProjectMenu
+                    anchorRef={activeProjectMenuTriggerRef}
+                    projects={headerProjects}
+                    activeProjectId={activeProjectId}
+                    onSelectProject={(projectId) => {
+                      const project = headerProjects.find((p) => p._id === projectId);
+                      setActiveProjectId(projectId);
+                      if (project) setActiveProjectName(project.name);
+                    }}
+                    onOpenProjectView={() => setView('projects')}
+                    onClose={() => setActiveProjectMenuOpen(false)}
+                  />
+                )}
+              </>
+            ) : null}
+          </p>
           <nav className="header-views-nav" aria-label="Views">
             <span className="header-views-label">Views</span>
             <button
@@ -151,6 +233,13 @@ export function App() {
               onClick={() => setView('chat')}
             >
               Chat
+            </button>
+            <button
+              type="button"
+              className={view === 'projects' ? 'nav-active' : ''}
+              onClick={() => setView('projects')}
+            >
+              Projects
             </button>
             <button
               type="button"
@@ -164,15 +253,30 @@ export function App() {
       </header>
 
       <main>
-        {view === 'chat' ? (
+        {view === 'projects' ? (
+          <ProjectsPage
+            activeProjectId={activeProjectId}
+            onActiveProjectChange={(projectId) => {
+              setActiveProjectId(projectId);
+              handleProjectsChanged();
+            }}
+            onOpenTasks={() => setView('tasks')}
+            externalRefreshKey={projectsVersion}
+          />
+        ) : view === 'chat' ? (
           <ChatPage
+            activeProjectId={activeProjectId}
             onTasksChanged={handleTasksChanged}
             onProjectSuggested={setSuggestedProjectName}
+            onNeedProject={() => setView('projects')}
           />
         ) : (
           <TasksPage
+            activeProjectId={activeProjectId}
+            onActiveProjectChange={setActiveProjectId}
             externalRefreshKey={tasksVersion}
             suggestedProjectName={suggestedProjectName}
+            onNeedProject={() => setView('projects')}
           />
         )}
       </main>

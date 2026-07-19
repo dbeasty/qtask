@@ -916,7 +916,8 @@ export class ChatService {
   async *streamChat(
     userId: string,
     message: string,
-    conversationId?: string
+    conversationId?: string,
+    projectId?: string
   ): AsyncGenerator<ChatStreamEvent> {
     let conversation =
       conversationId != null
@@ -928,8 +929,21 @@ export class ChatService {
       return;
     }
 
+    if (conversation && projectId && conversation.projectId && conversation.projectId !== projectId) {
+      yield { type: 'error', message: 'Conversation does not belong to this project' };
+      return;
+    }
+
     if (!conversation) {
-      conversation = await conversationService.createConversation(userId);
+      if (projectId) {
+        const { projectService } = await import('./projectService.js');
+        await projectService.assertProjectAccess(userId, projectId, 'viewer');
+      }
+      conversation = await conversationService.createConversation(
+        userId,
+        'New conversation',
+        projectId
+      );
     } else {
       const discarded = await stagingService.rollbackStaleForConversation(
         userId,

@@ -20,6 +20,8 @@ import { suggestProjectFromMessages } from '../utils/project';
 interface ChatPageProps {
   onTasksChanged: () => void;
   onProjectSuggested?: (name: string) => void;
+  activeProjectId: string | null;
+  onNeedProject?: () => void;
 }
 
 type PendingConfirm =
@@ -199,7 +201,12 @@ function handleStreamEvent(
   return { toolsTouched };
 }
 
-export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) {
+export function ChatPage({
+  onTasksChanged,
+  onProjectSuggested,
+  activeProjectId,
+  onNeedProject,
+}: ChatPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -227,7 +234,13 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
   const autoApproveInFlightRef = useRef(false);
 
   useEffect(() => {
-    listConversations()
+    if (!activeProjectId) {
+      setConversations([]);
+      setConversationId(undefined);
+      setMessages([]);
+      return;
+    }
+    listConversations(activeProjectId)
       .then(({ conversations: items }) => setConversations(items))
       .catch((err: Error) => setError(err.message));
     listProjects()
@@ -235,7 +248,9 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
       .catch(() => {
         // optional for project suggestion
       });
-  }, []);
+    setConversationId(undefined);
+    setMessages([]);
+  }, [activeProjectId]);
 
   useEffect(() => {
     const suggested = suggestProjectFromMessages(messages, projects);
@@ -398,14 +413,23 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
     let resolvedConversationId = conversationId;
 
     try {
-      await streamChat(text, conversationId, (event) => {
-        const result = handleStreamEvent(event, assistantId, setMessages, setConversationId, setError);
-        if (result.toolsTouched) toolsTouched = true;
-        if (event.type === 'done') {
-          resolvedConversationId = event.conversationId;
-          listConversations().then(({ conversations: items }) => setConversations(items));
-        }
-      });
+      await streamChat(
+        text,
+        conversationId,
+        (event) => {
+          const result = handleStreamEvent(event, assistantId, setMessages, setConversationId, setError);
+          if (result.toolsTouched) toolsTouched = true;
+          if (event.type === 'done') {
+            resolvedConversationId = event.conversationId;
+            if (activeProjectId) {
+              listConversations(activeProjectId).then(({ conversations: items }) =>
+                setConversations(items)
+              );
+            }
+          }
+        },
+        activeProjectId ?? undefined
+      );
 
       if (resolvedConversationId) {
         await syncConversationFromServer(resolvedConversationId);
@@ -475,7 +499,9 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
                 : message
             )
           );
-          listConversations().then(({ conversations: items }) => setConversations(items));
+          listConversations(activeProjectId ?? undefined).then(({ conversations: items }) =>
+            setConversations(items)
+          );
           syncConversationFromServer(conversationId).catch(() => {
             // ignore sync errors after approval
           });
@@ -630,6 +656,17 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
 
   return (
     <div className="chat-layout">
+      {!activeProjectId ? (
+        <div className="tasks-empty-state" style={{ gridColumn: '1 / -1' }}>
+          <p className="muted">Select a project to chat about its tasks.</p>
+          <div className="tasks-empty-state-actions">
+            <button type="button" className="primary-button" onClick={() => onNeedProject?.()}>
+              Open projects
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
       <aside className="chat-sidebar">
         <button type="button" className="primary-button" onClick={startNewConversation}>
           New chat
@@ -1000,6 +1037,8 @@ export function ChatPage({ onTasksChanged, onProjectSuggested }: ChatPageProps) 
           }}
           onConfirm={(dontAskAgain) => handleConfirmDialog(dontAskAgain)}
         />
+      )}
+        </>
       )}
     </div>
   );

@@ -26,6 +26,8 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     await connectDb();
     const { projectService } = await import('./services/projectService.js');
     await projectService.migrateLegacyCollaboratorRoles();
+    const { runDataMigrations } = await import('./db/migrations.js');
+    await runDataMigrations();
   }
   await initEmail();
   if (shouldStartWorker) {

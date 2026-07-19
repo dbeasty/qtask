@@ -97,16 +97,32 @@ export async function listProjects(): Promise<{ projects: import('../types').Pro
 }
 
 export async function createProject(
-  body: { name: string; description?: string }
+  body: { name: string; description?: string; parentId?: string | null }
 ): Promise<{ project: import('../types').Project }> {
   return request('/api/projects', { method: 'POST', body: JSON.stringify(body) });
 }
 
 export async function updateProject(
   id: string,
-  body: { name?: string; description?: string | null }
+  body: {
+    name?: string;
+    description?: string | null;
+    parentId?: string | null;
+    sortOrder?: number;
+    progressShare?: number | null;
+  }
 ): Promise<{ project: import('../types').Project }> {
   return request(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
+export async function moveProject(
+  id: string,
+  body: { parentId: string | null; index?: number }
+): Promise<{ project: import('../types').Project }> {
+  return request(`/api/projects/${id}/move`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 export async function deleteProject(
@@ -243,6 +259,46 @@ export async function attachTaskAsSubtask(
   });
 }
 
+export async function moveTaskToProject(
+  taskId: string,
+  projectId: string
+): Promise<{ task: import('../types').Task }> {
+  return request(`/api/tasks/${taskId}/move-project`, {
+    method: 'POST',
+    body: JSON.stringify({ projectId }),
+  });
+}
+
+export async function shareTaskToProject(
+  taskId: string,
+  projectId: string
+): Promise<{ task: import('../types').Task }> {
+  return request(`/api/tasks/${taskId}/share-project`, {
+    method: 'POST',
+    body: JSON.stringify({ projectId }),
+  });
+}
+
+export async function unlinkTaskFromProject(
+  taskId: string,
+  projectId: string
+): Promise<{ task: import('../types').Task }> {
+  return request(`/api/tasks/${taskId}/unlink-project`, {
+    method: 'POST',
+    body: JSON.stringify({ projectId }),
+  });
+}
+
+export async function duplicateTask(
+  taskId: string,
+  projectId: string
+): Promise<{ task: import('../types').Task }> {
+  return request(`/api/tasks/${taskId}/duplicate`, {
+    method: 'POST',
+    body: JSON.stringify({ projectId }),
+  });
+}
+
 export async function reorderProjectTask(
   projectId: string,
   taskId: string,
@@ -254,8 +310,11 @@ export async function reorderProjectTask(
   });
 }
 
-export async function listConversations(): Promise<{ conversations: import('../types').ConversationSummary[] }> {
-  return request('/api/conversations');
+export async function listConversations(
+  projectId?: string
+): Promise<{ conversations: import('../types').ConversationSummary[] }> {
+  const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  return request(`/api/conversations${query}`);
 }
 
 export async function getConversation(id: string): Promise<{ conversation: import('../types').Conversation }> {
@@ -283,12 +342,13 @@ export async function duplicateConversation(
 export async function streamChat(
   message: string,
   conversationId: string | undefined,
-  onEvent: (event: import('../types').ChatStreamEvent) => void
+  onEvent: (event: import('../types').ChatStreamEvent) => void,
+  projectId?: string
 ): Promise<void> {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ message, conversationId }),
+    body: JSON.stringify({ message, conversationId, projectId }),
   });
 
   await consumeSseStream(response, onEvent);

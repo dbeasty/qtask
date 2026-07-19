@@ -22,7 +22,12 @@ async function streamEvents(
 chatRouter.get('/conversations', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const conversations = await conversationService.listConversations(userId);
+    const projectId = req.query.projectId as string | undefined;
+    if (projectId) {
+      const { projectService } = await import('../services/projectService.js');
+      await projectService.assertProjectAccess(userId, projectId, 'viewer');
+    }
+    const conversations = await conversationService.listConversations(userId, projectId);
     res.json({ conversations });
   } catch (error) {
     next(error);
@@ -114,7 +119,11 @@ chatRouter.post('/conversations/:id/duplicate', async (req, res, next) => {
 chatRouter.post('/chat', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const { message, conversationId } = req.body as { message?: string; conversationId?: string };
+    const { message, conversationId, projectId } = req.body as {
+      message?: string;
+      conversationId?: string;
+      projectId?: string;
+    };
 
     if (!message?.trim()) {
       res.status(400).json({ error: 'message is required' });
@@ -130,7 +139,7 @@ chatRouter.post('/chat', async (req, res, next) => {
 
     await streamEvents(
       res,
-      chatService.streamChat(userId, message.trim(), conversationId)
+      chatService.streamChat(userId, message.trim(), conversationId, projectId)
     );
 
     log.info('Chat stream completed', { userId, conversationId });

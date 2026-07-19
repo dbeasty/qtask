@@ -267,8 +267,13 @@ export const toolDefinitions: ToolDefinition[] = [
     async execute(userId, input) {
       const task = await taskService.getTask(userId, String(input.taskId));
       if (!task) return err('Task not found');
-      if (!task.projectId) return err('Task has no project');
-      const projectId = String(task.projectId);
+      const projectIds = Array.isArray(task.projectIds)
+        ? task.projectIds.map(String)
+        : task.projectId
+          ? [String(task.projectId)]
+          : [];
+      if (projectIds.length === 0) return err('Task has no project');
+      const projectId = projectIds[0]!;
 
       const project = await projectService.getProject(userId, projectId);
       if (!project) return err('Project not found');
@@ -356,8 +361,13 @@ export const toolDefinitions: ToolDefinition[] = [
       try {
         const task = await taskService.getTask(userId, String(input.taskId));
         if (!task) return err('Task not found');
-        if (!task.projectId) return err('Task has no project');
-        const projectId = String(task.projectId);
+        const projectIds = Array.isArray(task.projectIds)
+          ? task.projectIds.map(String)
+          : task.projectId
+            ? [String(task.projectId)]
+            : [];
+        if (projectIds.length === 0) return err('Task has no project');
+        const projectId = projectIds[0]!;
 
         const project = await projectService.getProject(userId, projectId);
         if (!project) return err('Project not found');

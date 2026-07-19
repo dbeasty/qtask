@@ -25,14 +25,27 @@ export type SerializedTask = Record<string, unknown> & {
   status: string;
   priority: string;
   percentComplete: number;
+  projectIds: string[];
   dueDate?: string;
   subtasks: Record<string, unknown>[];
 };
+
+/** Normalize legacy projectId into projectIds for API responses. */
+export function normalizeTaskProjectIds(obj: Record<string, unknown>): string[] {
+  const fromArray = Array.isArray(obj.projectIds)
+    ? (obj.projectIds as unknown[]).map(String).filter(Boolean)
+    : [];
+  if (fromArray.length > 0) return [...new Set(fromArray)];
+  if (obj.projectId) return [String(obj.projectId)];
+  return [];
+}
 
 export function serializeTask(doc: Record<string, unknown>): SerializedTask {
   const obj = typeof (doc as { toObject?: () => Record<string, unknown> }).toObject === 'function'
     ? (doc as { toObject: () => Record<string, unknown> }).toObject()
     : doc;
+
+  const projectIds = normalizeTaskProjectIds(obj);
 
   return {
     ...obj,
@@ -41,6 +54,8 @@ export function serializeTask(doc: Record<string, unknown>): SerializedTask {
     status: String(obj.status ?? 'todo'),
     priority: String(obj.priority ?? 'medium'),
     percentComplete: Number(obj.percentComplete ?? 0),
+    projectIds,
+    projectId: projectIds[0],
     dueDate: obj.dueDate ? new Date(obj.dueDate as string).toISOString() : undefined,
     createdAt: obj.createdAt ? new Date(obj.createdAt as string).toISOString() : undefined,
     updatedAt: obj.updatedAt ? new Date(obj.updatedAt as string).toISOString() : undefined,

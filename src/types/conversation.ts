@@ -34,6 +34,7 @@ export interface PausedBatchState {
 export interface ConversationSummary {
   _id: string;
   userId: string;
+  projectId?: string;
   title: string;
   createdAt: string;
   updatedAt: string;

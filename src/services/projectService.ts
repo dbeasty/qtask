@@ -10,9 +10,14 @@ import {
   roleAtLeast,
   type CollaboratorRole,
   type ProjectRole,
+  type ProjectStatus,
   type SerializedCollaborator,
   type SerializedProject,
 } from '../types/project.js';
+import {
+  computeLeafProjectProgress,
+  computeParentProjectProgress,
+} from '../utils/projectProgress.js';
 import { taskService } from './taskService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 import type { StagingContext } from '../types/staging.js';
@@ -24,6 +29,11 @@ type LeanProject = {
   userId: string;
   name: string;
   description?: string | null;
+  parentId?: string | null;
+  sortOrder?: number;
+  status?: ProjectStatus;
+  percentComplete?: number;
+  progressShare?: number | null;
   collaborators?: Array<{ userId: string; role: CollaboratorRole }> | null;
   createdAt: Date;
   updatedAt: Date;
@@ -82,6 +92,14 @@ async function serializeProject(project: LeanProject, viewerId: string): Promise
     ownerDisplayName: owner?.displayName ?? undefined,
     name: project.name,
     description: project.description ?? undefined,
+    parentId: project.parentId ?? null,
+    sortOrder: project.sortOrder ?? 0,
+    status: project.status ?? 'todo',
+    percentComplete: project.percentComplete ?? 0,
+    progressShare:
+      project.progressShare === undefined || project.progressShare === null
+        ? undefined
+        : project.progressShare,
     role,
     canEdit: canEditProject(role),
     canUpdateStatus: canUpdateStatus(role),
@@ -112,7 +130,15 @@ export class ProjectService {
       return String(existing!._id);
     }
 
-    const project = await ProjectModel.create({ userId, name: DEFAULT_PROJECT_NAME, collaborators: [] });
+    const project = await ProjectModel.create({
+      userId,
+      name: DEFAULT_PROJECT_NAME,
+      collaborators: [],
+      parentId: null,
+      sortOrder: 0,
+      status: 'todo',
+      percentComplete: 0,
+    });
     return String(project._id);
   }
 
@@ -186,12 +212,31 @@ export class ProjectService {
   async updateProject(
     userId: string,
     projectId: string,
-    input: { name?: string; description?: string | null }
+    input: {
+      name?: string;
+      description?: string | null;
+      parentId?: string | null;
+      sortOrder?: number;
+      progressShare?: number | null;
+    }
   ) {
-    await this.assertProjectAccess(userId, projectId, 'owner');
+    const structural =
+      input.name !== undefined ||
+      input.description !== undefined ||
+      input.parentId !== undefined ||
+      input.sortOrder !== undefined;
+
+    if (structural) {
+      await this.assertProjectAccess(userId, projectId, 'owner');
+    } else {
+      await this.assertProjectAccess(userId, projectId, 'editor');
+    }
 
     const project = await ProjectModel.findById(projectId);
     if (!project) return null;
+
+    const previousParentId =
+      project.parentId !== undefined && project.parentId !== null ? String(project.parentId) : null;
 
     if (input.name !== undefined) {
       const trimmed = input.name.trim();
@@ -203,17 +248,51 @@ export class ProjectService {
     if (input.description !== undefined) {
       project.description = input.description ?? undefined;
     }
+    if (input.parentId !== undefined) {
+      await this.assertValidParent(userId, projectId, input.parentId);
+      project.parentId = input.parentId;
+    }
+    if (input.sortOrder !== undefined) {
+      project.sortOrder = input.sortOrder;
+    }
+    if (input.progressShare !== undefined) {
+      if (input.progressShare === null) {
+        project.set('progressShare', undefined);
+        project.markModified('progressShare');
+      } else {
+        project.progressShare = Math.max(0, Math.min(100, Math.round(input.progressShare)));
+      }
+    }
 
     await project.save();
-    return serializeProject(project.toObject() as LeanProject, userId);
+
+    if (input.progressShare === null) {
+      await ProjectModel.updateOne({ _id: projectId }, { $unset: { progressShare: 1 } });
+    }
+
+    const affected = new Set<string>([projectId]);
+    if (previousParentId) affected.add(previousParentId);
+    const newParentId =
+      project.parentId !== undefined && project.parentId !== null ? String(project.parentId) : null;
+    if (newParentId) affected.add(newParentId);
+    await this.recalculateProjects([...affected]);
+
+    const refreshed = await ProjectModel.findById(projectId).lean();
+    if (!refreshed) return null;
+    return serializeProject(refreshed as LeanProject, userId);
   }
 
   async createProject(
     userId: string,
     name: string,
     description?: string,
-    staging?: StagingContext
+    staging?: StagingContext,
+    parentId?: string | null
   ) {
+    if (parentId) {
+      await this.assertProjectAccess(userId, parentId, 'owner');
+    }
+
     if (staging) {
       const existing = await ProjectModel.findOne({
         userId,
@@ -225,14 +304,116 @@ export class ProjectService {
       }
     }
 
+    const siblingFilter = {
+      userId,
+      parentId: parentId ?? null,
+      staging: { $exists: false },
+    };
+    const maxSibling = await ProjectModel.findOne(siblingFilter)
+      .sort({ sortOrder: -1 })
+      .select('sortOrder')
+      .lean();
+    const sortOrder = maxSibling ? (maxSibling.sortOrder ?? 0) + 1 : 0;
+
     const project = await ProjectModel.create({
       userId,
       name,
       description,
+      parentId: parentId ?? null,
+      sortOrder,
+      status: 'todo',
+      percentComplete: 0,
       collaborators: [],
       staging: staging ? { ...staging, stagedAt: new Date() } : undefined,
     });
-    return serializeProject(project.toObject() as LeanProject, userId);
+
+    if (parentId) {
+      await this.recalculateProjectAndAncestors(parentId);
+    }
+
+    const refreshed = await ProjectModel.findById(project._id).lean();
+    return serializeProject((refreshed ?? project.toObject()) as LeanProject, userId);
+  }
+
+  async moveProject(
+    userId: string,
+    projectId: string,
+    input: { parentId: string | null; index?: number }
+  ) {
+    await this.assertProjectAccess(userId, projectId, 'owner');
+    await this.assertValidParent(userId, projectId, input.parentId);
+
+    const project = await ProjectModel.findById(projectId);
+    if (!project) {
+      throw new HttpError(404, 'Project not found');
+    }
+
+    const previousParentId =
+      project.parentId !== undefined && project.parentId !== null ? String(project.parentId) : null;
+    const newParentId = input.parentId;
+    const siblings = await ProjectModel.find({
+      ...this.accessibleProjectFilter(userId),
+      parentId: newParentId,
+      _id: { $ne: projectId },
+    })
+      .sort({ sortOrder: 1, createdAt: 1 })
+      .select('_id')
+      .lean();
+
+    const orderedIds = siblings.map((s) => String(s._id));
+    const insertIndex =
+      input.index === undefined
+        ? orderedIds.length
+        : Math.max(0, Math.min(input.index, orderedIds.length));
+    orderedIds.splice(insertIndex, 0, projectId);
+
+    project.parentId = newParentId;
+    project.sortOrder = insertIndex;
+    await project.save();
+
+    await Promise.all(
+      orderedIds.map((id, sortOrder) =>
+        ProjectModel.updateOne({ _id: id }, { $set: { sortOrder } })
+      )
+    );
+
+    const affected = new Set<string>([projectId]);
+    if (previousParentId) affected.add(previousParentId);
+    if (newParentId) affected.add(newParentId);
+    await this.recalculateProjects([...affected]);
+
+    const refreshed = await ProjectModel.findById(projectId).lean();
+    if (!refreshed) {
+      throw new HttpError(404, 'Project not found');
+    }
+    return serializeProject(refreshed as LeanProject, userId);
+  }
+
+  private async assertValidParent(
+    userId: string,
+    projectId: string,
+    parentId: string | null
+  ): Promise<void> {
+    if (parentId === null || parentId === undefined) return;
+    if (parentId === projectId) {
+      throw new HttpError(400, 'A project cannot be its own parent');
+    }
+    await this.assertProjectAccess(userId, parentId, 'owner');
+
+    // Walk ancestors of the proposed parent; none may be the moving project.
+    let cursor: string | null = parentId;
+    const seen = new Set<string>();
+    while (cursor) {
+      if (cursor === projectId) {
+        throw new HttpError(400, 'Cannot move a project under its descendant');
+      }
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+      const ancestorDoc: { parentId?: string | null } | null = await ProjectModel.findById(cursor)
+        .select('parentId')
+        .lean();
+      cursor = ancestorDoc?.parentId ? String(ancestorDoc.parentId) : null;
+    }
   }
 
   async getProject(userId: string, projectId: string) {
@@ -244,7 +425,7 @@ export class ProjectService {
   async listProjects(userId: string) {
     await this.ensureDefaultProject(userId);
     const projects = await ProjectModel.find(this.accessibleProjectFilter(userId))
-      .sort({ updatedAt: -1 })
+      .sort({ sortOrder: 1, createdAt: 1 })
       .lean();
     return Promise.all(projects.map((p) => serializeProject(p as LeanProject, userId)));
   }
@@ -252,10 +433,66 @@ export class ProjectService {
   async deleteProject(userId: string, projectId: string) {
     await this.assertProjectAccess(userId, projectId, 'owner');
 
-    const { deletedCount } = await TaskModel.deleteMany({ projectId });
+    const project = await ProjectModel.findById(projectId).lean();
+    if (!project) {
+      throw new HttpError(404, 'Project not found');
+    }
+
+    const parentId = project.parentId ?? null;
+
+    const childIds = (
+      await ProjectModel.find({ parentId: projectId }).select('_id').lean()
+    ).map((child) => String(child._id));
+
+    // Reparent children to the deleted project's parent.
+    await ProjectModel.updateMany(
+      { parentId: projectId },
+      { $set: { parentId } }
+    );
+
+    // Unlink shared tasks; delete tasks that only belonged to this project.
+    const linkedTasks = await TaskModel.find({
+      $or: [{ projectIds: projectId }, { projectId }],
+    })
+      .select('_id projectIds projectId')
+      .lean();
+
+    const otherProjectIds = new Set<string>();
+    let deletedTaskCount = 0;
+    for (const task of linkedTasks) {
+      const ids = new Set<string>();
+      if (Array.isArray(task.projectIds)) {
+        for (const id of task.projectIds) ids.add(String(id));
+      }
+      if (task.projectId) ids.add(String(task.projectId));
+      ids.delete(projectId);
+
+      if (ids.size === 0) {
+        await TaskModel.deleteOne({ _id: task._id });
+        deletedTaskCount += 1;
+      } else {
+        const remaining = [...ids];
+        for (const id of remaining) otherProjectIds.add(id);
+        await TaskModel.updateOne(
+          { _id: task._id },
+          { $set: { projectIds: remaining, projectId: remaining[0] } }
+        );
+      }
+    }
+
+    const { ConversationModel } = await import('../models/index.js');
+    await ConversationModel.deleteMany({ projectId });
+
     await ProjectModel.deleteOne({ _id: projectId, userId });
 
-    const remainingOwned = await ProjectModel.countDocuments({ userId });
+    const affected = new Set<string>([...childIds, ...otherProjectIds]);
+    if (parentId) affected.add(String(parentId));
+    await this.recalculateProjects([...affected]);
+
+    const remainingOwned = await ProjectModel.countDocuments({
+      userId,
+      staging: { $exists: false },
+    });
     let nextProjectId: string | null = null;
     if (remainingOwned === 0) {
       const stillAccessible = await ProjectModel.countDocuments(this.accessibleProjectFilter(userId));
@@ -263,16 +500,139 @@ export class ProjectService {
         nextProjectId = await this.ensureDefaultProject(userId);
       } else {
         const next = await ProjectModel.findOne(this.accessibleProjectFilter(userId))
-          .sort({ createdAt: 1 })
+          .sort({ sortOrder: 1, createdAt: 1 })
           .lean();
         nextProjectId = next ? String(next._id) : null;
       }
     } else {
-      const next = await ProjectModel.findOne({ userId }).sort({ createdAt: 1 }).lean();
+      const next = await ProjectModel.findOne({ userId, staging: { $exists: false } })
+        .sort({ sortOrder: 1, createdAt: 1 })
+        .lean();
       nextProjectId = next ? String(next._id) : null;
     }
 
-    return { deletedTaskCount: deletedCount, nextProjectId };
+    return { deletedTaskCount, nextProjectId };
+  }
+
+  /**
+   * Recalculate stored status/percent for a project, then walk ancestors.
+   * Leaf projects derive from linked tasks; parents roll up child projects.
+   */
+  async recalculateProjectAndAncestors(projectId: string): Promise<void> {
+    if (!isValidObjectId(projectId)) return;
+
+    let cursor: string | null = projectId;
+    const seen = new Set<string>();
+
+    while (cursor) {
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+
+      const project: { _id: unknown; parentId?: string | null } | null =
+        await ProjectModel.findById(cursor).select('_id parentId').lean();
+      if (!project) break;
+
+      await this.recalculateSingleProject(String(project._id));
+      cursor = project.parentId ? String(project.parentId) : null;
+    }
+  }
+
+  /** Recalculate each project id and its ancestors (deduped). */
+  async recalculateProjects(projectIds: string[]): Promise<void> {
+    const unique = [
+      ...new Set(projectIds.filter((id) => Boolean(id) && isValidObjectId(id))),
+    ];
+    const visited = new Set<string>();
+
+    for (const projectId of unique) {
+      let cursor: string | null = projectId;
+      while (cursor) {
+        if (visited.has(cursor)) break;
+        visited.add(cursor);
+
+        const project: { _id: unknown; parentId?: string | null } | null =
+          await ProjectModel.findById(cursor).select('_id parentId').lean();
+        if (!project) break;
+
+        await this.recalculateSingleProject(String(project._id));
+        cursor = project.parentId ? String(project.parentId) : null;
+      }
+    }
+  }
+
+  /** One-shot backfill of progress fields for all non-staged projects (deepest first). */
+  async recalculateAllProjects(): Promise<number> {
+    const projects = await ProjectModel.find({ staging: { $exists: false } })
+      .select('_id parentId')
+      .lean();
+
+    const depthCache = new Map<string, number>();
+    const byId = new Map(projects.map((p) => [String(p._id), p]));
+    const depthOf = (id: string, seen = new Set<string>()): number => {
+      if (depthCache.has(id)) return depthCache.get(id)!;
+      if (seen.has(id)) return 0;
+      seen.add(id);
+      const doc = byId.get(id);
+      const parentId = doc?.parentId ? String(doc.parentId) : null;
+      const depth = parentId ? depthOf(parentId, seen) + 1 : 0;
+      depthCache.set(id, depth);
+      return depth;
+    };
+
+    const ordered = [...projects].sort(
+      (a, b) => depthOf(String(b._id)) - depthOf(String(a._id))
+    );
+
+    for (const project of ordered) {
+      await this.recalculateSingleProject(String(project._id));
+    }
+
+    return projects.length;
+  }
+
+  private async recalculateSingleProject(projectId: string): Promise<void> {
+    const children = await ProjectModel.find({
+      parentId: projectId,
+      staging: { $exists: false },
+    })
+      .select('status percentComplete progressShare')
+      .lean();
+
+    let percentComplete: number;
+    let status: ProjectStatus;
+
+    if (children.length > 0) {
+      const result = computeParentProjectProgress(
+        children.map((child) => ({
+          status: (child.status as ProjectStatus) ?? 'todo',
+          percentComplete: child.percentComplete ?? 0,
+          progressShare: child.progressShare,
+        }))
+      );
+      percentComplete = result.percentComplete;
+      status = result.status;
+    } else {
+      const tasks = await TaskModel.find({
+        staging: { $exists: false },
+        $or: [{ projectIds: projectId }, { projectId }],
+      })
+        .select('status percentComplete')
+        .lean();
+
+      const result = computeLeafProjectProgress(
+        tasks.map((task) => ({
+          status: (task.status as ProjectStatus) ?? 'todo',
+          percentComplete: task.percentComplete ?? 0,
+        }))
+      );
+      percentComplete = result.percentComplete;
+      status = result.status;
+    }
+
+    await ProjectModel.updateOne(
+      { _id: projectId },
+      { $set: { status, percentComplete } }
+    );
   }
 
   async addCollaborator(

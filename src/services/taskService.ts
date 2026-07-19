@@ -99,13 +99,33 @@ function finalizeTaskProgress(task: {
 }
 
 export class TaskService {
+  private getDocProjectIds(task: {
+    projectId?: unknown;
+    projectIds?: unknown;
+  }): string[] {
+    const ids: string[] = [];
+    if (Array.isArray(task.projectIds)) {
+      for (const id of task.projectIds) {
+        if (id) ids.push(String(id));
+      }
+    }
+    if (ids.length === 0 && task.projectId) {
+      ids.push(String(task.projectId));
+    }
+    return [...new Set(ids)];
+  }
+
   private async accessibleTaskQuery(userId: string): Promise<Record<string, unknown>> {
     const projectIds = await (await projects()).listAccessibleProjectIds(userId);
     if (projectIds.length === 0) {
       return { userId };
     }
     return {
-      $or: [{ userId }, { projectId: { $in: projectIds } }],
+      $or: [
+        { userId },
+        { projectIds: { $in: projectIds } },
+        { projectId: { $in: projectIds } },
+      ],
     };
   }
 
@@ -127,16 +147,21 @@ export class TaskService {
     if (!task) return null;
     if (task.staging) return null;
 
-    // Only treat the task as project-scoped when it has a real project reference.
-    // An orphaned/invalid projectId (e.g. a stray title string) falls through to the
-    // ownership check so the owner can still manage and delete the task.
-    if (task.projectId && Types.ObjectId.isValid(String(task.projectId))) {
-      const access = await (await projects()).getProjectAccess(userId, String(task.projectId));
-      if (access) {
-        if (!roleAtLeast(access.role, minRole)) {
+    const projectIds = this.getDocProjectIds(task).filter((id) => Types.ObjectId.isValid(id));
+    if (projectIds.length > 0) {
+      let bestRole: ProjectRole | null = null;
+      for (const projectId of projectIds) {
+        const access = await (await projects()).getProjectAccess(userId, projectId);
+        if (!access) continue;
+        if (!bestRole || roleAtLeast(access.role, bestRole)) {
+          bestRole = access.role;
+        }
+      }
+      if (bestRole) {
+        if (!roleAtLeast(bestRole, minRole)) {
           throw new HttpError(403, 'Insufficient project permissions');
         }
-        return { task, role: access.role };
+        return { task, role: bestRole };
       }
     }
 
@@ -159,6 +184,14 @@ export class TaskService {
     await (await projects()).assertProjectAccess(userId, projectId, 'editor');
   }
 
+  private async notifyProjectProgress(projectIds: string[]): Promise<void> {
+    const ids = [
+      ...new Set(projectIds.filter((id) => Boolean(id) && Types.ObjectId.isValid(id))),
+    ];
+    if (ids.length === 0) return;
+    await (await projects()).recalculateProjects(ids);
+  }
+
   async createTask(
     userId: string,
     input: CreateTaskInput,
@@ -167,20 +200,31 @@ export class TaskService {
   ) {
     const subtasks = (input.subtasks ?? []).map(buildSubtaskTree);
 
-    let projectId = input.projectId;
-    if (projectId) {
-      if (staging) {
-        await (await projects()).assertProjectAccessForStaging(userId, projectId, staging);
-      } else {
-        await this.requireProjectEdit(userId, projectId);
+    let projectIds =
+      input.projectIds && input.projectIds.length > 0
+        ? [...new Set(input.projectIds.map(String))]
+        : input.projectId
+          ? [input.projectId]
+          : [];
+
+    if (projectIds.length > 0) {
+      for (const projectId of projectIds) {
+        if (staging) {
+          await (await projects()).assertProjectAccessForStaging(userId, projectId, staging);
+        } else {
+          await this.requireProjectEdit(userId, projectId);
+        }
       }
     } else {
-      projectId = await (await projects()).ensureDefaultProject(userId);
+      projectIds = [await (await projects()).ensureDefaultProject(userId)];
     }
+
+    const primaryProjectId = projectIds[0]!;
 
     const taskDoc = new TaskModel({
       userId,
-      projectId,
+      projectId: primaryProjectId,
+      projectIds,
       title: input.title,
       description: input.description,
       status: input.status ?? 'todo',
@@ -194,13 +238,14 @@ export class TaskService {
       staging: staging ? { ...staging, stagedAt: new Date() } : undefined,
     });
 
-    if (projectId) {
-      const minTask = await TaskModel.findOne({ projectId, staging: { $exists: false } })
-        .sort({ sortOrder: 1 })
-        .select('sortOrder')
-        .lean();
-      taskDoc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
-    }
+    const minTask = await TaskModel.findOne({
+      $or: [{ projectIds: primaryProjectId }, { projectId: primaryProjectId }],
+      staging: { $exists: false },
+    })
+      .sort({ sortOrder: 1 })
+      .select('sortOrder')
+      .lean();
+    taskDoc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
 
     const withPercent = applyPercentComplete(taskDoc.toObject() as Parameters<typeof applyPercentComplete>[0]);
     taskDoc.status = withPercent.status as typeof taskDoc.status;
@@ -218,6 +263,8 @@ export class TaskService {
         details: { title: taskDoc.title },
         source,
       });
+
+      await this.notifyProjectProgress(projectIds);
     }
 
     return serializeTask(taskDoc.toObject());
@@ -248,7 +295,14 @@ export class TaskService {
     if (filters.priority) {
       query.priority = Array.isArray(filters.priority) ? { $in: filters.priority } : filters.priority;
     }
-    if (filters.projectId) query.projectId = filters.projectId;
+    if (filters.projectId) {
+      query.$and = [
+        ...(Array.isArray(query.$and) ? (query.$and as unknown[]) : []),
+        {
+          $or: [{ projectIds: filters.projectId }, { projectId: filters.projectId }],
+        },
+      ];
+    }
     if (filters.assigneeId) query.assigneeId = filters.assigneeId;
     if (filters.tags?.length) query.tags = { $all: filters.tags };
     if (filters.dueBefore || filters.dueAfter) {
@@ -319,6 +373,7 @@ export class TaskService {
     if (!loaded) return null;
     const { task, role } = loaded;
 
+    const previousProjectIds = this.getDocProjectIds(task);
     const changes: Record<string, unknown> = {};
 
     if (!canEditProject(role)) {
@@ -346,12 +401,33 @@ export class TaskService {
         changes.tags = input.tags;
       }
       applyProgressInputFields(task as unknown as ProgressNode, input, changes);
-      if (input.projectId !== undefined) {
+      if (input.projectIds !== undefined) {
+        if (input.projectIds === null || input.projectIds.length === 0) {
+          throw new HttpError(400, 'projectIds must contain at least one project');
+        }
+        const nextIds = [...new Set(input.projectIds.map(String))];
+        for (const projectId of nextIds) {
+          await this.requireProjectEdit(userId, projectId);
+        }
+        for (const existingId of this.getDocProjectIds(task)) {
+          if (!nextIds.includes(existingId)) {
+            await this.requireProjectEdit(userId, existingId);
+          }
+        }
+        (task as { projectIds: string[] }).projectIds = nextIds;
+        task.projectId = nextIds[0];
+        changes.projectIds = nextIds;
+        changes.projectId = nextIds[0];
+      } else if (input.projectId !== undefined) {
         if (input.projectId !== null) {
           await this.requireProjectEdit(userId, input.projectId);
+          (task as { projectIds: string[] }).projectIds = [input.projectId];
+          task.projectId = input.projectId;
+          changes.projectIds = [input.projectId];
+          changes.projectId = input.projectId;
+        } else {
+          throw new HttpError(400, 'projectId cannot be null; use unlink instead');
         }
-        task.projectId = input.projectId === null ? undefined : input.projectId;
-        changes.projectId = input.projectId;
       }
       if (input.assigneeId !== undefined) {
         task.assigneeId = input.assigneeId === null ? undefined : input.assigneeId;
@@ -372,6 +448,8 @@ export class TaskService {
       source,
     });
 
+    await this.notifyProjectProgress([...previousProjectIds, ...this.getDocProjectIds(task)]);
+
     return serializeTask(task.toObject());
   }
 
@@ -380,6 +458,7 @@ export class TaskService {
     if (!task) return null;
 
     const title = task.title;
+    const affectedProjectIds = this.getDocProjectIds(task);
     const keepChildren = Boolean(options.keepChildren) && (task.subtasks?.length ?? 0) > 0;
 
     if (!keepChildren) {
@@ -390,16 +469,15 @@ export class TaskService {
         action: 'task.deleted',
         details: { title },
       });
+      await this.notifyProjectProgress(affectedProjectIds);
       return { deleted: true as const, promotedTasks: [] as ReturnType<typeof serializeTask>[] };
     }
 
-    let projectId =
-      task.projectId && Types.ObjectId.isValid(String(task.projectId))
-        ? String(task.projectId)
-        : undefined;
-    if (!projectId) {
-      projectId = await (await projects()).ensureDefaultProject(userId);
+    let projectIds = this.getDocProjectIds(task).filter((id) => Types.ObjectId.isValid(id));
+    if (projectIds.length === 0) {
+      projectIds = [await (await projects()).ensureDefaultProject(userId)];
     }
+    const projectId = projectIds[0]!;
 
     const parentSortOrder = task.sortOrder ?? 0;
     const children = (task.subtasks ?? []).map((child) => {
@@ -411,6 +489,7 @@ export class TaskService {
       const doc = new TaskModel({
         userId: task.userId,
         projectId,
+        projectIds: [...projectIds],
         title: child.title,
         description: child.description,
         status: child.status ?? 'todo',
@@ -441,7 +520,7 @@ export class TaskService {
     if (promotedDocs.length > 1) {
       await TaskModel.updateMany(
         {
-          projectId,
+          $or: [{ projectIds: projectId }, { projectId }],
           _id: { $ne: task._id },
           sortOrder: { $gt: parentSortOrder },
         },
@@ -465,6 +544,8 @@ export class TaskService {
         promotedTitles: promotedTasks.map((promoted) => promoted.title),
       },
     });
+
+    await this.notifyProjectProgress(affectedProjectIds);
 
     return { deleted: true as const, promotedTasks };
   }
@@ -536,7 +617,8 @@ export class TaskService {
         priority: task.priority,
         percentComplete: withPercent.percentComplete,
         dueDate: task.dueDate?.toISOString(),
-        projectId: task.projectId,
+        projectId: this.getDocProjectIds(task)[0],
+        projectIds: this.getDocProjectIds(task),
         assigneeId: task.assigneeId,
       };
     });
@@ -573,6 +655,8 @@ export class TaskService {
       action: 'subtask.added',
       details: { title: input.title, path: subtaskPath },
     });
+
+    await this.notifyProjectProgress(this.getDocProjectIds(task));
 
     return serializeTask(task.toObject());
   }
@@ -634,6 +718,8 @@ export class TaskService {
       source,
     });
 
+    await this.notifyProjectProgress(this.getDocProjectIds(task));
+
     return serializeTask(task.toObject());
   }
 
@@ -687,6 +773,8 @@ export class TaskService {
       details: { fromPath, toParentPath, index: insertIndex },
     });
 
+    await this.notifyProjectProgress(this.getDocProjectIds(task));
+
     return serializeTask(task.toObject());
   }
 
@@ -707,17 +795,16 @@ export class TaskService {
     const [node] = currentParentArray.splice(fromIndex, 1);
     const nodeObj = node as Record<string, unknown>;
 
-    let projectId =
-      task.projectId && Types.ObjectId.isValid(String(task.projectId))
-        ? String(task.projectId)
-        : undefined;
-    if (!projectId) {
-      projectId = await (await projects()).ensureDefaultProject(userId);
+    let projectIds = this.getDocProjectIds(task).filter((id) => Types.ObjectId.isValid(id));
+    if (projectIds.length === 0) {
+      projectIds = [await (await projects()).ensureDefaultProject(userId)];
     }
+    const projectId = projectIds[0]!;
 
     const promotedDoc = new TaskModel({
       userId,
       projectId,
+      projectIds: [...projectIds],
       title: nodeObj.title,
       description: nodeObj.description,
       status: nodeObj.status ?? 'todo',
@@ -734,7 +821,9 @@ export class TaskService {
       links: nodeObj.links ?? [],
     });
 
-    const minTask = await TaskModel.findOne({ projectId })
+    const minTask = await TaskModel.findOne({
+      $or: [{ projectIds: projectId }, { projectId }],
+    })
       .sort({ sortOrder: 1 })
       .select('sortOrder')
       .lean();
@@ -766,6 +855,8 @@ export class TaskService {
       details: { path: subtaskPath, promotedTaskId: promotedId, title: nodeObj.title },
     });
 
+    await this.notifyProjectProgress(this.getDocProjectIds(task));
+
     return {
       task: serializeTask(task.toObject()),
       promotedTask: serializeTask(promotedDoc.toObject()),
@@ -790,16 +881,18 @@ export class TaskService {
 
     if (!sourceTask || !targetTask) return null;
 
-    const [sourceProjectId, targetProjectId] = await Promise.all([
-      this.resolveTaskProjectId(userId, sourceTask),
-      this.resolveTaskProjectId(userId, targetTask),
+    const [sourceProjectIds, targetProjectIds] = await Promise.all([
+      this.resolveTaskProjectIds(userId, sourceTask),
+      this.resolveTaskProjectIds(userId, targetTask),
     ]);
-    if (sourceProjectId !== targetProjectId) {
-      throw new Error('Tasks must belong to the same project');
+    const shareAny = sourceProjectIds.some((id) => targetProjectIds.includes(id));
+    if (!shareAny) {
+      throw new Error('Tasks must share at least one project');
     }
 
-    if (!targetTask.projectId) {
-      targetTask.projectId = targetProjectId;
+    if (this.getDocProjectIds(targetTask).length === 0) {
+      (targetTask as { projectIds: string[] }).projectIds = targetProjectIds;
+      targetTask.projectId = targetProjectIds[0];
     }
 
     const targetParentArray = this.getParentArray(targetTask, parentPath);
@@ -836,6 +929,8 @@ export class TaskService {
       },
     });
 
+    await this.notifyProjectProgress([...sourceProjectIds, ...targetProjectIds]);
+
     return {
       targetTask: serializeTask(targetTask.toObject()),
       removedTaskId: sourceTaskId,
@@ -846,7 +941,10 @@ export class TaskService {
   async reorderProjectTask(userId: string, projectId: string, taskId: string, index: number) {
     await this.requireProjectEdit(userId, projectId);
 
-    const tasks = await TaskModel.find({ projectId, staging: { $exists: false } }).sort({
+    const tasks = await TaskModel.find({
+      $or: [{ projectIds: projectId }, { projectId }],
+      staging: { $exists: false },
+    }).sort({
       sortOrder: 1,
       createdAt: -1,
     });
@@ -870,6 +968,228 @@ export class TaskService {
     });
 
     return this.listTasks(userId, { projectId });
+  }
+
+  async moveTaskToProject(userId: string, taskId: string, projectId: string) {
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+    if (!task) return null;
+
+    const previousProjectIds = this.getDocProjectIds(task);
+    for (const existingId of previousProjectIds) {
+      await this.requireProjectEdit(userId, existingId);
+    }
+    await this.requireProjectEdit(userId, projectId);
+
+    (task as { projectIds: string[] }).projectIds = [projectId];
+    task.projectId = projectId;
+    await task.save();
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'task.moved_project',
+      details: { projectId },
+    });
+
+    await this.notifyProjectProgress([...previousProjectIds, projectId]);
+
+    return serializeTask(task.toObject());
+  }
+
+  async shareTaskToProject(userId: string, taskId: string, projectId: string) {
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+    if (!task) return null;
+
+    await this.requireProjectEdit(userId, projectId);
+
+    const next = new Set(this.getDocProjectIds(task));
+    next.add(projectId);
+    const projectIds = [...next];
+    (task as { projectIds: string[] }).projectIds = projectIds;
+    task.projectId = projectIds[0];
+    await task.save();
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'task.shared_project',
+      details: { projectId, projectIds },
+    });
+
+    await this.notifyProjectProgress(projectIds);
+
+    return serializeTask(task.toObject());
+  }
+
+  async unlinkTaskFromProject(userId: string, taskId: string, projectId: string) {
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+    if (!task) return null;
+
+    await this.requireProjectEdit(userId, projectId);
+
+    const remaining = this.getDocProjectIds(task).filter((id) => id !== projectId);
+    if (remaining.length === 0) {
+      throw new HttpError(400, 'Cannot unlink the last project from a task');
+    }
+
+    (task as { projectIds: string[] }).projectIds = remaining;
+    task.projectId = remaining[0];
+    await task.save();
+
+    await logActivity({
+      taskId,
+      userId,
+      action: 'task.unlinked_project',
+      details: { projectId, projectIds: remaining },
+    });
+
+    await this.notifyProjectProgress([projectId, ...remaining]);
+
+    return serializeTask(task.toObject());
+  }
+
+  async duplicateTask(userId: string, taskId: string, projectId: string) {
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+    if (!task) return null;
+
+    await this.requireProjectEdit(userId, projectId);
+
+    const source = task.toObject() as Record<string, unknown>;
+    const duplicatedSubtasks = this.cloneSubtreeWithNewIds(
+      (source.subtasks as Record<string, unknown>[]) ?? []
+    );
+
+    const doc = new TaskModel({
+      userId,
+      projectId,
+      projectIds: [projectId],
+      title: source.title,
+      description: source.description,
+      status: source.status ?? 'todo',
+      priority: source.priority ?? 'medium',
+      dueDate: source.dueDate,
+      tags: source.tags ?? [],
+      percentComplete: source.percentComplete ?? 0,
+      percentCompleteOverride: source.percentCompleteOverride,
+      progressShare: source.progressShare,
+      hoursSpent: source.hoursSpent,
+      hoursRemaining: source.hoursRemaining,
+      lastProgressField: source.lastProgressField,
+      subtasks: duplicatedSubtasks,
+      links: [],
+    });
+
+    const minTask = await TaskModel.findOne({
+      $or: [{ projectIds: projectId }, { projectId }],
+      staging: { $exists: false },
+    })
+      .sort({ sortOrder: 1 })
+      .select('sortOrder')
+      .lean();
+    doc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
+
+    const withPercent = applyPercentComplete(
+      doc.toObject() as Parameters<typeof applyPercentComplete>[0]
+    );
+    doc.status = withPercent.status as typeof doc.status;
+    doc.percentComplete = withPercent.percentComplete;
+    doc.subtasks = withPercent.subtasks as typeof doc.subtasks;
+
+    await doc.save();
+    await enqueueEmbeddingJob(String(doc._id));
+
+    await logActivity({
+      taskId: String(doc._id),
+      userId,
+      action: 'task.duplicated',
+      details: { sourceTaskId: taskId, projectId },
+    });
+
+    return serializeTask(doc.toObject());
+  }
+
+  async duplicateSubtaskToProject(
+    userId: string,
+    taskId: string,
+    subtaskPath: string[],
+    projectId: string
+  ) {
+    if (subtaskPath.length === 0) return null;
+
+    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+    if (!task) return null;
+
+    await this.requireProjectEdit(userId, projectId);
+
+    const subtask = this.findSubtaskByPath(task.subtasks, subtaskPath);
+    if (!subtask) return null;
+
+    const nodeObj =
+      typeof (subtask as { toObject?: () => Record<string, unknown> }).toObject === 'function'
+        ? (subtask as unknown as { toObject: () => Record<string, unknown> }).toObject()
+        : (subtask as unknown as Record<string, unknown>);
+
+    const duplicatedSubtasks = this.cloneSubtreeWithNewIds(
+      (nodeObj.subtasks as Record<string, unknown>[]) ?? []
+    );
+
+    const doc = new TaskModel({
+      userId,
+      projectId,
+      projectIds: [projectId],
+      title: nodeObj.title,
+      description: nodeObj.description,
+      status: nodeObj.status ?? 'todo',
+      priority: nodeObj.priority ?? 'medium',
+      dueDate: nodeObj.dueDate,
+      tags: nodeObj.tags ?? [],
+      percentComplete: nodeObj.percentComplete ?? 0,
+      percentCompleteOverride: nodeObj.percentCompleteOverride,
+      progressShare: nodeObj.progressShare,
+      hoursSpent: nodeObj.hoursSpent,
+      hoursRemaining: nodeObj.hoursRemaining,
+      lastProgressField: nodeObj.lastProgressField,
+      subtasks: duplicatedSubtasks,
+      links: [],
+    });
+
+    const minTask = await TaskModel.findOne({
+      $or: [{ projectIds: projectId }, { projectId }],
+      staging: { $exists: false },
+    })
+      .sort({ sortOrder: 1 })
+      .select('sortOrder')
+      .lean();
+    doc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
+
+    const withPercent = applyPercentComplete(
+      doc.toObject() as Parameters<typeof applyPercentComplete>[0]
+    );
+    doc.status = withPercent.status as typeof doc.status;
+    doc.percentComplete = withPercent.percentComplete;
+    doc.subtasks = withPercent.subtasks as typeof doc.subtasks;
+
+    await doc.save();
+    await enqueueEmbeddingJob(String(doc._id));
+
+    return serializeTask(doc.toObject());
+  }
+
+  async promoteSubtaskToProject(
+    userId: string,
+    taskId: string,
+    subtaskPath: string[],
+    projectId: string
+  ) {
+    await this.requireProjectEdit(userId, projectId);
+    const result = await this.promoteSubtaskToTask(userId, taskId, subtaskPath);
+    if (!result) return null;
+
+    const moved = await this.moveTaskToProject(userId, result.promotedTask._id, projectId);
+    return {
+      task: result.task,
+      promotedTask: moved ?? result.promotedTask,
+    };
   }
 
   async deleteSubtask(
@@ -918,6 +1238,8 @@ export class TaskService {
       },
     });
 
+    await this.notifyProjectProgress(this.getDocProjectIds(task));
+
     return serializeTask(task.toObject());
   }
 
@@ -956,12 +1278,35 @@ export class TaskService {
     };
   }
 
+  private cloneSubtreeWithNewIds(subtasks: Record<string, unknown>[]): Record<string, unknown>[] {
+    return subtasks.map((subtask) => {
+      const maybeDoc = subtask as { toObject?: () => Record<string, unknown> };
+      const node = maybeDoc.toObject ? maybeDoc.toObject() : { ...subtask };
+      return {
+        ...node,
+        _id: new Types.ObjectId(),
+        subtasks: this.cloneSubtreeWithNewIds(
+          ((node.subtasks as Record<string, unknown>[]) ?? [])
+        ),
+      };
+    });
+  }
+
+  private async resolveTaskProjectIds(
+    userId: string,
+    task: { projectId?: unknown; projectIds?: unknown }
+  ): Promise<string[]> {
+    const ids = this.getDocProjectIds(task).filter((id) => Types.ObjectId.isValid(id));
+    if (ids.length > 0) return ids;
+    return [await (await projects()).ensureDefaultProject(userId)];
+  }
+
   private async resolveTaskProjectId(
     userId: string,
-    task: { projectId?: unknown }
+    task: { projectId?: unknown; projectIds?: unknown }
   ): Promise<string> {
-    if (task.projectId) return String(task.projectId);
-    return (await projects()).ensureDefaultProject(userId);
+    const ids = await this.resolveTaskProjectIds(userId, task);
+    return ids[0]!;
   }
 
   private getParentArray(

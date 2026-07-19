@@ -57,8 +57,19 @@ export function projectIdToName(projectId: string, projects: Project[]): string 
 export function getDefaultProject(projects: Project[]): Project | undefined {
   return (
     projects.find((project) => project.name === DEFAULT_PROJECT_NAME) ??
-    projects[projects.length - 1]
+    projects[0]
   );
+}
+
+export function taskProjectIds(task: Task): string[] {
+  if (Array.isArray(task.projectIds) && task.projectIds.length > 0) {
+    return task.projectIds;
+  }
+  return task.projectId ? [task.projectId] : [];
+}
+
+export function taskBelongsToProject(task: Task, projectId: string): boolean {
+  return taskProjectIds(task).includes(projectId);
 }
 
 export interface ProjectTaskGroup {
@@ -80,9 +91,12 @@ export function groupTasksByProject(tasks: Task[], projects: Project[]): Project
   const groupById = new Map(groups.map((group) => [group.projectId, group]));
 
   for (const task of tasks) {
-    const projectId = task.projectId || defaultProjectId;
-    const group = groupById.get(projectId) ?? groupById.get(defaultProjectId);
-    group?.tasks.push(task);
+    const ids = taskProjectIds(task);
+    const targets = ids.length > 0 ? ids : [defaultProjectId];
+    for (const projectId of targets) {
+      const group = groupById.get(projectId) ?? groupById.get(defaultProjectId);
+      group?.tasks.push(task);
+    }
   }
 
   return groups;

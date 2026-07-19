@@ -1,3 +1,7 @@
+import type { TaskStatus } from './task.js';
+
+export type ProjectStatus = TaskStatus;
+
 export const COLLABORATOR_ROLES = ['editor', 'executor', 'viewer'] as const;
 export type CollaboratorRole = (typeof COLLABORATOR_ROLES)[number];
 
@@ -50,6 +54,11 @@ export interface SerializedProject {
   ownerDisplayName?: string;
   name: string;
   description?: string;
+  parentId?: string | null;
+  sortOrder: number;
+  status: ProjectStatus;
+  percentComplete: number;
+  progressShare?: number;
   role: ProjectRole;
   canEdit: boolean;
   canUpdateStatus: boolean;

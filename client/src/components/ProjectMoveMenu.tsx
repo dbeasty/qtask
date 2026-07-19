@@ -1,58 +1,40 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import type { AttachTarget, ProjectAttachTarget } from '../utils/taskTree';
 
-type MoveAttachTarget = AttachTarget | ProjectAttachTarget;
-
-function attachTargetLabel(target: MoveAttachTarget): string {
-  return target.label;
+export interface ProjectNestTarget {
+  id: string;
+  label: string;
 }
 
-interface TaskMoveMenuProps {
+interface ProjectMoveMenuProps {
   anchorRef: RefObject<HTMLButtonElement | null>;
-  kind: 'task' | 'subtask';
   saving: boolean;
-  hasChildren: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
-  canOutdent: boolean;
-  attachTargets: MoveAttachTarget[];
-  showMarkDone: boolean;
-  isDone: boolean;
-  canManageProjects?: boolean;
-  onToggleDone: () => void;
+  canMoveToRoot: boolean;
+  nestTargets: ProjectNestTarget[];
   onMoveUp: () => void;
   onMoveDown: () => void;
-  onPromote: () => void;
-  onOutdent: () => void;
-  onAttach: (target: MoveAttachTarget) => void;
-  onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
-  onOpenProjectDialog?: () => void;
+  onMoveToRoot: () => void;
+  onNestUnder: (parentId: string) => void;
+  onDelete: () => void | Promise<boolean>;
   onClose: () => void;
 }
 
-export function TaskMoveMenu({
+export function ProjectMoveMenu({
   anchorRef,
-  kind,
   saving,
-  hasChildren,
   canMoveUp,
   canMoveDown,
-  canOutdent,
-  attachTargets,
-  showMarkDone,
-  isDone,
-  canManageProjects = false,
-  onToggleDone,
+  canMoveToRoot,
+  nestTargets,
   onMoveUp,
   onMoveDown,
-  onPromote,
-  onOutdent,
-  onAttach,
+  onMoveToRoot,
+  onNestUnder,
   onDelete,
-  onOpenProjectDialog,
   onClose,
-}: TaskMoveMenuProps) {
+}: ProjectMoveMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<{ top: number; left: number; visibility: 'hidden' | 'visible' }>({
     top: 0,
@@ -81,7 +63,7 @@ export function TaskMoveMenu({
     }
 
     setMenuStyle({ top, left, visibility: 'visible' });
-  }, [anchorRef, attachTargets.length, kind, hasChildren]);
+  }, [anchorRef, nestTargets.length, canMoveToRoot]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -108,13 +90,13 @@ export function TaskMoveMenu({
     onClose();
   };
 
-  const handleAttach = (target: MoveAttachTarget) => {
-    onAttach(target);
+  const handleNest = (parentId: string) => {
+    onNestUnder(parentId);
     onClose();
   };
 
-  const handleDelete = async (keepChildren = false) => {
-    const deleted = await onDelete(keepChildren);
+  const handleDelete = async () => {
+    const deleted = await onDelete();
     if (deleted) {
       onClose();
     }
@@ -127,20 +109,6 @@ export function TaskMoveMenu({
       role="menu"
       style={{ top: menuStyle.top, left: menuStyle.left, visibility: menuStyle.visibility }}
     >
-      {showMarkDone && (
-        <>
-          <button
-            type="button"
-            className="task-move-menu-item"
-            role="menuitem"
-            disabled={saving}
-            onClick={() => run(onToggleDone)}
-          >
-            {isDone ? 'Mark as not done' : 'Mark as done'}
-          </button>
-          <div className="task-move-menu-divider" role="separator" />
-        </>
-      )}
       <button
         type="button"
         className="task-move-menu-item"
@@ -159,15 +127,15 @@ export function TaskMoveMenu({
       >
         Move down
       </button>
-      {kind === 'task' && canManageProjects && onOpenProjectDialog && (
+      {canMoveToRoot && (
         <button
           type="button"
           className="task-move-menu-item"
           role="menuitem"
           disabled={saving}
-          onClick={() => run(onOpenProjectDialog)}
+          onClick={() => run(onMoveToRoot)}
         >
-          Projects…
+          Move to root
         </button>
       )}
       <div className="task-move-menu-divider" role="separator" />
@@ -176,58 +144,24 @@ export function TaskMoveMenu({
         className="task-move-menu-item task-move-menu-item-danger"
         role="menuitem"
         disabled={saving}
-        onClick={() => void handleDelete(false)}
+        onClick={() => void handleDelete()}
       >
         Delete
       </button>
-      {hasChildren && (
-        <button
-          type="button"
-          className="task-move-menu-item task-move-menu-item-danger"
-          role="menuitem"
-          disabled={saving}
-          onClick={() => void handleDelete(true)}
-        >
-          Delete, keep subtasks
-        </button>
-      )}
-      {kind === 'subtask' && (
-        <>
-          <button
-            type="button"
-            className="task-move-menu-item"
-            role="menuitem"
-            disabled={saving}
-            onClick={() => run(onPromote)}
-          >
-            Move to project
-          </button>
-          <button
-            type="button"
-            className="task-move-menu-item"
-            role="menuitem"
-            disabled={saving || !canOutdent}
-            onClick={() => run(onOutdent)}
-            title="Attach to parent level"
-          >
-            Move up one level
-          </button>
-        </>
-      )}
-      {attachTargets.length > 0 && (
+      {nestTargets.length > 0 && (
         <div className="task-move-menu-attach">
-          <div className="task-move-menu-attach-label">Attach under</div>
+          <div className="task-move-menu-attach-label">Nest under</div>
           <div className="task-move-menu-attach-list">
-            {attachTargets.map((target, index) => (
+            {nestTargets.map((target) => (
               <button
-                key={index}
+                key={target.id}
                 type="button"
                 className="task-move-menu-item task-move-menu-attach-option"
                 role="menuitem"
                 disabled={saving}
-                onClick={() => handleAttach(target)}
+                onClick={() => handleNest(target.id)}
               >
-                {attachTargetLabel(target)}
+                {target.label}
               </button>
             ))}
           </div>

@@ -246,22 +246,41 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
     const userId = String(user._id);
     const ownedProjectIds = (await ProjectModel.find({ userId }).distinct('_id')).map(String);
     // Delete everything in owned projects, plus orphan tasks with no project.
-    // Tasks created in someone else's shared project are kept.
+    // Tasks created in someone else's shared project are kept (after unlinking owned projects).
     const orphanFilter = {
       userId,
-      $or: [{ projectId: { $exists: false } }, { projectId: null }, { projectId: '' }],
+      $and: [
+        {
+          $or: [
+            { projectIds: { $exists: false } },
+            { projectIds: { $size: 0 } },
+            { projectIds: null },
+          ],
+        },
+        {
+          $or: [{ projectId: { $exists: false } }, { projectId: null }, { projectId: '' }],
+        },
+      ],
     };
+    const ownedMembershipFilter = ownedProjectIds.length
+      ? {
+          $or: [
+            { projectIds: { $in: ownedProjectIds } },
+            { projectId: { $in: ownedProjectIds } },
+          ],
+        }
+      : null;
     const taskIdsToDelete = [
-      ...(ownedProjectIds.length
-        ? await TaskModel.find({ projectId: { $in: ownedProjectIds } }).distinct('_id')
+      ...(ownedMembershipFilter
+        ? await TaskModel.find(ownedMembershipFilter).distinct('_id')
         : []),
       ...(await TaskModel.find(orphanFilter).distinct('_id')),
     ].map(String);
 
     const [tasksInOwned, orphanTasks, projects, conversations, activities, embeddingJobs, metrics, dailyMetrics] =
       await Promise.all([
-        ownedProjectIds.length
-          ? TaskModel.deleteMany({ projectId: { $in: ownedProjectIds } })
+        ownedMembershipFilter
+          ? TaskModel.deleteMany(ownedMembershipFilter)
           : Promise.resolve({ deletedCount: 0 }),
         TaskModel.deleteMany(orphanFilter),
         ProjectModel.deleteMany({ userId }),
