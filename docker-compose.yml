@@ -60,7 +60,7 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       LLM_METRICS_RETENTION_DAYS: ${LLM_METRICS_RETENTION_DAYS:-30}
-      OLLAMA_DOCKER_STATS_URL: ${OLLAMA_DOCKER_STATS_URL:-http://docker-proxy:2375/v1.41}
+      OLLAMA_DOCKER_STATS_URL: ${OLLAMA_DOCKER_STATS_URL:-http://docker-proxy:2375/v1.44}
       OLLAMA_DOCKER_CONTAINER: ${OLLAMA_DOCKER_CONTAINER:-qtask-ollama}
       DCGM_METRICS_URL: ${DCGM_METRICS_URL:-http://dcgm-exporter:9400/metrics}
     extra_hosts:

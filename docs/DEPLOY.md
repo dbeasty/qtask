@@ -111,7 +111,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL (Jetson LAN IP in production; see §4.1.1) |
 | `OLLAMA_MODEL` | `llama3.1` | Chat / tool-calling model (`llama3.2:3b` recommended on Jetson 8GB) |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
-| `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.41`) |
+| `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.44`) |
 | `OLLAMA_DOCKER_CONTAINER` | `qtask-ollama` | Container name for Docker stats |
 | `DCGM_METRICS_URL` | — | Discrete GPU metrics; leave unset for Jetson |
 | `LOG_LEVEL` | `debug` | `debug` \| `info` \| `warn` \| `error` |
@@ -266,41 +266,47 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app up
 
 #### 4.1.1 Jetson Ollama
 
-Target board for these notes: **Jetson Orin Nano 8GB** (classic Jetson Nano is 4GB — use smaller models there). The Jetson runs **only** the SLM (Ollama). The app host runs API, admin, and MongoDB and calls the Jetson over the LAN.
+Target board for these notes: **Jetson Orin Nano 8GB** (classic Jetson Nano is 4GB — use smaller models there). The Jetson runs **only** the SLM (Ollama). The app host runs API, admin, and MongoDB and calls the Jetson over a **service VLAN** (not the admin/access interface).
 
-| Port on Jetson | Purpose | Internet? |
-|----------------|---------|-----------|
-| 11434 | Ollama API | No — LAN only |
-| 2375 | docker-proxy (Compose path, CPU/RAM stats) | No — LAN only |
+Typical layout:
 
-Do not port-forward 11434 or 2375 on your router.
+| Interface | Example IP | Use |
+|-----------|------------|-----|
+| Access / SSH | `192.168.1.14` | SSH as **`qtask`** — do **not** expose Ollama here |
+| Service VLAN | `192.168.13.14` | `JETSON_BIND_ADDRESS`, `OLLAMA_BASE_URL` — QTask traffic only |
+
+| Port on service VLAN | Purpose | Internet? |
+|----------------------|---------|-----------|
+| 11434 | Ollama API | No — service VLAN + firewall only |
+| 2375 | docker-proxy (Compose path, CPU/RAM stats) | No — service VLAN + firewall only |
+
+Do not port-forward 11434 or 2375 on your router. If the service subnet is partially exposed (e.g. via port 80 on another host), run containers under the dedicated **`qtask`** system user, bind ports to **`JETSON_BIND_ADDRESS`** only, and firewall to the app host.
 
 ##### Docker on an existing JetPack install
 
-These steps assume Jetson Linux / JetPack is already installed (no OS flash).
+These steps assume Jetson Linux / JetPack is already installed (no OS flash). SSH to the Jetson as **`qtask`** (`qtask@192.168.1.14`). Docker is often preinstalled; if not:
 
 ```bash
-# Docker Engine + Compose plugin (Ubuntu/Debian packages on Jetson)
 sudo apt-get update
 sudo apt-get install -y docker.io docker-compose-v2
+```
 
-# NVIDIA Container Toolkit (Jetson / JetPack)
-# Follow NVIDIA's current Jetson container toolkit docs for your L4T version if
-# the package names differ. Typical flow:
+NVIDIA Container Toolkit (GPU — one-time, with sudo):
+
+```bash
 sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
-
-# Verify GPU runtime (optional; skip if running CPU-only)
-sudo docker run --rm --runtime nvidia nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
+docker run --rm --runtime nvidia nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 ```
 
-Add your user to the `docker` group if you want non-root Compose:
+**Account model:** the Jetson Ollama stack runs entirely as **`qtask`**. Only `qtask` should be in the `docker` group:
 
 ```bash
-sudo usermod -aG docker "$USER"
-# log out and back in
+groups qtask   # should include docker
 ```
+
+If `qtask` does not exist yet, [`deploy/install-jetson-ollama.sh`](../deploy/install-jetson-ollama.sh) creates it (requires sudo once during install).
 
 If GPU passthrough fails, edit [`deploy/docker-compose.jetson.yml`](../deploy/docker-compose.jetson.yml): remove `runtime: nvidia` and the `NVIDIA_*` environment variables, then restart the stack (CPU-only).
 
@@ -312,75 +318,120 @@ Install Ollama on the Jetson host (not in Docker), then pull models:
 # Install from https://ollama.com (ARM64 / Jetson-compatible release)
 ollama pull llama3.2:3b
 ollama pull nomic-embed-text
-# Optional heavier chat model (tight on 8GB with embeddings):
-# ollama pull llama3.1
 ```
 
-Ensure Ollama listens on the LAN (not only localhost). Then on the **app host** `.env`:
+Ensure Ollama listens on the **service VLAN** IP only (not `0.0.0.0` on all interfaces if avoidable). On the **app host** `.env`:
 
 ```bash
-OLLAMA_BASE_URL=http://192.168.1.100:11434
+OLLAMA_BASE_URL=http://192.168.13.14:11434
 OLLAMA_MODEL=llama3.2:3b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
-# Native path has no docker-proxy — leave stats blank unless you add your own collector:
 OLLAMA_DOCKER_STATS_URL=
-# DCGM_METRICS_URL=   # leave unset — DCGM is not used on Jetson
+# DCGM_METRICS_URL=   # leave unset on Jetson
 ```
 
-##### Path B — Compose Ollama on Jetson
+##### Path B — Compose Ollama on Jetson (recommended)
 
-Copy the Jetson deploy files to the Jetson (lightweight install — no full app tree required):
+Install to `/opt/qtask-ollama` as system user **`qtask`**. Ports bind to `JETSON_BIND_ADDRESS` in `.env` (service VLAN only). Requires **Docker Compose** (`docker compose` plugin or `docker-compose`).
+
+**First-time Jetson bootstrap** (once, before publish):
+
+1. Create `qtask` with home `/opt/qtask-ollama`, shell `/bin/bash`, and `docker` group membership.
+2. Grant `qtask` sudo for install/systemd (or run initial `install-jetson-ollama.sh` as root).
+3. Add your SSH public key to `/opt/qtask-ollama/.ssh/authorized_keys`.
+4. Install `docker-compose-v2` if `docker compose version` fails.
+
+**One command from dev machine** (build → scp → install → start → pull models → systemd → health checks):
 
 ```bash
-# On the Jetson
-sudo mkdir -p /opt/qtask-ollama/deploy
-# From your machine / repo, copy at least:
-#   deploy/docker-compose.jetson.yml
-#   deploy/start-ollama-jetson.sh
-#   deploy/qtask-ollama.service
-#   deploy/.env.jetson.example
-sudo chmod +x /opt/qtask-ollama/deploy/start-ollama-jetson.sh
-
-cd /opt/qtask-ollama
-sudo docker compose -f deploy/docker-compose.jetson.yml up -d
-
-# Pull models into the container
-sudo docker exec qtask-ollama ollama pull llama3.2:3b
-sudo docker exec qtask-ollama ollama pull nomic-embed-text
+npm run publish:jetson
+# or: JETSON_SSH=qtask@192.168.1.14 npm run publish:jetson
 ```
 
-Enable boot via systemd:
+**What publish updates**
+
+| Location | Updated by publish? |
+|----------|---------------------|
+| `/opt/qtask-ollama/deploy/*` | Yes |
+| `/opt/qtask-ollama/.env` on Jetson | **No** if it already exists — only set `JETSON_BIND_ADDRESS` once (default in example: `192.168.13.14`) |
+| App host `/opt/qtask/.env` (`OLLAMA_*`) | **No** — edit manually on the QTask server and restart API/admin |
+
+On the **app host**, set (and restart QTask after editing):
 
 ```bash
-sudo cp /opt/qtask-ollama/deploy/qtask-ollama.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now qtask-ollama.service
-sudo systemctl status qtask-ollama.service
-```
-
-App-host `.env` for Compose Jetson + admin Docker CPU/RAM metrics:
-
-```bash
-OLLAMA_BASE_URL=http://192.168.1.100:11434
+OLLAMA_BASE_URL=http://192.168.13.14:11434
 OLLAMA_MODEL=llama3.2:3b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
-OLLAMA_DOCKER_STATS_URL=http://192.168.1.100:2375/v1.41
+OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
-# DCGM_METRICS_URL=   # leave unset — DCGM targets discrete GPUs, not Jetson
+```
+
+Use **`v1.44`** for `OLLAMA_DOCKER_STATS_URL` (not `v1.41`) — current Docker daemons reject older API versions.
+
+**On Jetson only** (from extracted release tar, as `qtask`):
+
+```bash
+tar xzf qtask-ollama-<version>-jetson.tar.gz
+cd qtask-ollama-<version>
+./deploy/deploy-jetson-ollama.sh
+```
+
+That script runs install → migrate legacy volumes/containers → start → model pulls → systemd → health checks.
+
+Options: `--skip-models`, `--skip-systemd`, `--install-only`.
+
+**From repo on Jetson** (as `qtask`):
+
+```bash
+cd /path/to/qtask
+./deploy/deploy-jetson-ollama.sh
+```
+
+Redeploy without re-pulling models (on Jetson, after a new tar is extracted):
+
+```bash
+./deploy/deploy-jetson-ollama.sh --skip-models
+```
+
+`start-ollama-jetson.sh` removes legacy containers named `qtask-ollama` / `qtask-ollama-docker-proxy` (from older compose project names) and migrates model data from volume `deploy_qtask_ollama_data` to `qtask_ollama_data` when needed.
+
+Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=2` so chat and embedding models stay loaded; `deploy-jetson-ollama.sh` warms both after start. On 8GB Jetson, if RAM is tight, Ollama may still evict a model — check with `docker exec qtask-ollama ollama ps`.
+
+**Firewall** (restrict to app host — replace `192.168.13.10`):
+
+```bash
+sudo ufw allow from 192.168.13.10 to 192.168.13.14 port 11434 proto tcp
+sudo ufw allow from 192.168.13.10 to 192.168.13.14 port 2375 proto tcp
+sudo ufw deny 11434/tcp
+sudo ufw deny 2375/tcp
 ```
 
 ##### Health checks
 
 ```bash
-# From the app host or any LAN machine
-curl -s http://192.168.1.100:11434/api/tags
-# Compose path — docker-proxy should answer (LAN only)
-curl -s http://192.168.1.100:2375/v1.41/_ping
+# From app host — service VLAN
+curl -s http://192.168.13.14:11434/api/tags
+curl -s http://192.168.13.14:2375/v1.44/_ping   # expect: OK
+
+# Should NOT answer on access VLAN if bind is correct:
+curl -s --connect-timeout 2 http://192.168.1.14:11434/api/tags || echo "ok — not exposed on access VLAN"
 ```
 
 In the admin UI, Ollama status should show the Jetson models. With Path B, container CPU/RAM resources should be available; the GPU (DCGM) panel stays unavailable on Jetson by design.
 
-See also [`deploy/.env.jetson.example`](../deploy/.env.jetson.example).
+Day-to-day ops (as `qtask`):
+
+```bash
+sudo systemctl restart qtask-ollama.service
+/opt/qtask-ollama/deploy/start-ollama-jetson.sh   # after .env changes
+docker compose -p qtask-ollama -f /opt/qtask-ollama/deploy/docker-compose.jetson.yml --env-file /opt/qtask-ollama/.env logs -f
+```
+
+**Updates:** from dev machine run `npm run publish:jetson` again. To skip model pulls on Jetson, run `./deploy/deploy-jetson-ollama.sh --skip-models` manually instead.
+
+**Troubleshooting:** `container name already in use` — old stack still running; `start-ollama-jetson.sh` removes it on the next deploy, or run `docker rm -f qtask-ollama qtask-ollama-docker-proxy` then redeploy.
+
+See also [`deploy/.env.jetson.example`](../deploy/.env.jetson.example), [`deploy/deploy-jetson-ollama.sh`](../deploy/deploy-jetson-ollama.sh), and [`scripts/publish-jetson-release.sh`](../scripts/publish-jetson-release.sh).
 
 ### 4.2 Release tar (bootstrap / offline)
 
@@ -390,7 +441,19 @@ Build a deployable archive on your dev machine:
 npm run release
 ```
 
-This auto-bumps the patch version across root, `client`, and `admin-client` (e.g. `0.1.0` → `0.1.1`) and produces `release/qtask-<version>-linux.tar.gz` with compiled API (including `dist/admin`), built client, built admin-client, and `deploy/` scripts. Commit the bumped `package.json` and lockfiles before deploying.
+This auto-bumps the patch version across root, `client`, and `admin-client` (e.g. `0.1.0` → `0.1.1`) and produces `release/qtask-<version>-linux.tar.gz` with compiled API (including `dist/admin`), built client, built admin-client, and `deploy/` scripts. It also builds `release/qtask-ollama-<version>-jetson.tar.gz` for Jetson-only Ollama installs. Commit the bumped `package.json` and lockfiles before deploying.
+
+Jetson-only tarball without rebuilding the app:
+
+```bash
+npm run release:jetson
+```
+
+Publish to Jetson (build + scp + deploy):
+
+```bash
+npm run publish:jetson
+```
 
 Copy to your Ubuntu server and install:
 
@@ -759,11 +822,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
 For NVIDIA utilization, VRAM, temperature, and power, additionally enable
 `--profile gpu-monitoring` on a host with the NVIDIA container runtime (discrete
 GPUs / DCGM). When Ollama runs on a remote Jetson, use
-[`deploy/docker-compose.jetson.yml`](../deploy/docker-compose.jetson.yml) so
-docker-proxy listens on the Jetson LAN address, then set on the app host:
+[`deploy/docker-compose.jetson.yml`](../deploy/docker-compose.jetson.yml) with
+`JETSON_BIND_ADDRESS` on the service VLAN, then set on the app host:
 
 ```bash
-OLLAMA_DOCKER_STATS_URL=http://192.168.1.100:2375/v1.41
+OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
 # Leave DCGM_METRICS_URL unset — Jetson does not use DCGM
 ```

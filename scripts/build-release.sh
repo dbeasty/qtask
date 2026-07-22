@@ -33,7 +33,7 @@ mkdir -p "${STAGING}/admin-client"
 cp -R admin-client/dist "${STAGING}/admin-client/dist"
 cp -R deploy "${STAGING}/deploy"
 
-chmod +x "${STAGING}/deploy/install.sh" "${STAGING}/deploy/update-from-git.sh" "${STAGING}/deploy/smoke-test.sh"
+chmod +x "${STAGING}/deploy/"*.sh
 
 mkdir -p "${ROOT}/release"
 tar -czf "${ARCHIVE}" -C "${ROOT}/release" "qtask-${VERSION}"
@@ -51,3 +51,6 @@ echo ""
 echo "Deploy:"
 echo "  scp ${ARCHIVE} user@server:"
 echo "  ssh user@server 'tar xzf qtask-${VERSION}-linux.tar.gz && cd qtask-${VERSION} && ./deploy/install.sh'"
+echo ""
+echo "Jetson Ollama-only tarball (same version):"
+bash "${ROOT}/scripts/build-jetson-release.sh"

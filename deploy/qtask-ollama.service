@@ -1,14 +1,17 @@
 [Unit]
 Description=QTask Ollama on Jetson (Docker)
-After=network.target docker.service
-Wants=docker.service
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+User=qtask
+Group=qtask
 WorkingDirectory=/opt/qtask-ollama
+EnvironmentFile=-/opt/qtask-ollama/.env
 ExecStart=/opt/qtask-ollama/deploy/start-ollama-jetson.sh
-ExecStop=/bin/bash -c 'docker compose -f /opt/qtask-ollama/deploy/docker-compose.jetson.yml stop'
+ExecStop=/opt/qtask-ollama/deploy/stop-ollama-jetson.sh
 
 [Install]
 WantedBy=multi-user.target

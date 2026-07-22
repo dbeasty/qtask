@@ -1,11 +1,11 @@
 # Ollama + docker-proxy for Jetson (Orin Nano 8GB / similar).
-# Run on the Jetson only — not the app host. App host points at this machine via
-# OLLAMA_BASE_URL and OLLAMA_DOCKER_STATS_URL (see docs/DEPLOY.md).
+# Run on the Jetson only — not the app host. Requires /opt/qtask-ollama/.env with
+# JETSON_BIND_ADDRESS (service VLAN IP). See deploy/install-jetson-ollama.sh and docs/DEPLOY.md.
 #
-#   docker compose -f deploy/docker-compose.jetson.yml up -d
+#   docker compose -f deploy/docker-compose.jetson.yml --env-file .env up -d
 #
 # Requires NVIDIA Container Toolkit on Jetson for GPU. Without it, remove
-# `runtime: nvidia` and the NVIDIA_* env vars to run CPU-only.
+# `runtime: nvidia` and the NVIDIA_* environment variables to run CPU-only.
 
 services:
   ollama:
@@ -16,10 +16,13 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # Keep chat + embedding models resident; redeploy warms both after start.
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_MAX_LOADED_MODELS: "2"
     volumes:
       - qtask_ollama_data:/root/.ollama
     ports:
-      - "11434:11434"
+      - "${JETSON_BIND_ADDRESS:?Set JETSON_BIND_ADDRESS in .env}:11434:11434"
     networks:
       - qtask_jetson
 
@@ -35,13 +38,15 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
-      - "2375:2375"
+      - "${JETSON_BIND_ADDRESS:?Set JETSON_BIND_ADDRESS in .env}:2375:2375"
     networks:
       - qtask_jetson
 
 networks:
   qtask_jetson:
+    name: qtask_jetson
     driver: bridge
 
 volumes:
   qtask_ollama_data:
+    name: qtask_ollama_data
