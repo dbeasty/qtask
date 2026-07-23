@@ -59,6 +59,26 @@ function valuesEqualForSave(a: TaskFormValues, b: TaskFormValues): boolean {
   );
 }
 
+function applySavedValuesToRefs(
+  savedValues: TaskFormValues,
+  valuesRef: { current: TaskFormValues },
+  lastSavedRef: { current: TaskFormValues },
+  isDirtyRef: { current: boolean }
+): void {
+  const mergedSteps = mergeLocalSteps(savedValues.steps, valuesRef.current.steps);
+  valuesRef.current = {
+    ...valuesRef.current,
+    percentComplete: savedValues.percentComplete,
+    hoursSpent: savedValues.hoursSpent,
+    hoursRemaining: savedValues.hoursRemaining,
+    progressShare: savedValues.progressShare,
+    status: savedValues.status,
+    steps: mergedSteps,
+  };
+  lastSavedRef.current = savedValues;
+  isDirtyRef.current = !valuesEqualForSave(valuesRef.current, lastSavedRef.current);
+}
+
 interface TaskFormBaseProps {
   mode: 'create' | 'edit';
   initialValues: TaskFormValues;
@@ -126,6 +146,7 @@ export function TaskForm(props: TaskFormProps) {
   const saveGenerationRef = useRef(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveChainRef = useRef(Promise.resolve());
   const isDirtyRef = useRef(false);
 
   const clearDebounce = useCallback(() => {
@@ -176,7 +197,7 @@ export function TaskForm(props: TaskFormProps) {
     setSaveError(null);
   }, [initialValues, clearDebounce]);
 
-  const performAutoSave = useCallback(
+  const runAutoSave = useCallback(
     async (nextValues: TaskFormValues) => {
       if (!autoSave || !canAutoSave) return;
 
@@ -212,9 +233,9 @@ export function TaskForm(props: TaskFormProps) {
           return;
         }
 
-        if (valuesEqualForSave(valuesRef.current, savedValues)) {
-          lastSavedRef.current = savedValues;
-          isDirtyRef.current = false;
+        applySavedValuesToRefs(savedValues, valuesRef, lastSavedRef, isDirtyRef);
+
+        if (!isDirtyRef.current) {
           setSaveStatus('saved');
           debugSteps('autoSave succeeded', { stepCount: savedValues.steps.length });
           clearSavedFade();
@@ -236,6 +257,23 @@ export function TaskForm(props: TaskFormProps) {
     [autoSave, clearSavedFade, canAutoSave]
   );
 
+  const enqueueAutoSaveRef = useRef<() => void>(() => {});
+  const autoSaveRef = useRef(autoSave);
+  const canAutoSaveRef = useRef(canAutoSave);
+  autoSaveRef.current = autoSave;
+  canAutoSaveRef.current = canAutoSave;
+
+  const enqueueAutoSave = useCallback(() => {
+    if (!autoSave || !canAutoSave) return;
+    saveChainRef.current = saveChainRef.current
+      .then(() => runAutoSave(valuesRef.current))
+      .catch(() => {
+        // runAutoSave updates error UI; keep the chain alive for later saves
+      });
+  }, [autoSave, canAutoSave, runAutoSave]);
+
+  enqueueAutoSaveRef.current = enqueueAutoSave;
+
   const scheduleAutoSave = useCallback(
     (_nextValues: TaskFormValues) => {
       if (!autoSave || !canAutoSave) return;
@@ -247,32 +285,33 @@ export function TaskForm(props: TaskFormProps) {
 
       clearDebounce();
       debounceTimerRef.current = setTimeout(() => {
-        void performAutoSave(valuesRef.current);
+        enqueueAutoSave();
       }, autoSave.debounceMs ?? 500);
     },
-    [autoSave, clearDebounce, performAutoSave, canAutoSave]
+    [autoSave, clearDebounce, enqueueAutoSave, canAutoSave]
   );
 
   const flushAutoSave = useCallback(() => {
     if (!autoSave || !canAutoSave) return;
     clearDebounce();
     debugSteps('autoSave flush', { stepCount: valuesRef.current.steps.length });
-    void performAutoSave(valuesRef.current);
-  }, [autoSave, canAutoSave, clearDebounce, performAutoSave]);
+    enqueueAutoSave();
+  }, [autoSave, canAutoSave, clearDebounce, enqueueAutoSave]);
 
   useEffect(() => {
     return () => {
       clearDebounce();
       clearSavedFade();
-      if (autoSave && canAutoSave && isDirtyRef.current) {
+      if (autoSaveRef.current && canAutoSaveRef.current && isDirtyRef.current) {
         debugSteps('autoSave flush on unmount', {
           stepCount: valuesRef.current.steps.length,
           apiStepCount: stepsForApi(valuesRef.current.steps).length,
         });
-        void performAutoSave(valuesRef.current);
+        enqueueAutoSaveRef.current();
       }
     };
-  }, [autoSave, canAutoSave, clearDebounce, clearSavedFade, performAutoSave]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- flush only on true unmount
+  }, []);
 
   const updateValues = useCallback(
     (updater: (current: TaskFormValues) => TaskFormValues) => {
@@ -385,89 +424,97 @@ export function TaskForm(props: TaskFormProps) {
         disabled={fieldsDisabled}
       />
 
-      <div className="task-form-row">
-        <label className="task-form-field">
-          <span>Status</span>
-          <select
-            value={values.status}
-            onChange={(event) => handleStatusChange(event.target.value as TaskStatus)}
-            disabled={statusDisabled}
-          >
-            {STATUS_OPTIONS.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="task-form-field">
-          <span>Priority</span>
-          <select
-            value={values.priority}
-            onChange={(event) =>
-              updateValues((current) => ({
-                ...current,
-                priority: event.target.value as TaskPriority,
-              }))
-            }
-            disabled={fieldsDisabled}
-          >
-            {PRIORITY_OPTIONS.map((priority) => (
-              <option key={priority} value={priority}>
-                {priority}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      {readOnlyProgress && progressValue !== undefined && (
-        <div className="task-form-field">
-          <span>Progress</span>
-          <TaskProgressSlider value={progressValue} disabled />
-        </div>
-      )}
-
-      {showProgressFields && !readOnlyProgress && (
-        <div className="task-form-progress-section">
-          <div className="task-form-field">
-            <span>Progress</span>
-            <TaskProgressSlider
-              value={values.percentComplete}
-              disabled={fieldsDisabled}
-              onChange={handlePercentChange}
-            />
-          </div>
-
+      <details className="task-form-tracking-section">
+        <summary className="task-form-tracking-summary">
+          <span className="project-toolbar-chevron" aria-hidden="true" />
+          Tracking
+        </summary>
+        <div className="task-form-tracking-body">
           <div className="task-form-row">
             <label className="task-form-field">
-              <span>Hours spent</span>
-              <input
-                type="number"
-                min={0}
-                step={0.25}
-                value={values.hoursSpent}
-                onChange={(event) => handleHoursChange('hoursSpent', event.target.value)}
-                disabled={fieldsDisabled}
-                placeholder="optional"
-              />
+              <span>Status</span>
+              <select
+                value={values.status}
+                onChange={(event) => handleStatusChange(event.target.value as TaskStatus)}
+                disabled={statusDisabled}
+              >
+                {STATUS_OPTIONS.map((status) => (
+                  <option key={status} value={status}>
+                    {status}
+                  </option>
+                ))}
+              </select>
             </label>
+
             <label className="task-form-field">
-              <span>Hours remaining</span>
-              <input
-                type="number"
-                min={0}
-                step={0.25}
-                value={values.hoursRemaining}
-                onChange={(event) => handleHoursChange('hoursRemaining', event.target.value)}
+              <span>Priority</span>
+              <select
+                value={values.priority}
+                onChange={(event) =>
+                  updateValues((current) => ({
+                    ...current,
+                    priority: event.target.value as TaskPriority,
+                  }))
+                }
                 disabled={fieldsDisabled}
-                placeholder="optional"
-              />
+              >
+                {PRIORITY_OPTIONS.map((priority) => (
+                  <option key={priority} value={priority}>
+                    {priority}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
+
+          {readOnlyProgress && progressValue !== undefined && (
+            <div className="task-form-field">
+              <span>Progress</span>
+              <TaskProgressSlider value={progressValue} disabled />
+            </div>
+          )}
+
+          {showProgressFields && !readOnlyProgress && (
+            <>
+              <div className="task-form-field">
+                <span>Progress</span>
+                <TaskProgressSlider
+                  value={values.percentComplete}
+                  disabled={fieldsDisabled}
+                  onChange={handlePercentChange}
+                />
+              </div>
+
+              <div className="task-form-row">
+                <label className="task-form-field">
+                  <span>Hours spent</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.25}
+                    value={values.hoursSpent}
+                    onChange={(event) => handleHoursChange('hoursSpent', event.target.value)}
+                    disabled={fieldsDisabled}
+                    placeholder="optional"
+                  />
+                </label>
+                <label className="task-form-field">
+                  <span>Hours remaining</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.25}
+                    value={values.hoursRemaining}
+                    onChange={(event) => handleHoursChange('hoursRemaining', event.target.value)}
+                    disabled={fieldsDisabled}
+                    placeholder="optional"
+                  />
+                </label>
+              </div>
+            </>
+          )}
         </div>
-      )}
+      </details>
 
       {showProgressShare && (
         <div className="task-form-field">

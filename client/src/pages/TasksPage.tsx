@@ -306,14 +306,14 @@ export function TasksPage({
     setActionError(null);
   }, []);
 
-  const resolveAndRefreshProjects = async (projectName: string) => {
+  const resolveAndRefreshProjects = useCallback(async (projectName: string) => {
     const projectId = await resolveProjectId(projectName, projects, createProject);
     if (projectName.trim() && projectId && !projects.some((project) => project._id === projectId)) {
       const { projects: nextProjects } = await listProjects();
       setProjects(nextProjects);
     }
     return projectId;
-  };
+  }, [projects]);
 
   const handleCreateTask = async (values: TaskFormValues, forProjectId: string) => {
     setSaving(true);
@@ -337,52 +337,6 @@ export function TasksPage({
     } finally {
       setSaving(false);
     }
-  };
-
-  const saveTaskDetail = async (
-    values: TaskFormValues,
-    forSelection: Selection,
-    forTask: Task
-  ): Promise<TaskFormValues> => {
-      const statusOnly = !activeProject?.canEdit && Boolean(activeProject?.canUpdateStatus);
-
-      if (forSelection.kind === 'task') {
-        if (statusOnly) {
-          const { task } = await updateTask(forTask._id, { status: values.status });
-          applyTaskUpdate(task);
-          return taskToFormValues(task, projects);
-        }
-        const projectId = await resolveAndRefreshProjects(values.projectName);
-        const { task } = await updateTask(
-          forTask._id,
-          buildTaskUpdatePatch(values, forTask, projectId)
-        );
-        applyTaskUpdate(task);
-        return taskToFormValues(task, projects);
-      } else {
-        if (statusOnly) {
-          const { task } = await updateSubtask(forTask._id, forSelection.path, {
-            status: values.status,
-          });
-          applyTaskUpdate(task);
-          const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
-          return subtask ? subtaskToFormValues(subtask) : values;
-        }
-        const isLeaf =
-          (findSubtaskByPath(forTask.subtasks, forSelection.path)?.subtasks.length ?? 0) === 0;
-        const progressPatch = isLeaf ? buildProgressPatch(values) : {};
-        const { task } = await updateSubtask(forTask._id, forSelection.path, {
-          title: values.title,
-          description: values.description || undefined,
-          steps: stepsForApi(values.steps),
-          status: values.status,
-          priority: values.priority,
-          ...progressPatch,
-        });
-        applyTaskUpdate(task);
-        const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
-        return subtask ? subtaskToFormValues(subtask) : values;
-      }
   };
 
   const handleAddSubtask = async (values: TaskFormValues) => {
@@ -684,6 +638,68 @@ export function TasksPage({
   const activeProject = useMemo(
     () => projects.find((p) => p._id === resolvedActiveProjectId) ?? null,
     [projects, resolvedActiveProjectId]
+  );
+
+  const saveTaskDetail = useCallback(
+    async (
+      values: TaskFormValues,
+      forSelection: Selection,
+      forTask: Task
+    ): Promise<TaskFormValues> => {
+      const statusOnly = !activeProject?.canEdit && Boolean(activeProject?.canUpdateStatus);
+
+      if (forSelection.kind === 'task') {
+        if (statusOnly) {
+          const { task } = await updateTask(forTask._id, { status: values.status });
+          applyTaskUpdate(task);
+          return taskToFormValues(task, projects);
+        }
+        const projectId = await resolveAndRefreshProjects(values.projectName);
+        const { task } = await updateTask(
+          forTask._id,
+          buildTaskUpdatePatch(values, forTask, projectId)
+        );
+        applyTaskUpdate(task);
+        return taskToFormValues(task, projects);
+      } else {
+        if (statusOnly) {
+          const { task } = await updateSubtask(forTask._id, forSelection.path, {
+            status: values.status,
+          });
+          applyTaskUpdate(task);
+          const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
+          return subtask ? subtaskToFormValues(subtask) : values;
+        }
+        const isLeaf =
+          (findSubtaskByPath(forTask.subtasks, forSelection.path)?.subtasks.length ?? 0) === 0;
+        const progressPatch = isLeaf ? buildProgressPatch(values) : {};
+        const { task } = await updateSubtask(forTask._id, forSelection.path, {
+          title: values.title,
+          description: values.description || undefined,
+          steps: stepsForApi(values.steps),
+          status: values.status,
+          priority: values.priority,
+          ...progressPatch,
+        });
+        applyTaskUpdate(task);
+        const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
+        return subtask ? subtaskToFormValues(subtask) : values;
+      }
+    },
+    [activeProject, applyTaskUpdate, projects, resolveAndRefreshProjects]
+  );
+
+  const handleAutoSaveTaskDetail = useCallback(
+    (values: TaskFormValues) => {
+      if (!selection || !selectedTask) return Promise.resolve();
+      return saveTaskDetail(values, selection, selectedTask);
+    },
+    [selection, selectedTask, saveTaskDetail]
+  );
+
+  const taskDetailAutoSave = useMemo(
+    () => ({ onSave: handleAutoSaveTaskDetail }),
+    [handleAutoSaveTaskDetail]
   );
 
   const activeProjectGroup = useMemo(
@@ -1015,12 +1031,7 @@ export function TasksPage({
                   projects={projects}
                   disabled={!activeProject?.canEdit}
                   statusEditable={Boolean(activeProject?.canUpdateStatus)}
-                  autoSave={{
-                    onSave: (values) => {
-                      if (!selection || !selectedTask) return Promise.resolve();
-                      return saveTaskDetail(values, selection, selectedTask);
-                    },
-                  }}
+                  autoSave={taskDetailAutoSave}
                 />
               </article>
             ) : (

@@ -1,6 +1,6 @@
 {
   "name": "qtask",
-  "version": "0.1.16",
+  "version": "0.1.18",
   "description": "AI-native, MCP-powered task management backend",
   "type": "module",
   "main": "dist/index.js",

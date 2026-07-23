@@ -136,8 +136,10 @@ export function TaskStepsEditor({ steps, onChange, onStepCommit, disabled = fals
   };
 
   return (
-    <div className="task-form-field task-steps-editor">
-      <span>Steps</span>
+    <div className="task-steps-editor">
+      <button type="button" className="primary-button task-steps-add" onClick={addStep} disabled={disabled}>
+        + Add step
+      </button>
       <ul className="task-steps-list">
         {steps.map((step, index) => {
           const rowKey = stepRowKey(step, index);
@@ -201,9 +203,6 @@ export function TaskStepsEditor({ steps, onChange, onStepCommit, disabled = fals
           );
         })}
       </ul>
-      <button type="button" className="secondary-button task-steps-add" onClick={addStep} disabled={disabled}>
-        Add step
-      </button>
     </div>
   );
 }

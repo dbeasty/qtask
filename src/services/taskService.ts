@@ -24,6 +24,71 @@ async function projects() {
   return projectService;
 }
 
+function isVersionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'VersionError' || err.message.includes('VersionError');
+}
+
+const taskSaveLocks = new Map<string, Promise<void>>();
+
+async function withTaskSaveLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+  const prior = taskSaveLocks.get(taskId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = prior.then(
+    () => gate,
+    () => gate
+  );
+  taskSaveLocks.set(taskId, queued);
+  await prior;
+  try {
+    return await fn();
+  } finally {
+    release();
+    void queued.finally(() => {
+      if (taskSaveLocks.get(taskId) === queued) {
+        taskSaveLocks.delete(taskId);
+      }
+    });
+  }
+}
+
+const VERSION_SAVE_MAX_ATTEMPTS = 8;
+
+async function saveTaskWithVersionRetry<T extends { save: () => Promise<unknown> }>(
+  taskId: string,
+  task: T,
+  applyUpdate: (doc: T) => Promise<Record<string, unknown>> | Record<string, unknown>
+): Promise<{ task: T; changes: Record<string, unknown> }> {
+  let current = task;
+  let changes = await applyUpdate(current);
+
+  for (let attempt = 0; attempt < VERSION_SAVE_MAX_ATTEMPTS; attempt++) {
+    try {
+      await current.save();
+      return { task: current, changes };
+    } catch (err) {
+      if (!isVersionError(err) || attempt === VERSION_SAVE_MAX_ATTEMPTS - 1) {
+        throw err;
+      }
+      console.error('VersionError saving task update, retrying', {
+        taskId,
+        attempt: attempt + 1,
+        maxAttempts: VERSION_SAVE_MAX_ATTEMPTS,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+      const reloaded = await TaskModel.findById(taskId);
+      if (!reloaded) throw err;
+      current = reloaded as T;
+      changes = await applyUpdate(current);
+    }
+  }
+
+  throw new Error('Unreachable');
+}
+
 type ProgressNode = Record<string, unknown> & {
   status?: string;
   subtasks?: ProgressNode[];
@@ -370,93 +435,100 @@ export class TaskService {
     input: UpdateTaskInput,
     source: 'user' | 'ai' = 'user'
   ) {
-    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor');
-    if (!loaded) return null;
-    const { task, role } = loaded;
+    return withTaskSaveLock(taskId, async () => {
+      const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor');
+      if (!loaded) return null;
+      const { role } = loaded;
 
-    const previousProjectIds = this.getDocProjectIds(task);
-    const changes: Record<string, unknown> = {};
+      const previousProjectIds = this.getDocProjectIds(loaded.task);
 
-    if (!canEditProject(role)) {
-      this.assertStatusOnlyUpdate(input as Record<string, unknown>);
-      applyProgressInputFields(task as unknown as ProgressNode, { status: input.status }, changes);
-    } else {
-      if (input.title !== undefined) {
-        task.title = input.title;
-        changes.title = input.title;
-      }
-      if (input.description !== undefined) {
-        task.description = input.description;
-        changes.description = input.description;
-      }
-      if (input.steps !== undefined) {
-        task.steps = normalizeStepsInput(input.steps) as typeof task.steps;
-        task.markModified('steps');
-        changes.steps = input.steps;
-      }
-      if (input.priority !== undefined) {
-        task.priority = input.priority;
-        changes.priority = input.priority;
-      }
-      if (input.dueDate !== undefined) {
-        task.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
-        changes.dueDate = input.dueDate;
-      }
-      if (input.tags !== undefined) {
-        task.tags = input.tags;
-        changes.tags = input.tags;
-      }
-      applyProgressInputFields(task as unknown as ProgressNode, input, changes);
-      if (input.projectIds !== undefined) {
-        if (input.projectIds === null || input.projectIds.length === 0) {
-          throw new HttpError(400, 'projectIds must contain at least one project');
-        }
-        const nextIds = [...new Set(input.projectIds.map(String))];
-        for (const projectId of nextIds) {
-          await this.requireProjectEdit(userId, projectId);
-        }
-        for (const existingId of this.getDocProjectIds(task)) {
-          if (!nextIds.includes(existingId)) {
-            await this.requireProjectEdit(userId, existingId);
+      const applyUpdate = async (task: typeof loaded.task): Promise<Record<string, unknown>> => {
+        const changes: Record<string, unknown> = {};
+
+        if (!canEditProject(role)) {
+          this.assertStatusOnlyUpdate(input as Record<string, unknown>);
+          applyProgressInputFields(task as unknown as ProgressNode, { status: input.status }, changes);
+        } else {
+          if (input.title !== undefined) {
+            task.title = input.title;
+            changes.title = input.title;
+          }
+          if (input.description !== undefined) {
+            task.description = input.description;
+            changes.description = input.description;
+          }
+          if (input.steps !== undefined) {
+            task.steps = normalizeStepsInput(input.steps) as typeof task.steps;
+            task.markModified('steps');
+            changes.steps = input.steps;
+          }
+          if (input.priority !== undefined) {
+            task.priority = input.priority;
+            changes.priority = input.priority;
+          }
+          if (input.dueDate !== undefined) {
+            task.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
+            changes.dueDate = input.dueDate;
+          }
+          if (input.tags !== undefined) {
+            task.tags = input.tags;
+            changes.tags = input.tags;
+          }
+          applyProgressInputFields(task as unknown as ProgressNode, input, changes);
+          if (input.projectIds !== undefined) {
+            if (input.projectIds === null || input.projectIds.length === 0) {
+              throw new HttpError(400, 'projectIds must contain at least one project');
+            }
+            const nextIds = [...new Set(input.projectIds.map(String))];
+            for (const projectId of nextIds) {
+              await this.requireProjectEdit(userId, projectId);
+            }
+            for (const existingId of this.getDocProjectIds(task)) {
+              if (!nextIds.includes(existingId)) {
+                await this.requireProjectEdit(userId, existingId);
+              }
+            }
+            (task as { projectIds: string[] }).projectIds = nextIds;
+            task.projectId = nextIds[0];
+            changes.projectIds = nextIds;
+            changes.projectId = nextIds[0];
+          } else if (input.projectId !== undefined) {
+            if (input.projectId !== null) {
+              await this.requireProjectEdit(userId, input.projectId);
+              (task as { projectIds: string[] }).projectIds = [input.projectId];
+              task.projectId = input.projectId;
+              changes.projectIds = [input.projectId];
+              changes.projectId = input.projectId;
+            } else {
+              throw new HttpError(400, 'projectId cannot be null; use unlink instead');
+            }
+          }
+          if (input.assigneeId !== undefined) {
+            task.assigneeId = input.assigneeId === null ? undefined : input.assigneeId;
+            changes.assigneeId = input.assigneeId;
           }
         }
-        (task as { projectIds: string[] }).projectIds = nextIds;
-        task.projectId = nextIds[0];
-        changes.projectIds = nextIds;
-        changes.projectId = nextIds[0];
-      } else if (input.projectId !== undefined) {
-        if (input.projectId !== null) {
-          await this.requireProjectEdit(userId, input.projectId);
-          (task as { projectIds: string[] }).projectIds = [input.projectId];
-          task.projectId = input.projectId;
-          changes.projectIds = [input.projectId];
-          changes.projectId = input.projectId;
-        } else {
-          throw new HttpError(400, 'projectId cannot be null; use unlink instead');
-        }
-      }
-      if (input.assigneeId !== undefined) {
-        task.assigneeId = input.assigneeId === null ? undefined : input.assigneeId;
-        changes.assigneeId = input.assigneeId;
-      }
-    }
 
-    finalizeTaskProgress(task);
+        finalizeTaskProgress(task);
+        return changes;
+      };
 
-    await task.save();
-    await enqueueEmbeddingJob(String(task._id));
+      const { task, changes } = await saveTaskWithVersionRetry(taskId, loaded.task, applyUpdate);
 
-    await logActivity({
-      taskId: String(task._id),
-      userId,
-      action: 'task.updated',
-      details: changes,
-      source,
+      await enqueueEmbeddingJob(String(task._id));
+
+      await logActivity({
+        taskId: String(task._id),
+        userId,
+        action: 'task.updated',
+        details: changes,
+        source,
+      });
+
+      await this.notifyProjectProgress([...previousProjectIds, ...this.getDocProjectIds(task)]);
+
+      return serializeTask(task.toObject());
     });
-
-    await this.notifyProjectProgress([...previousProjectIds, ...this.getDocProjectIds(task)]);
-
-    return serializeTask(task.toObject());
   }
 
   async deleteTask(userId: string, taskId: string, options: { keepChildren?: boolean } = {}) {
@@ -674,63 +746,80 @@ export class TaskService {
     input: UpdateSubtaskInput,
     source: 'user' | 'ai' = 'user'
   ) {
-    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor');
-    if (!loaded || subtaskPath.length === 0) return null;
-    const { task, role } = loaded;
+    return withTaskSaveLock(taskId, async () => {
+      const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor');
+      if (!loaded || subtaskPath.length === 0) return null;
+      const { role } = loaded;
 
-    const subtask = this.findSubtaskByPath(task.subtasks, subtaskPath);
-    if (!subtask) return null;
+      const applyUpdate = async (task: typeof loaded.task): Promise<Record<string, unknown>> => {
+        const subtask = this.findSubtaskByPath(task.subtasks, subtaskPath);
+        if (!subtask) {
+          throw new HttpError(404, 'Subtask not found');
+        }
 
-    const changes: Record<string, unknown> = {};
-    const node = subtask as Record<string, unknown>;
+        const changes: Record<string, unknown> = {};
+        const node = subtask as Record<string, unknown>;
 
-    if (!canEditProject(role)) {
-      this.assertStatusOnlyUpdate(input as Record<string, unknown>);
-      applyProgressInputFields(node as ProgressNode, { status: input.status }, changes);
-    } else {
-      if (input.title !== undefined) {
-        node.title = input.title;
-        changes.title = input.title;
-      }
-      if (input.description !== undefined) {
-        node.description = input.description;
-        changes.description = input.description;
-      }
-      if (input.steps !== undefined) {
-        node.steps = normalizeStepsInput(input.steps);
-        changes.steps = input.steps;
-      }
-      if (input.priority !== undefined) {
-        node.priority = input.priority;
-        changes.priority = input.priority;
-      }
-      if (input.dueDate !== undefined) {
-        node.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
-        changes.dueDate = input.dueDate;
-      }
-      if (input.tags !== undefined) {
-        node.tags = input.tags;
-        changes.tags = input.tags;
-      }
-      applyProgressInputFields(node as ProgressNode, input, changes);
-    }
+        if (!canEditProject(role)) {
+          this.assertStatusOnlyUpdate(input as Record<string, unknown>);
+          applyProgressInputFields(node as ProgressNode, { status: input.status }, changes);
+        } else {
+          if (input.title !== undefined) {
+            node.title = input.title;
+            changes.title = input.title;
+          }
+          if (input.description !== undefined) {
+            node.description = input.description;
+            changes.description = input.description;
+          }
+          if (input.steps !== undefined) {
+            node.steps = normalizeStepsInput(input.steps);
+            changes.steps = input.steps;
+          }
+          if (input.priority !== undefined) {
+            node.priority = input.priority;
+            changes.priority = input.priority;
+          }
+          if (input.dueDate !== undefined) {
+            node.dueDate = input.dueDate ? new Date(input.dueDate) : undefined;
+            changes.dueDate = input.dueDate;
+          }
+          if (input.tags !== undefined) {
+            node.tags = input.tags;
+            changes.tags = input.tags;
+          }
+          applyProgressInputFields(node as ProgressNode, input, changes);
+        }
 
-    finalizeTaskProgress(task);
-    task.markModified('subtasks');
-    await task.save();
-    await enqueueEmbeddingJob(String(task._id));
+        finalizeTaskProgress(task);
+        task.markModified('subtasks');
+        return changes;
+      };
 
-    await logActivity({
-      taskId,
-      userId,
-      action: 'subtask.updated',
-      details: { path: subtaskPath, ...changes },
-      source,
+      let saved: { task: typeof loaded.task; changes: Record<string, unknown> };
+      try {
+        saved = await saveTaskWithVersionRetry(taskId, loaded.task, applyUpdate);
+      } catch (err) {
+        if (err instanceof HttpError && err.statusCode === 404) return null;
+        throw err;
+      }
+
+      const { task, changes } = saved;
+
+      await enqueueEmbeddingJob(String(task._id));
+
+      await logActivity({
+        taskId,
+        userId,
+        action: 'subtask.updated',
+        details: { path: subtaskPath, ...changes },
+        source,
+      });
+
+      await this.notifyProjectProgress(this.getDocProjectIds(task));
+
+      return serializeTask(task.toObject());
     });
-
-    await this.notifyProjectProgress(this.getDocProjectIds(task));
-
-    return serializeTask(task.toObject());
   }
 
   async moveSubtask(userId: string, taskId: string, input: MoveSubtaskInput) {
