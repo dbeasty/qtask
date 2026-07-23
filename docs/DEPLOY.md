@@ -122,7 +122,9 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `ADMIN_HOST` | `127.0.0.1` | Admin app bind address (keep loopback) |
 | `ADMIN_PORT` | `3004` | Admin app listen port |
 | `ADMIN_AUTH_MODE` | `password` | `password` or `mtls` (see §5) |
-| `ADMIN_PASSWORD` | — | **Required** when `ADMIN_AUTH_MODE=password` |
+| `ADMIN_PASSWORD` | — | **Required** when `ADMIN_AUTH_MODE=password` and `HASH_ADMIN_PASSWORD` is not `true` |
+| `HASH_ADMIN_PASSWORD` | — | Set to `true` to verify login against `ADMIN_PASSWORD_HASH` instead of plaintext |
+| `ADMIN_PASSWORD_HASH` | — | **Required** when `HASH_ADMIN_PASSWORD=true`; generate with `npm run hash-admin-password` |
 | `ADMIN_JWT_SECRET` | — | **Required.** Separate from `JWT_SECRET` |
 | `ADMIN_COOKIE_SECURE` | `true` | Set `true` behind HTTPS |
 | `ADMIN_PROXY_SECRET` | — | Required for mTLS proxy mode |
@@ -896,6 +898,30 @@ Although deployment can set `ADMIN_PASSWORD` and `MONGO_ROOT_PASSWORD` to the
 same value, separate secrets are strongly recommended because the web process
 does not need the MongoDB root credential.
 
+#### Admin password hash (optional)
+
+By default the admin app stores `ADMIN_PASSWORD` in plaintext in `.env` or Vault.
+To store a bcrypt hash instead (same login UX — you still type the real password
+in the browser):
+
+```bash
+npm run hash-admin-password
+# paste both output lines into /opt/qtask/.env:
+#   ADMIN_PASSWORD_HASH=$2a$12$...
+#   HASH_ADMIN_PASSWORD=true
+# remove or comment out ADMIN_PASSWORD
+
+sudo systemctl restart qtask-admin
+```
+
+Non-interactive:
+
+```bash
+printf '%s' 'your-strong-password' | npm run hash-admin-password -- --stdin
+```
+
+When `HASH_ADMIN_PASSWORD=true`, `ADMIN_PASSWORD` is ignored if still present.
+
 #### Admin on internal IP only (recommended for home / LAN)
 
 Keep **`https://qtask.dev`** on `listen 443` (all interfaces → `127.0.0.1:3003`). Serve admin on a **separate hostname** bound to the app server’s **LAN/service IP** (e.g. `192.168.13.13`) so `admin.qtask.dev` is only reachable on your LAN (UniFi local DNS → service IP). Do **not** publish a public DNS record for `admin` if you want it off the public internet.
@@ -926,7 +952,7 @@ Direct `https://admin.qtask.dev` on the LAN uses the **Origin cert** on nginx. B
 ssh -L 3004:127.0.0.1:3004 qtask@192.168.13.13
 ```
 
-Leave that session open. On the same Mac, open **`http://localhost:3004`** and log in with **`ADMIN_PASSWORD`** from `/opt/qtask/.env`.
+Leave that session open. On the same Mac, open **`http://localhost:3004`** and log in with your admin password (from `ADMIN_PASSWORD` or the password you used with `npm run hash-admin-password`).
 
 Health check through the tunnel:
 
@@ -944,7 +970,7 @@ If login succeeds but the session does not stick, production sets `ADMIN_COOKIE_
 
 Optional: trust the [Origin CA root](https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem) on each operator Mac (Keychain **and** System Settings → Privacy & Security → **Certificate Trust Settings**), append the root to `qtask.pem` on the server for a full chain, or use a **separate Let’s Encrypt cert** on the admin nginx blocks only.
 
-For password mode without mTLS, log in with `ADMIN_PASSWORD` (not your normal QTask user password).
+For password mode without mTLS, log in with your admin password (not your normal QTask user password). With hash mode enabled, use the password you chose when running `npm run hash-admin-password`.
 
 #### Admin mTLS (optional)
 

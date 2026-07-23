@@ -103,7 +103,9 @@ export const config = {
     host: process.env.ADMIN_HOST ?? '127.0.0.1',
     port: parseInt(process.env.ADMIN_PORT ?? '3004', 10),
     authMode: adminAuthMode,
+    hashAdminPassword: process.env.HASH_ADMIN_PASSWORD === 'true',
     password: process.env.ADMIN_PASSWORD,
+    passwordHash: process.env.ADMIN_PASSWORD_HASH,
     jwtSecret:
       process.env.ADMIN_JWT_SECRET ??
       ((process.env.NODE_ENV ?? 'development') === 'production'

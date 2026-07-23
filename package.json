@@ -16,6 +16,7 @@
     "dev:all": "concurrently -n api,web,admin,admin-web -c blue,green,magenta,cyan \"npm run dev\" \"npm run dev:client\" \"npm run admin\" \"npm run dev:admin-client\"",
     "build:all": "npm run build && npm run build --prefix client && npm run build --prefix admin-client",
     "test": "node --import tsx --test tests/**/*.test.ts",
+    "hash-admin-password": "tsx src/scripts/hash-admin-password.ts",
     "release": "bash scripts/build-release.sh",
     "release:jetson": "bash scripts/build-jetson-release.sh",
     "publish:jetson": "bash scripts/publish-jetson-release.sh",

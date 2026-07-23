@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import { config } from '../config/index.js';
 import { connectDb } from '../db/connection.js';
 import { errorHandler, notFoundHandler } from '../middleware/index.js';
+import { isBcryptHash } from '../utils/passwordHash.js';
 import {
   adminLogout,
   adminSession,
@@ -25,6 +26,21 @@ export async function createAdminApp(options?: { connect?: boolean; serveClient?
     throw new Error('ADMIN_JWT_SECRET is required for the admin application');
   }
   if (
+    config.nodeEnv === 'production' &&
+    config.admin.authMode === 'password' &&
+    config.admin.hashAdminPassword
+  ) {
+    if (!config.admin.passwordHash || !isBcryptHash(config.admin.passwordHash)) {
+      throw new Error(
+        'ADMIN_PASSWORD_HASH must be a valid bcrypt hash when HASH_ADMIN_PASSWORD=true'
+      );
+    }
+    if (config.admin.password) {
+      console.warn(
+        '[admin] HASH_ADMIN_PASSWORD is enabled; ADMIN_PASSWORD is ignored. Remove it from .env.'
+      );
+    }
+  } else if (
     config.nodeEnv === 'production' &&
     config.admin.authMode === 'password' &&
     !config.admin.password

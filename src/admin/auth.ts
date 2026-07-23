@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import jwt, { type SignOptions } from 'jsonwebtoken';
 import { config } from '../config/index.js';
+import { verifyPassword } from '../utils/passwordHash.js';
 
 const COOKIE_NAME = 'qtask_admin';
 
@@ -65,12 +66,21 @@ function issueSession(
   return { identity, csrfToken, features: adminFeatures() };
 }
 
-export function passwordLogin(req: Request, res: Response): void {
+export async function passwordLogin(req: Request, res: Response): Promise<void> {
   if (config.admin.authMode !== 'password') {
     res.status(404).json({ error: 'Password login is disabled' });
     return;
   }
-  if (!equalSecret(req.body?.password, config.admin.password)) {
+
+  const submitted = req.body?.password as string | undefined;
+  let valid = false;
+  if (config.admin.hashAdminPassword) {
+    valid = await verifyPassword(submitted ?? '', config.admin.passwordHash ?? '');
+  } else {
+    valid = equalSecret(submitted, config.admin.password);
+  }
+
+  if (!valid) {
     res.status(401).json({ error: 'Invalid admin credentials' });
     return;
   }

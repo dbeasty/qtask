@@ -45,13 +45,21 @@ if [[ "${INSTALL_ONLY}" == true ]]; then
 fi
 
 needs_config=false
-if grep -qE 'JWT_SECRET=change-me|ADMIN_PASSWORD=change-me|ADMIN_JWT_SECRET=change-me' "${ENV_FILE}"; then
+if grep -qE 'JWT_SECRET=change-me|ADMIN_JWT_SECRET=change-me' "${ENV_FILE}"; then
+  needs_config=true
+fi
+if grep -qE '^HASH_ADMIN_PASSWORD=true' "${ENV_FILE}"; then
+  if ! grep -qE '^ADMIN_PASSWORD_HASH=\$2[aby]\$' "${ENV_FILE}"; then
+    needs_config=true
+  fi
+elif grep -qE 'ADMIN_PASSWORD=change-me' "${ENV_FILE}"; then
   needs_config=true
 fi
 
 if [[ "${needs_config}" == true && "${FORCE}" != true ]]; then
   echo ""
-  echo "Edit ${ENV_FILE} before starting services (JWT_SECRET, ADMIN_PASSWORD, ADMIN_JWT_SECRET, domain URLs)."
+  echo "Edit ${ENV_FILE} before starting services (JWT_SECRET, admin password, ADMIN_JWT_SECRET, domain URLs)."
+  echo "Default: ADMIN_PASSWORD. Optional hash mode: npm run hash-admin-password (sets HASH_ADMIN_PASSWORD + ADMIN_PASSWORD_HASH)."
   echo "Then re-run: ${INSTALL_DIR}/deploy/deploy-app.sh"
   echo "Or from dev machine: npm run publish:app"
   exit 0
