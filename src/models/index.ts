@@ -299,10 +299,10 @@ const llmCallMetricSchema = new Schema(
     userId: { type: String, index: true },
     conversationId: { type: String },
     taskId: { type: String },
-    callType: { type: String, enum: ['chat', 'generate', 'embed'], required: true, index: true },
+    callType: { type: String, enum: ['agent', 'generate', 'embed'], required: true, index: true },
     source: {
       type: String,
-      enum: ['chat_loop', 'project_summary', 'embedding_job', 'semantic_search'],
+      enum: ['agent_loop', 'project_summary', 'embedding_job', 'semantic_search'],
       required: true,
     },
     model: { type: String, required: true, index: true },
@@ -335,7 +335,7 @@ const llmDailyMetricSchema = new Schema(
   {
     day: { type: Date, required: true },
     userId: { type: String },
-    callType: { type: String, enum: ['chat', 'generate', 'embed'], required: true },
+    callType: { type: String, enum: ['agent', 'generate', 'embed'], required: true },
     model: { type: String, required: true },
     calls: { type: Number, default: 0 },
     successes: { type: Number, default: 0 },

@@ -256,7 +256,7 @@ export function OllamaPage() {
           <StatCard
             label="Models installed"
             value={formatNumber(models.length)}
-            hint={status ? `chat: ${status.configuredModels.chat}` : undefined}
+            hint={status ? `agent: ${status.configuredModels.agent}` : undefined}
           />
           <StatCard
             label="Embedding queue"

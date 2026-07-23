@@ -20,7 +20,7 @@ export function HelpPage({ onBack }: HelpPageProps) {
         </div>
 
         <p className="muted help-intro">
-          Quick guide to Projects, Tasks, Chat, and sharing. For the full write-up, see the user guide
+          Quick guide to Projects, Tasks, Agent, and sharing. For the full write-up, see the user guide
           in the repository.
         </p>
 
@@ -28,7 +28,7 @@ export function HelpPage({ onBack }: HelpPageProps) {
           <h3>Getting started</h3>
           <p>
             Use the header views to switch between <strong>Projects</strong>, <strong>Tasks</strong>,
-            and <strong>Chat</strong>. Open your account menu for preferences, password, legal pages,
+            and <strong>Agent</strong>. Open your account menu for preferences, password, legal pages,
             and this Help screen.
           </p>
         </section>
@@ -51,7 +51,7 @@ export function HelpPage({ onBack }: HelpPageProps) {
         <section className="help-section">
           <h3>Active project</h3>
           <p>
-            The project name in the header is your active project. Chat and Tasks are scoped to it.
+            The project name in the header is your active project. Agent and Tasks are scoped to it.
             Click it to switch projects or open the Projects view.
           </p>
         </section>
@@ -66,11 +66,12 @@ export function HelpPage({ onBack }: HelpPageProps) {
         </section>
 
         <section className="help-section">
-          <h3>Chat</h3>
+          <h3>Agent</h3>
           <p>
-            Ask the assistant to find or change work in natural language. Write actions show as
-            proposals you approve or reject (unless auto-approve is on). Nesting projects is done in
-            the Projects UI; chat creates top-level projects and manages tasks.
+            Ask the agent to find or change work in natural language. Use <strong>New session</strong> in
+            the sidebar to start fresh threads. Write actions show as proposals you approve or reject
+            (unless auto-approve is on). Nesting projects is done in the Projects UI; the agent creates
+            top-level projects and manages tasks.
           </p>
         </section>
 

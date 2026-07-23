@@ -95,7 +95,7 @@ export interface GpuResources {
 
 export interface OllamaStatusResponse {
   available: boolean;
-  configuredModels: { chat: string; embedding: string };
+  configuredModels: { agent: string; embedding: string };
   version: { version?: string; error?: string };
   tags: { models?: OllamaTagModel[]; error?: string };
   running: { models?: OllamaRunningModel[]; error?: string };

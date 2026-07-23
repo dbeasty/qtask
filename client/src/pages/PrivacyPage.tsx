@@ -27,7 +27,7 @@ export function PrivacyPage() {
           <ul className="welcome-list">
             <li>Account information: email address, display name, and a hashed password</li>
             <li>Tasks, projects, and related metadata you create</li>
-            <li>Chat conversations and AI interaction history</li>
+            <li>Agent sessions and AI interaction history</li>
           </ul>
         </section>
 
@@ -64,7 +64,7 @@ export function PrivacyPage() {
           <h2>AI and external services</h2>
           <p>
             If you connect external AI providers (such as Ollama, MCP tools, or other LLM services),
-            task and chat content may be sent to those services according to your configuration. Review
+            task and agent session content may be sent to those services according to your configuration. Review
             the privacy policies of any AI providers you connect.
           </p>
         </section>

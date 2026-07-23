@@ -7,17 +7,17 @@ import {
   listConversations,
   listProjects,
   resetConversation,
-  streamChat,
+  streamAgent,
   submitProposal,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { getUserPreferences } from '../auth/storage';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
-import type { ChatStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
+import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
 import { suggestProjectFromMessages } from '../utils/project';
 
-interface ChatPageProps {
+interface AgentPageProps {
   onTasksChanged: () => void;
   onProjectSuggested?: (name: string) => void;
   activeProjectId: string | null;
@@ -80,7 +80,7 @@ function proposalSummary(proposal: UiProposal): string {
 }
 
 function handleStreamEvent(
-  event: ChatStreamEvent,
+  event: AgentStreamEvent,
   assistantId: string,
   setMessages: React.Dispatch<React.SetStateAction<UiMessage[]>>,
   setConversationId: React.Dispatch<React.SetStateAction<string | undefined>>,
@@ -201,12 +201,12 @@ function handleStreamEvent(
   return { toolsTouched };
 }
 
-export function ChatPage({
+export function AgentPage({
   onTasksChanged,
   onProjectSuggested,
   activeProjectId,
   onNeedProject,
-}: ChatPageProps) {
+}: AgentPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -342,7 +342,7 @@ export function ChatPage({
 
   async function handleSubmitEditedProposal(_messageId: string, proposal: UiProposal) {
     if (!conversationId) {
-      setEditError('Load or start a conversation before submitting a proposal');
+      setEditError('Load or start a session before submitting a proposal');
       return;
     }
 
@@ -415,7 +415,7 @@ export function ChatPage({
     let resolvedConversationId = conversationId;
 
     try {
-      await streamChat(
+      await streamAgent(
         text,
         conversationId,
         (event) => {
@@ -441,7 +441,7 @@ export function ChatPage({
         onTasksChanged();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Chat failed');
+      setError(err instanceof Error ? err.message : 'Agent request failed');
       setMessages((prev) => prev.filter((message) => message.id !== assistantId));
     } finally {
       setSending(false);
@@ -555,7 +555,7 @@ export function ChatPage({
         startNewConversation();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete chat');
+      setError(err instanceof Error ? err.message : 'Could not delete session');
     } finally {
       setDeletingConversationId(null);
     }
@@ -582,7 +582,7 @@ export function ChatPage({
         setEditError(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not reset chat');
+      setError(err instanceof Error ? err.message : 'Could not reset session');
     } finally {
       setResettingConversationId(null);
     }
@@ -621,7 +621,7 @@ export function ChatPage({
       ]);
       await loadConversation(duplicated._id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not duplicate chat');
+      setError(err instanceof Error ? err.message : 'Could not duplicate session');
     } finally {
       setDuplicatingConversationId(null);
     }
@@ -657,10 +657,10 @@ export function ChatPage({
     duplicatingConversationId !== null;
 
   return (
-    <div className="chat-layout">
+    <div className="agent-layout">
       {!activeProjectId ? (
         <div className="tasks-empty-state" style={{ gridColumn: '1 / -1' }}>
-          <p className="muted">Select a project to chat about its tasks.</p>
+          <p className="muted">Select a project for the agent to work on.</p>
           <div className="tasks-empty-state-actions">
             <button type="button" className="primary-button" onClick={() => onNeedProject?.()}>
               Open projects
@@ -669,18 +669,18 @@ export function ChatPage({
         </div>
       ) : (
         <>
-      <aside className="chat-sidebar">
-        <div className="chat-sidebar-toolbar">
+      <aside className="agent-sidebar">
+        <div className="agent-sidebar-toolbar">
           <button type="button" className="primary-button" onClick={startNewConversation}>
-            New chat
+            New session
           </button>
           <button
             type="button"
-            className="chat-sidebar-toggle secondary-button"
+            className="agent-sidebar-toggle secondary-button"
             aria-expanded={sidebarOpen}
             onClick={() => setSidebarOpen((open) => !open)}
           >
-            Chats{conversations.length > 0 ? ` (${conversations.length})` : ''}
+            Sessions{conversations.length > 0 ? ` (${conversations.length})` : ''}
           </button>
         </div>
         <ul className={`conversation-list${sidebarOpen ? ' conversation-list-open' : ''}`}>
@@ -705,9 +705,9 @@ export function ChatPage({
                   type="button"
                   className="conversation-menu-trigger"
                   ref={menuOpen ? menuTriggerRef : undefined}
-                  aria-label={`Chat actions for ${conversation.title}`}
+                  aria-label={`Session actions for ${conversation.title}`}
                   aria-expanded={menuOpen}
-                  title="Chat actions"
+                  title="Session actions"
                   disabled={conversationActionsBusy}
                   onClick={() =>
                     setOpenMenuConversationId(menuOpen ? null : conversation._id)
@@ -733,7 +733,7 @@ export function ChatPage({
         </ul>
       </aside>
 
-      <section className="chat-panel">
+      <section className="agent-panel">
         <div className="message-list">
           {visibleMessages(messages).length === 0 && (
             <div className="empty-state">
@@ -929,7 +929,7 @@ export function ChatPage({
                 !hasPendingProposals(message) && (
                   <p className="warning-banner orphan-approval-warning">
                     This action wasn&apos;t submitted as an approvable proposal. Try rephrasing your
-                    request or reload the conversation.
+                    request or reload the session.
                   </p>
                 )}
 
@@ -1013,7 +1013,7 @@ export function ChatPage({
           </div>
         )}
 
-        <form className="chat-input" onSubmit={handleSend}>
+        <form className="agent-input" onSubmit={handleSend}>
           <textarea
             ref={inputRef}
             value={input}
@@ -1036,11 +1036,11 @@ export function ChatPage({
 
       {pendingConfirm && (
         <ConfirmDialog
-          title={pendingConfirm.kind === 'delete' ? 'Delete chat' : 'Reset chat'}
+          title={pendingConfirm.kind === 'delete' ? 'Delete session' : 'Reset session'}
           message={
             pendingConfirm.kind === 'delete'
-              ? `Delete "${pendingConfirm.conversation.title}"?\n\nThis removes the chat history. Existing tasks stay, but unapproved drafts from this chat will be discarded.`
-              : `Reset "${pendingConfirm.conversation.title}"?\n\nThis clears the chat history so you can reuse this chat. The original prompt is kept when available. Existing tasks stay, but unapproved drafts from this chat will be discarded.`
+              ? `Delete "${pendingConfirm.conversation.title}"?\n\nThis removes the session history. Existing tasks stay, but unapproved drafts from this session will be discarded.`
+              : `Reset "${pendingConfirm.conversation.title}"?\n\nThis clears the session history so you can reuse this session. The original prompt is kept when available. Existing tasks stay, but unapproved drafts from this session will be discarded.`
           }
           confirmLabel={pendingConfirm.kind === 'delete' ? 'Delete' : 'Reset'}
           busy={confirmBusy}

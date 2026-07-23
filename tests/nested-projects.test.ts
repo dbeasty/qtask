@@ -199,7 +199,7 @@ describe('nested projects and shared tasks', () => {
       .expect(200);
     await conversationService.createConversation(
       me.body.user.id,
-      'Drop chat',
+      'Drop session',
       drop.body.project._id
     );
 
@@ -221,20 +221,20 @@ describe('nested projects and shared tasks', () => {
       .expect(200);
     assert.deepEqual(sharedGet.body.task.projectIds, [keep.body.project._id]);
 
-    const chats = await request(app)
+    const sessions = await request(app)
       .get('/api/conversations')
       .query({ projectId: keep.body.project._id })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     assert.ok(
-      chats.body.conversations.every(
-        (conversation: { title: string }) => conversation.title !== 'Drop chat'
+      sessions.body.conversations.every(
+        (conversation: { title: string }) => conversation.title !== 'Drop session'
       )
     );
   });
 
   it('scopes conversations to a project', async () => {
-    const { token, userId } = await registerAndVerify('chat-scope@example.com');
+    const { token, userId } = await registerAndVerify('session-scope@example.com');
 
     const projects = await request(app)
       .get('/api/projects')
@@ -244,13 +244,13 @@ describe('nested projects and shared tasks', () => {
     const projectB = await request(app)
       .post('/api/projects')
       .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Other chat project' })
+      .send({ name: 'Other session project' })
       .expect(201);
 
     const { conversationService } = await import('../src/services/conversationService.js');
 
-    await conversationService.createConversation(userId, 'A chat', projectA._id);
-    await conversationService.createConversation(userId, 'B chat', projectB.body.project._id);
+    await conversationService.createConversation(userId, 'A session', projectA._id);
+    await conversationService.createConversation(userId, 'B session', projectB.body.project._id);
 
     const listedA = await request(app)
       .get('/api/conversations')
@@ -258,7 +258,7 @@ describe('nested projects and shared tasks', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     assert.equal(listedA.body.conversations.length, 1);
-    assert.equal(listedA.body.conversations[0].title, 'A chat');
+    assert.equal(listedA.body.conversations[0].title, 'A session');
 
     const listedB = await request(app)
       .get('/api/conversations')
@@ -266,6 +266,6 @@ describe('nested projects and shared tasks', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     assert.equal(listedB.body.conversations.length, 1);
-    assert.equal(listedB.body.conversations[0].title, 'B chat');
+    assert.equal(listedB.body.conversations[0].title, 'B session');
   });
 });

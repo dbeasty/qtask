@@ -81,16 +81,16 @@ if [[ "${SKIP_MODELS}" != true ]]; then
   docker exec qtask-ollama ollama pull "${EMBED_MODEL}"
 fi
 
-echo "==> Warming chat model (embedding loads on demand via app, CPU)"
-warm_chat() {
+echo "==> Warming agent model (embedding loads on demand via app, CPU)"
+warm_agent_model() {
   curl -sf --max-time 300 \
     -H "Content-Type: application/json" \
     "http://${JETSON_BIND_ADDRESS}:11434/api/chat" \
     -d "{\"model\":\"${CHAT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false,\"keep_alive\":-1}" >/dev/null
 }
 
-warm_chat
-warm_chat
+warm_agent_model
+warm_agent_model
 
 echo "==> Loaded models"
 docker exec qtask-ollama ollama ps || true

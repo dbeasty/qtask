@@ -4,7 +4,7 @@ import { ActiveProjectMenu } from './components/ActiveProjectMenu';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { UserMenu } from './components/UserMenu';
 import { AboutPage } from './pages/AboutPage';
-import { ChatPage } from './pages/ChatPage';
+import { AgentPage } from './pages/AgentPage';
 import { HelpPage } from './pages/HelpPage';
 import { LoginPage } from './pages/LoginPage';
 import { PrivacyPage } from './pages/PrivacyPage';
@@ -26,7 +26,7 @@ import {
 import { getDefaultProject, taskBelongsToProject } from './utils/project';
 import './styles.css';
 
-type View = 'projects' | 'chat' | 'tasks' | 'search' | 'help' | 'about';
+type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about';
 
 const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
 
@@ -108,7 +108,7 @@ export function App() {
         const activeProject = matched ?? getDefaultProject(projects) ?? projects[0]!;
         const taskCount = tasks.filter((task) => taskBelongsToProject(task, activeProject._id)).length;
 
-        setView(taskCount > 0 ? 'tasks' : 'chat');
+        setView(taskCount > 0 ? 'tasks' : 'agent');
       })
       .catch(() => {
         defaultViewSetRef.current = true;
@@ -319,10 +319,10 @@ export function App() {
             <span className="header-views-label">Views</span>
             <button
               type="button"
-              className={view === 'chat' ? 'nav-active' : ''}
-              onClick={() => setView('chat')}
+              className={view === 'agent' ? 'nav-active' : ''}
+              onClick={() => setView('agent')}
             >
-              Chat
+              Agent
             </button>
             <button
               type="button"
@@ -361,8 +361,8 @@ export function App() {
             }}
             externalRefreshKey={projectsVersion}
           />
-        ) : view === 'chat' ? (
-          <ChatPage
+        ) : view === 'agent' ? (
+          <AgentPage
             activeProjectId={activeProjectId}
             onTasksChanged={handleTasksChanged}
             onProjectSuggested={setSuggestedProjectName}

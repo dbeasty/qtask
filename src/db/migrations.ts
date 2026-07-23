@@ -1,10 +1,10 @@
-import { ConversationModel, ProjectModel, TaskModel } from '../models/index.js';
+import { ConversationModel, LlmCallMetricModel, LlmDailyMetricModel, ProjectModel, TaskModel } from '../models/index.js';
 import mongoose from 'mongoose';
 
 const DEFAULT_PROJECT_NAME = 'Project One';
 
 /**
- * One-shot data migrations for nested projects, multi-project tasks, and scoped chats.
+ * One-shot data migrations for nested projects, multi-project tasks, and scoped agent sessions.
  */
 export async function runDataMigrations(): Promise<void> {
   await migrateTaskProjectIds();
@@ -12,6 +12,7 @@ export async function runDataMigrations(): Promise<void> {
   await migrateProjectProgressDefaults();
   await migrateConversationProjectIds();
   await migrateSearchEmbeddingBackfill();
+  await migrateLlmMetricsCallTypes();
 }
 
 async function migrateTaskProjectIds(): Promise<void> {
@@ -170,4 +171,18 @@ async function migrateSearchEmbeddingBackfill(): Promise<void> {
     key: 'search_embedding_v1',
     at: new Date(),
   });
+}
+
+async function migrateLlmMetricsCallTypes(): Promise<void> {
+  const key = 'llm_metrics_agent_call_type_v1';
+  const done = await mongoose.connection.collection('app_meta').findOne({ key });
+  if (done) return;
+
+  await Promise.all([
+    LlmCallMetricModel.updateMany({ callType: 'chat' }, { $set: { callType: 'agent' } }),
+    LlmCallMetricModel.updateMany({ source: 'chat_loop' }, { $set: { source: 'agent_loop' } }),
+    LlmDailyMetricModel.updateMany({ callType: 'chat' }, { $set: { callType: 'agent' } }),
+  ]);
+
+  await mongoose.connection.collection('app_meta').insertOne({ key, at: new Date() });
 }

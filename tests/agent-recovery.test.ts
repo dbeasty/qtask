@@ -5,7 +5,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
-process.env.JWT_SECRET = 'test-chat-recovery-secret';
+process.env.JWT_SECRET = 'test-agent-recovery-secret';
 
 let mongo: MongoMemoryServer;
 const originalFetch = globalThis.fetch;
@@ -71,27 +71,27 @@ function ollamaEmbeddingResponse() {
   });
 }
 
-function mockOllamaChat(handler: (callIndex: number) => Response) {
-  let chatCalls = 0;
+function mockOllamaAgent(handler: (callIndex: number) => Response) {
+  let agentCalls = 0;
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (url.includes('/api/embeddings')) {
       return ollamaEmbeddingResponse();
     }
     if (url.includes('/api/chat')) {
-      chatCalls += 1;
-      return handler(chatCalls);
+      agentCalls += 1;
+      return handler(agentCalls);
     }
     return new Response('unexpected fetch', { status: 500 });
   };
 }
 
-describe('chat update_task id recovery', () => {
+describe('agent update_task id recovery', () => {
   it('revalidates stale invalid approvals, runs find_tasks, and emits a fresh update proposal', async () => {
     const { UserModel } = await import('../src/models/index.js');
     const { taskService } = await import('../src/services/taskService.js');
     const { conversationService } = await import('../src/services/conversationService.js');
-    const { chatService } = await import('../src/services/chatService.js');
+    const { agentService } = await import('../src/services/agentService.js');
 
     const user = await UserModel.create({
       email: `recovery-${randomUUID()}@example.com`,
@@ -147,7 +147,7 @@ describe('chat update_task id recovery', () => {
       },
     });
 
-    mockOllamaChat((callIndex) => {
+    mockOllamaAgent((callIndex) => {
       if (callIndex === 1) {
         return ollamaToolCallResponse('update_task', {
           taskId,
@@ -158,7 +158,7 @@ describe('chat update_task id recovery', () => {
     });
 
     const events: Array<{ type: string; [key: string]: unknown }> = [];
-    for await (const event of chatService.resumeAfterApproval(
+    for await (const event of agentService.resumeAfterApproval(
       userId,
       conversation._id,
       proposalId,
@@ -209,7 +209,7 @@ describe('chat update_task id recovery', () => {
     const { UserModel } = await import('../src/models/index.js');
     const { taskService } = await import('../src/services/taskService.js');
     const { conversationService } = await import('../src/services/conversationService.js');
-    const { chatService } = await import('../src/services/chatService.js');
+    const { agentService } = await import('../src/services/agentService.js');
 
     const user = await UserModel.create({
       email: `multi-${randomUUID()}@example.com`,
@@ -253,14 +253,14 @@ describe('chat update_task id recovery', () => {
       pausedBatch: null,
     });
 
-    mockOllamaChat(() =>
+    mockOllamaAgent(() =>
       ollamaTextResponse(
         'I found two matching tasks (Boat prep A and Boat prep B). Which one should I rename?'
       )
     );
 
     const events: Array<{ type: string; [key: string]: unknown }> = [];
-    for await (const event of chatService.resumeAfterApproval(
+    for await (const event of agentService.resumeAfterApproval(
       userId,
       conversation._id,
       proposalId,
@@ -288,7 +288,7 @@ describe('chat update_task id recovery', () => {
     const { UserModel } = await import('../src/models/index.js');
     const { taskService } = await import('../src/services/taskService.js');
     const { conversationService } = await import('../src/services/conversationService.js');
-    const { chatService } = await import('../src/services/chatService.js');
+    const { agentService } = await import('../src/services/agentService.js');
 
     const user = await UserModel.create({
       email: `valid-${randomUUID()}@example.com`,
@@ -343,10 +343,10 @@ describe('chat update_task id recovery', () => {
       },
     });
 
-    mockOllamaChat(() => ollamaTextResponse('Done — renamed to Updated.'));
+    mockOllamaAgent(() => ollamaTextResponse('Done — renamed to Updated.'));
 
     const events: Array<{ type: string; [key: string]: unknown }> = [];
-    for await (const event of chatService.resumeAfterApproval(
+    for await (const event of agentService.resumeAfterApproval(
       userId,
       conversation._id,
       proposalId,
@@ -372,7 +372,7 @@ describe('chat update_task id recovery', () => {
     const { UserModel } = await import('../src/models/index.js');
     const { taskService } = await import('../src/services/taskService.js');
     const { conversationService } = await import('../src/services/conversationService.js');
-    const { chatService } = await import('../src/services/chatService.js');
+    const { agentService } = await import('../src/services/agentService.js');
 
     const user = await UserModel.create({
       email: `missing-${randomUUID()}@example.com`,
@@ -417,7 +417,7 @@ describe('chat update_task id recovery', () => {
       pausedBatch: null,
     });
 
-    mockOllamaChat((callIndex) => {
+    mockOllamaAgent((callIndex) => {
       if (callIndex === 1) {
         return ollamaToolCallResponse('update_task', { taskId: realId, title: 'Found' });
       }
@@ -425,7 +425,7 @@ describe('chat update_task id recovery', () => {
     });
 
     const events: Array<{ type: string; [key: string]: unknown }> = [];
-    for await (const event of chatService.resumeAfterApproval(
+    for await (const event of agentService.resumeAfterApproval(
       userId,
       conversation._id,
       proposalId,

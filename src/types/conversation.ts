@@ -48,7 +48,7 @@ export interface Conversation extends ConversationSummary {
   messageProposals?: Record<number, PendingProposal[]>;
 }
 
-export type ChatStreamEvent =
+export type AgentStreamEvent =
   | { type: 'token'; content: string }
   | { type: 'tool_call'; name: string; arguments: Record<string, unknown> }
   | { type: 'tool_result'; name: string; success: boolean; content: string }

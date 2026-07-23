@@ -60,7 +60,7 @@ import {
 
 interface TasksPageProps {
   suggestedProjectName?: string;
-  /** Bumped when another view (e.g. chat) mutates tasks; triggers refetch without remounting. */
+  /** Bumped when another view (e.g. agent) mutates tasks; triggers refetch without remounting. */
   externalRefreshKey?: number;
   activeProjectId: string | null;
   onActiveProjectChange: (projectId: string | null) => void;

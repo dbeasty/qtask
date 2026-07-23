@@ -23,7 +23,7 @@ after(async () => {
   await mongo.stop();
 });
 
-function chatResponse(content: string, tool?: { name: string; arguments: Record<string, unknown> }) {
+function agentResponse(content: string, tool?: { name: string; arguments: Record<string, unknown> }) {
   return new Response(
     [
       JSON.stringify({
@@ -45,7 +45,7 @@ describe('staged AI creates', () => {
   it('chains real project ids into tasks, hides both, then commits both from task approval', async () => {
     const { ActivityModel, EmbeddingJobModel, UserModel, ProjectModel, TaskModel } =
       await import('../src/models/index.js');
-    const { chatService } = await import('../src/services/chatService.js');
+    const { agentService } = await import('../src/services/agentService.js');
     const { conversationService } = await import('../src/services/conversationService.js');
     const { projectService } = await import('../src/services/projectService.js');
     const { taskService } = await import('../src/services/taskService.js');
@@ -60,7 +60,7 @@ describe('staged AI creates', () => {
     globalThis.fetch = async (_input, init) => {
       call += 1;
       if (call === 1) {
-        return chatResponse('', {
+        return agentResponse('', {
           name: 'create_project',
           arguments: { name: 'Test the Boar' },
         });
@@ -76,16 +76,16 @@ describe('staged AI creates', () => {
         const projectId = (JSON.parse(projectResult.content.split('\n\nSTAGED:')[0]!) as { _id: string })
           ._id;
         assert.match(projectId, /^[0-9a-f]{24}$/);
-        return chatResponse('', {
+        return agentResponse('', {
           name: 'create_task',
           arguments: { title: 'Test the Boar', projectId },
         });
       }
-      return chatResponse('The project and task are staged and awaiting approval.');
+      return agentResponse('The project and task are staged and awaiting approval.');
     };
 
     const events: Array<{ type: string; [key: string]: unknown }> = [];
-    for await (const event of chatService.streamChat(userId, 'Create Test the Boar')) {
+    for await (const event of agentService.streamAgent(userId, 'Create Test the Boar')) {
       events.push(event as { type: string; [key: string]: unknown });
     }
 
@@ -111,7 +111,7 @@ describe('staged AI creates', () => {
     assert.equal(await ActivityModel.countDocuments({ action: 'task.created' }), 0);
     assert.equal(await EmbeddingJobModel.countDocuments(), 0);
 
-    for await (const _event of chatService.resumeAfterApproval(
+    for await (const _event of agentService.resumeAfterApproval(
       userId,
       conversationId,
       taskProposal.id,
@@ -231,9 +231,9 @@ describe('staged AI creates', () => {
       ],
       pausedBatch: null,
     });
-    globalThis.fetch = async () => chatResponse('Started a fresh turn.');
-    const { chatService } = await import('../src/services/chatService.js');
-    for await (const _event of chatService.streamChat(
+    globalThis.fetch = async () => agentResponse('Started a fresh turn.');
+    const { agentService } = await import('../src/services/agentService.js');
+    for await (const _event of agentService.streamAgent(
       userId,
       'Do something else',
       conversation._id

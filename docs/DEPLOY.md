@@ -27,7 +27,7 @@ The official production deployment is at **https://qtask.dev**. Source code and 
 | Component | Role | How it runs |
 |-----------|------|-------------|
 | **MongoDB** | Primary data store | Docker Compose |
-| **Ollama** | Chat SLM + embedding model | Native install or Docker profile |
+| **Ollama** | Agent SLM + embedding model | Native install or Docker profile |
 | **API** | Node.js backend + MCP server | `npm run dev` |
 | **Web client** | React (Vite) dev server | `npm run dev:client` |
 
@@ -109,11 +109,11 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `TRUST_PROXY` | `false` | Set `true` behind reverse proxy |
 | `SERVE_CLIENT` | `true` | Serve `client/dist` from API in production |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL (Jetson LAN IP in production; see §4.1.1) |
-| `OLLAMA_MODEL` | `llama3.1` | Chat / tool-calling model (`llama3.2:3b` recommended on Jetson 8GB) |
+| `OLLAMA_MODEL` | `llama3.1` | Agent / tool-calling model (`llama3.2:3b` recommended on Jetson 8GB) |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
-| `OLLAMA_KEEP_ALIVE` | `-1` | Chat/generate keep-alive passed to Ollama (`-1` = keep chat loaded) |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Agent model keep-alive passed to Ollama (`-1` = keep agent model loaded) |
 | `OLLAMA_EMBEDDING_KEEP_ALIVE` | `0` | Embedding keep-alive (`0` = unload after request; on-demand indexing) |
-| `OLLAMA_EMBEDDING_NUM_GPU` | `0` | GPU layers for embeddings (`0` = CPU; keeps chat on GPU) |
+| `OLLAMA_EMBEDDING_NUM_GPU` | `0` | GPU layers for embeddings (`0` = CPU; keeps agent model on GPU) |
 | `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.44`) |
 | `OLLAMA_DOCKER_CONTAINER` | `qtask-ollama` | Container name for Docker stats |
 | `JETSON_GPU_STATS_URL` | — | Jetson GPU sidecar (e.g. `http://<ip>:9401/gpu`); on-demand sysfs reader |
@@ -194,7 +194,7 @@ Operators can also set `REGISTRATION_ENABLED=false` to close signup for capacity
 2. Receives a reset link at `/reset-password?token=...`
 3. Sets a new password and signs in
 
-All `/api/tasks`, `/api/projects`, and `/api/chat` routes require a valid JWT.
+All `/api/tasks`, `/api/projects`, `/api/agent`, and `/api/conversations` routes require a valid JWT.
 
 Each user has their own projects by default. Project owners can share a project with other existing accounts (roles: editor, executor, viewer). Email invites for users without an account are not yet implemented.
 
@@ -220,7 +220,7 @@ One Node process on **3003** serves both the React web UI (static JS/CSS) and th
 
 Forward only **80** and **443** on your router. Do not forward 3003, 3004, 27017, 11434, or 2375.
 
-**MCP in Cursor** runs locally on your machine via stdio — it does not need a server port opened for remote access. Use the web UI at `https://qtask.dev` for browser-based chat.
+**MCP in Cursor** runs locally on your machine via stdio — it does not need a server port opened for remote access. Use the web UI at `https://qtask.dev` for browser-based agent access.
 
 ### 4.1 Docker (recommended)
 
@@ -386,10 +386,10 @@ JETSON_GPU_STATS_URL=http://192.168.13.14:9401/gpu
 
 The Jetson stack includes a lightweight **`jetson-gpu-stats`** sidecar (`deploy/jetson-gpu-stats/`) that reads GPU load, temperature, and system RAM from sysfs **only when polled**. The admin UI calls `GET /api/admin/ollama/gpu` while the Ollama tab is open (configurable refresh, default 1s). No GPU polling runs on other admin tabs or when the admin UI is closed.
 
-After deploy, verify chat stays loaded and embeddings are on demand:
+After deploy, verify the agent model stays loaded and embeddings are on demand:
 
 ```bash
-# Jetson — only chat should remain after idle embed work
+# Jetson — only the agent model should remain after idle embed work
 docker exec qtask-ollama ollama ps
 
 # App — create/update a task; embedding should run immediately (no 2s poll wait)
@@ -424,7 +424,7 @@ Redeploy without re-pulling models (on Jetson, after a new tar is extracted):
 
 `start-ollama-jetson.sh` removes legacy containers named `qtask-ollama` / `qtask-ollama-docker-proxy` (from older compose project names) and migrates model data from volume `deploy_qtask_ollama_data` to `qtask_ollama_data` when needed.
 
-Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=1` so only the **chat** model stays loaded on Jetson; `deploy-jetson-ollama.sh` warms chat only. Embeddings run on demand from the app with `OLLAMA_EMBEDDING_KEEP_ALIVE=0` and `OLLAMA_EMBEDDING_NUM_GPU=0` (CPU, unload after each request). Task indexing is **event-driven** (no 2s poll) — jobs run when tasks are created/updated.
+Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=1` so only the **agent** model stays loaded on Jetson; `deploy-jetson-ollama.sh` warms the agent model only. Embeddings run on demand from the app with `OLLAMA_EMBEDDING_KEEP_ALIVE=0` and `OLLAMA_EMBEDDING_NUM_GPU=0` (CPU, unload after each request). Task indexing is **event-driven** (no 2s poll) — jobs run when tasks are created/updated.
 
 **Firewall** (on Jetson — allow only app server `192.168.13.13`):
 
@@ -771,7 +771,7 @@ curl -sS -X POST http://127.0.0.1:3003/api/projects \
   -d '{"name":"Test project"}'
 ```
 
-Expect `200` / `201` with JSON project data. Then open the web UI and confirm you can create tasks and use chat.
+Expect `200` / `201` with JSON project data. Then open the web UI and confirm you can create tasks and use the agent.
 
 #### Common failures
 
@@ -821,7 +821,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # SSE (chat streaming)
+        # SSE (agent streaming)
         proxy_buffering off;
         proxy_cache off;
         proxy_read_timeout 3600s;

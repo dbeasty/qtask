@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
 import { LlmCallMetricModel, LlmDailyMetricModel } from '../models/index.js';
 
-export type LlmCallType = 'chat' | 'generate' | 'embed';
+export type LlmCallType = 'agent' | 'generate' | 'embed';
 export type LlmCallSource =
-  | 'chat_loop'
+  | 'agent_loop'
   | 'project_summary'
   | 'embedding_job'
   | 'semantic_search';

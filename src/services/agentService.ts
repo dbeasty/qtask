@@ -10,7 +10,7 @@ import { isStagedCreateTool, isWriteTool } from '../agent/toolPolicy.js';
 import { executeTool, getOllamaTools, normalizeToolArgs, validateToolProposal } from '../agent/tools.js';
 import { config } from '../config/index.js';
 import type {
-  ChatStreamEvent,
+  AgentStreamEvent,
   Conversation,
   OllamaToolCall,
   PausedBatchState,
@@ -22,7 +22,7 @@ import { conversationService } from './conversationService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 import { stagingService } from './stagingService.js';
 
-const log = createLogger('chatService');
+const log = createLogger('agentService');
 const SYSTEM_PROMPT = loadAgentContext();
 const MAX_ITERATIONS = 8;
 
@@ -192,7 +192,7 @@ async function* runUpdateTaskIdRecovery(
   userId: string,
   messagesForQuery: StoredMessage[],
   updateArgs: Record<string, unknown>
-): AsyncGenerator<ChatStreamEvent, StoredMessage> {
+): AsyncGenerator<AgentStreamEvent, StoredMessage> {
   const findArgs = buildFindTasksRecoveryArgs(updateArgs, messagesForQuery);
   log.info('Recovering invalid update_task id via find_tasks', {
     query: findArgs.query,
@@ -234,7 +234,7 @@ async function savePausePreservingResolved(
   });
 }
 
-export async function* streamOllamaChat(
+export async function* streamOllamaAgent(
   messages: OllamaChatMessage[],
   iteration: number,
   userId: string,
@@ -247,8 +247,8 @@ export async function* streamOllamaChat(
   });
 
   const tracker = createLlmCallTracker({
-    callType: 'chat',
-    source: 'chat_loop',
+    callType: 'agent',
+    source: 'agent_loop',
     model: config.ollama.model,
     userId,
     conversationId,
@@ -465,20 +465,20 @@ function buildMessageProposals(conversation: Conversation): Record<number, Pendi
   return result;
 }
 
-export class ChatService {
+export class AgentService {
   private async *runAgentLoop(
     userId: string,
     conversationId: string,
     workingMessages: StoredMessage[],
     startIteration = 0
-  ): AsyncGenerator<ChatStreamEvent> {
+  ): AsyncGenerator<AgentStreamEvent> {
     let finalAssistantContent = '';
 
     for (let iteration = startIteration; iteration < MAX_ITERATIONS; iteration++) {
       let content = '';
       let toolCalls: OllamaToolCall[] = [];
 
-      for await (const part of streamOllamaChat(
+      for await (const part of streamOllamaAgent(
         toOllamaMessages(workingMessages),
         iteration,
         userId,
@@ -698,7 +698,7 @@ export class ChatService {
     toolCalls: OllamaToolCall[],
     startIndex: number,
     existingProposals: PendingProposal[] = []
-  ): AsyncGenerator<ChatStreamEvent, boolean> {
+  ): AsyncGenerator<AgentStreamEvent, boolean> {
     const current = await conversationService.getConversation(userId, conversationId);
     const proposals: PendingProposal[] = [
       ...(current?.pendingProposals ?? []),
@@ -914,12 +914,12 @@ export class ChatService {
     return { proposal };
   }
 
-  async *streamChat(
+  async *streamAgent(
     userId: string,
     message: string,
     conversationId?: string,
     projectId?: string
-  ): AsyncGenerator<ChatStreamEvent> {
+  ): AsyncGenerator<AgentStreamEvent> {
     let conversation =
       conversationId != null
         ? await conversationService.getConversation(userId, conversationId)
@@ -976,7 +976,7 @@ export class ChatService {
       await conversationService.setMessages(userId, conversation._id, workingMessages);
     }
 
-    log.info('Chat stream started', { userId, conversationId: conversation._id });
+    log.info('Agent stream started', { userId, conversationId: conversation._id });
 
     yield* this.runAgentLoop(userId, conversation._id, workingMessages);
   }
@@ -986,7 +986,7 @@ export class ChatService {
     conversationId: string,
     proposalId: string,
     action: 'approve' | 'reject'
-  ): AsyncGenerator<ChatStreamEvent> {
+  ): AsyncGenerator<AgentStreamEvent> {
     const conversation = await conversationService.getConversation(userId, conversationId);
     if (!conversation) {
       yield { type: 'error', message: 'Conversation not found' };
@@ -1156,4 +1156,4 @@ export class ChatService {
   }
 }
 
-export const chatService = new ChatService();
+export const agentService = new AgentService();

@@ -44,8 +44,8 @@ describe('LLM call metrics', () => {
         { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }
       );
 
-    const { streamOllamaChat } = await import('../src/services/chatService.js');
-    for await (const _part of streamOllamaChat(
+    const { streamOllamaAgent } = await import('../src/services/agentService.js');
+    for await (const _part of streamOllamaAgent(
       [{ role: 'user', content: 'Secret prompt that must not be stored' }],
       0,
       '507f1f77bcf86cd799439011',
@@ -62,7 +62,7 @@ describe('LLM call metrics', () => {
     }
 
     assert.ok(metric);
-    assert.equal(metric.callType, 'chat');
+    assert.equal(metric.callType, 'agent');
     assert.equal(metric.promptEvalCount, 12);
     assert.equal(metric.evalCount, 4);
     assert.equal(metric.totalDurationNs, 2_000_000);

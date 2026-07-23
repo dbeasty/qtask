@@ -27,21 +27,21 @@ after(async () => {
 });
 
 describe('conversation deletion', () => {
-  it('deletes owned chat history and staged drafts but preserves committed tasks', async () => {
+  it('deletes owned session history and staged drafts but preserves committed tasks', async () => {
     const { signToken } = await import('../src/auth/jwt.js');
     const { ConversationModel, TaskModel, UserModel } = await import('../src/models/index.js');
     const { conversationService } = await import('../src/services/conversationService.js');
 
     const owner = await UserModel.create({
-      email: `chat-owner-${randomUUID()}@example.com`,
+      email: `session-owner-${randomUUID()}@example.com`,
       passwordHash: 'unused',
     });
     const otherUser = await UserModel.create({
-      email: `chat-other-${randomUUID()}@example.com`,
+      email: `session-other-${randomUUID()}@example.com`,
       passwordHash: 'unused',
     });
     const ownerId = String(owner._id);
-    const conversation = await conversationService.createConversation(ownerId, 'Old chat');
+    const conversation = await conversationService.createConversation(ownerId, 'Old session');
     const proposalId = randomUUID();
 
     const committedTask = await TaskModel.create({ userId: ownerId, title: 'Keep me' });
@@ -91,7 +91,7 @@ describe('conversation reset', () => {
       passwordHash: 'unused',
     });
     const ownerId = String(owner._id);
-    const conversation = await conversationService.createConversation(ownerId, 'Reusable chat');
+    const conversation = await conversationService.createConversation(ownerId, 'Reusable session');
     const proposalId = randomUUID();
 
     await conversationService.savePauseState(ownerId, conversation._id, {
@@ -145,7 +145,7 @@ describe('conversation reset', () => {
 
     assert.equal(response.body.discardedStagedCount, 1);
     assert.equal(response.body.conversation._id, conversation._id);
-    assert.equal(response.body.conversation.title, 'Reusable chat');
+    assert.equal(response.body.conversation.title, 'Reusable session');
     assert.equal(response.body.conversation.messages.length, 1);
     assert.equal(response.body.conversation.messages[0]?.role, 'user');
     assert.equal(response.body.conversation.messages[0]?.content, 'Create a draft');
@@ -154,7 +154,7 @@ describe('conversation reset', () => {
 
     const remaining = await ConversationModel.findById(conversation._id).lean();
     assert.ok(remaining);
-    assert.equal(remaining.title, 'Reusable chat');
+    assert.equal(remaining.title, 'Reusable session');
     assert.equal(remaining.messages.length, 1);
     assert.equal(remaining.messages[0]?.role, 'user');
     assert.equal(remaining.messages[0]?.content, 'Create a draft');
@@ -174,7 +174,7 @@ describe('conversation reset', () => {
       passwordHash: 'unused',
     });
     const ownerId = String(owner._id);
-    const conversation = await conversationService.createConversation(ownerId, 'Empty chat');
+    const conversation = await conversationService.createConversation(ownerId, 'Empty session');
     await conversationService.savePauseState(ownerId, conversation._id, {
       messages: [{ role: 'system', content: 'You are QTask.' }],
       pendingProposals: [],
@@ -187,7 +187,7 @@ describe('conversation reset', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .expect(200);
 
-    assert.equal(response.body.conversation.title, 'Empty chat');
+    assert.equal(response.body.conversation.title, 'Empty session');
     assert.deepEqual(response.body.conversation.messages, []);
     assert.deepEqual(response.body.conversation.pendingProposals, []);
     assert.equal(response.body.conversation.pausedBatch, null);

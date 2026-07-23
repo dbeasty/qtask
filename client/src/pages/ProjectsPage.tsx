@@ -754,7 +754,7 @@ export function ProjectsPage({
       {pendingDeleteProject && (
         <ConfirmDialog
           title="Delete project?"
-          message={`Delete "${pendingDeleteProject.name}"? Child projects move up. Shared tasks are unlinked; tasks only in this project (and its chats) are deleted.`}
+          message={`Delete "${pendingDeleteProject.name}"? Child projects move up. Shared tasks are unlinked; tasks only in this project (and its sessions) are deleted.`}
           confirmLabel="Delete project"
           busy={saving}
           onCancel={() => setPendingDeleteId(null)}

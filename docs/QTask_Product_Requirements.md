@@ -77,7 +77,7 @@ Projects form an optional tree (not only a flat list of workspaces). Nested proj
 - Progress and status rollup:
   - Leaf projects (no child projects): percent complete is derived from linked tasks (equal-weight average); status is derived from task statuses.
   - Parent projects: percent complete is a weighted rollup of child projects using optional per-child `progressShare` (same weighting model as task subtasks); status is derived from children.
-- Active project: the web UI maintains an active project that scopes Chat and Tasks views; the picker is hierarchy-aware.
+- Active project: the web UI maintains an active project that scopes Agent and Tasks views; the picker is hierarchy-aware.
 - Access control remains per project (collaborator list and roles). Nesting does not replace or inherit ACL across the tree automatically.
 
 ### 3.3 AI / LLM Integration (Central, not bolt-on)
@@ -185,13 +185,13 @@ The backend exposes an MCP server so that AI clients (local SLM or Claude) conne
 | `comments` | Threaded comments per task |
 | `activity` | Audit log of changes per task/project, including AI-driven actions |
 | `invites` | Pending email invites for collaborators without an existing account |
-| `conversations` | Per-user AI conversation history for context continuity |
+| `conversations` | Per-user agent session history for context continuity |
 
 ---
 
 ## 5. Delivery Phases
 
-1. **Backend core + conversational UI (current focus):** local Node.js + MongoDB, task/subtask/link CRUD, nested projects with progress rollup, percent-complete logic, MCP server with core tools, local SLM via Ollama, chat agent API with streaming, React web client for Projects / Tasks / Chat.
+1. **Backend core + agent UI (current focus):** local Node.js + MongoDB, task/subtask/link CRUD, nested projects with progress rollup, percent-complete logic, MCP server with core tools, local SLM via Ollama, agent API with streaming, React web client for Projects / Tasks / Agent.
 2. **Cloud account sync:** Google/Microsoft/Apple OAuth, optional sync to provider task/drive APIs.
 3. **Collaboration:** sharer/collaborator lists, email invites, role-based access, real-time updates.
 4. **Production clients:** polished React web app and React Native iOS/Android, sharing API and component logic (extends the early web client).

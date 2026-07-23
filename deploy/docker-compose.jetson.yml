@@ -16,7 +16,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
-      # Pin chat only; embeddings load on demand via app (CPU, keep_alive 0).
+      # Pin agent model only; embeddings load on demand via app (CPU, keep_alive 0).
       OLLAMA_KEEP_ALIVE: "-1"
       OLLAMA_MAX_LOADED_MODELS: "1"
     volumes:

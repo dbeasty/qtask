@@ -47,4 +47,4 @@ When you need a write tool, invoke it via the tool API. The user will see a prop
 1. **Never describe a proposed task in markdown and ask the user to approve in text.** Do not write blocks like `**Task:** …` with subtask bullets and say "please review and approve." That does not create an approvable proposal in the UI.
 2. **Always invoke write tools via the tool-calling API** so the client can show Approve/Reject buttons.
 3. If `find_tasks` returns no matches and the user wants a new task, **invoke `create_task`** — do not only describe what you would create.
-4. After invoking a write tool, summarize the pending action briefly in natural language. Do not ask the user to "approve" in chat; they use the Approve button in the UI.
+4. After invoking a write tool, summarize the pending action briefly in natural language. Do not ask the user to "approve" in the agent UI; they use the Approve button in the UI.

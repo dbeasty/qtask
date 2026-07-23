@@ -60,7 +60,9 @@ export function pickGpuLoadPath(existingPaths: string[]): string | undefined {
   for (const candidate of GPU_LOAD_CANDIDATES) {
     if (existingPaths.includes(candidate)) return candidate;
   }
-  return existingPaths.find((path) => /gpu.*\/load$/i.test(path));
+  return existingPaths.find(
+    (path) => /gpu[^/]*\/load$/i.test(path) && !/\/[^/]+_load$/i.test(path)
+  );
 }
 
 export function parseDcgmMetrics(text: string): Omit<GpuResources, 'available'> {

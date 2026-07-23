@@ -380,7 +380,7 @@ router.get('/ollama/status', async (_req, res) => {
   res.json({
     available: !(version as { error?: string }).error,
     configuredModels: {
-      chat: config.ollama.model,
+      agent: config.ollama.model,
       embedding: config.ollama.embeddingModel,
     },
     version,
@@ -459,7 +459,7 @@ router.get('/ollama/calls', async (req, res, next) => {
     const page = positiveInt(req.query.page, 1, 1_000_000);
     const limit = positiveInt(req.query.limit, 25, 100);
     const filter: Record<string, unknown> = {};
-    if (['chat', 'generate', 'embed'].includes(String(req.query.callType))) {
+    if (['agent', 'generate', 'embed'].includes(String(req.query.callType))) {
       filter.callType = req.query.callType;
     }
     if (typeof req.query.model === 'string' && req.query.model) filter.model = req.query.model;

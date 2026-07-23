@@ -91,7 +91,7 @@ export function ConversationMenu({
         disabled={busy}
         onClick={() => run(onReset)}
       >
-        Reset chat
+        Reset session
       </button>
       <button
         type="button"

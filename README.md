@@ -37,7 +37,7 @@ Create an account on first visit. For local secrets (e.g. Resend API key), use *
 
 | Doc | Audience |
 |-----|----------|
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | End users — projects, tasks, chat, sharing |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | End users — projects, tasks, agent, sharing |
 | [docs/QTask_Product_Requirements.md](docs/QTask_Product_Requirements.md) | Product specification |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Operators — local and production deployment |
 

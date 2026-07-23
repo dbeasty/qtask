@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import { connectDb } from './db/connection.js';
 import { projectsRouter } from './routes/projects.js';
 import { tasksRouter } from './routes/tasks.js';
-import { chatRouter } from './routes/chat.js';
+import { agentRouter } from './routes/agent.js';
 import { authRouter } from './routes/auth.js';
 import { searchRouter } from './routes/search.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
@@ -73,12 +73,12 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     message: { error: 'Too many authentication attempts, please try again later' },
   });
 
-  const chatLimiter = rateLimit({
+  const agentLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many chat requests, please try again later' },
+    message: { error: 'Too many agent requests, please try again later' },
   });
 
   app.get('/health', async (_req, res) => {
@@ -107,7 +107,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   app.use('/api/tasks', requireAuth, tasksRouter);
   app.use('/api/projects', requireAuth, projectsRouter);
   app.use('/api/search', requireAuth, searchRouter);
-  app.use('/api', requireAuth, chatLimiter, chatRouter);
+  app.use('/api', requireAuth, agentLimiter, agentRouter);
 
   if (config.serveClient && config.nodeEnv === 'production') {
     const clientDist = path.resolve(__dirname, '../client/dist');

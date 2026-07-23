@@ -43,7 +43,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function consumeSseStream(
   response: Response,
-  onEvent: (event: import('../types').ChatStreamEvent) => void
+  onEvent: (event: import('../types').AgentStreamEvent) => void
 ): Promise<void> {
   if (response.status === 401) {
     clearStoredToken();
@@ -74,7 +74,7 @@ async function consumeSseStream(
     for (const part of parts) {
       const line = part.trim();
       if (!line.startsWith('data: ')) continue;
-      const event = JSON.parse(line.slice(6)) as import('../types').ChatStreamEvent;
+      const event = JSON.parse(line.slice(6)) as import('../types').AgentStreamEvent;
       onEvent(event);
     }
   }
@@ -351,13 +351,13 @@ export async function duplicateConversation(
   return request(`/api/conversations/${id}/duplicate`, { method: 'POST' });
 }
 
-export async function streamChat(
+export async function streamAgent(
   message: string,
   conversationId: string | undefined,
-  onEvent: (event: import('../types').ChatStreamEvent) => void,
+  onEvent: (event: import('../types').AgentStreamEvent) => void,
   projectId?: string
 ): Promise<void> {
-  const response = await fetch('/api/chat', {
+  const response = await fetch('/api/agent', {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ message, conversationId, projectId }),
@@ -371,7 +371,7 @@ export async function submitProposal(
   name: string,
   args: Record<string, unknown>
 ): Promise<{ proposal: import('../types').PendingProposal }> {
-  return request('/api/chat/proposals', {
+  return request('/api/agent/proposals', {
     method: 'POST',
     body: JSON.stringify({ conversationId, name, arguments: args }),
   });
@@ -381,9 +381,9 @@ export async function approveProposal(
   conversationId: string,
   proposalId: string,
   action: 'approve' | 'reject',
-  onEvent: (event: import('../types').ChatStreamEvent) => void
+  onEvent: (event: import('../types').AgentStreamEvent) => void
 ): Promise<void> {
-  const response = await fetch('/api/chat/approve', {
+  const response = await fetch('/api/agent/approve', {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ conversationId, proposalId, action }),

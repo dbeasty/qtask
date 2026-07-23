@@ -35,18 +35,40 @@ def _read_int(path: str) -> int | None:
         return None
 
 
+def _is_gpu_utilization_load_path(path: str) -> bool:
+    """True for overall GPU load (…/gpu/load), not engine-specific …/nvenc0_load files."""
+    if os.path.basename(path) != "load":
+        return False
+    parent = os.path.basename(os.path.dirname(path))
+    return "gpu" in parent.lower()
+
+
+def _glob_gpu_load_paths() -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+
+    for path in GPU_LOAD_CANDIDATES:
+        add(path)
+    for path in sorted(glob.glob("/sys/devices/*gpu*/load")):
+        add(path)
+    for path in sorted(glob.glob("/sys/devices/**/load", recursive=True)):
+        if _is_gpu_utilization_load_path(path):
+            add(path)
+    return paths
+
+
 def discover_gpu_load_path() -> str | None:
     global _cached_gpu_load_path
 
     if _cached_gpu_load_path and os.path.isfile(_cached_gpu_load_path):
         return _cached_gpu_load_path
 
-    for path in GPU_LOAD_CANDIDATES:
-        if _read_int(path) is not None:
-            _cached_gpu_load_path = path
-            return path
-
-    for path in sorted(glob.glob("/sys/devices/*gpu*/load")):
+    for path in _glob_gpu_load_paths():
         if _read_int(path) is not None:
             _cached_gpu_load_path = path
             return path

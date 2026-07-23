@@ -44,6 +44,13 @@ describe('jetson gpu parse helpers', () => {
       pickGpuLoadPath(['/sys/devices/57000000.gpu/load']),
       '/sys/devices/57000000.gpu/load'
     );
+    assert.equal(
+      pickGpuLoadPath([
+        '/sys/devices/platform/bus@0/17000000.gpu/nvenc0_load',
+        '/sys/devices/platform/bus@0/17000000.gpu/load',
+      ]),
+      '/sys/devices/platform/bus@0/17000000.gpu/load'
+    );
   });
 
   it('derives Ollama VRAM and offload percent from /api/ps models', () => {

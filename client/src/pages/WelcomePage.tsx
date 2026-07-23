@@ -10,7 +10,7 @@ export function WelcomePage() {
         <section className="welcome-section">
           <h2>What QTask does</h2>
           <p>
-            QTask helps you manage tasks and projects with an AI assistant at the center. Chat to create,
+            QTask helps you manage tasks and projects with an AI assistant at the center. Use the agent to create,
             organize, and update your work — or use the task board directly. Connect via MCP to tools like
             Cursor so your tasks stay in sync with your workflow.
           </p>
@@ -21,7 +21,7 @@ export function WelcomePage() {
           <ul className="welcome-list">
             <li>Nested tasks with status, priority, and progress tracking</li>
             <li>Nested projects with progress rollup</li>
-            <li>AI chat with proposal approval before changes are applied</li>
+            <li>AI agent with proposal approval before changes are applied</li>
             <li>Semantic search across your tasks</li>
             <li>Self-hosted — your data stays on your infrastructure</li>
             <li>Swappable AI backends (local Ollama, MCP-compatible models)</li>

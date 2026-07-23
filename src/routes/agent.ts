@@ -1,17 +1,17 @@
 import { Router } from 'express';
 import { getUserId } from '../middleware/index.js';
-import { chatService } from '../services/chatService.js';
+import { agentService } from '../services/agentService.js';
 import { conversationService } from '../services/conversationService.js';
 import { stagingService } from '../services/stagingService.js';
 import { createLogger } from '../utils/logger.js';
 
-const log = createLogger('chatRoute');
+const log = createLogger('agentRoute');
 
-export const chatRouter = Router();
+export const agentRouter = Router();
 
 async function streamEvents(
   res: import('express').Response,
-  generator: AsyncGenerator<import('../types/conversation.js').ChatStreamEvent>
+  generator: AsyncGenerator<import('../types/conversation.js').AgentStreamEvent>
 ) {
   for await (const event of generator) {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -19,7 +19,7 @@ async function streamEvents(
   res.end();
 }
 
-chatRouter.get('/conversations', async (req, res, next) => {
+agentRouter.get('/conversations', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const projectId = req.query.projectId as string | undefined;
@@ -34,10 +34,10 @@ chatRouter.get('/conversations', async (req, res, next) => {
   }
 });
 
-chatRouter.get('/conversations/:id', async (req, res, next) => {
+agentRouter.get('/conversations/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const conversation = await chatService.getConversationForUi(userId, req.params.id!);
+    const conversation = await agentService.getConversationForUi(userId, req.params.id!);
     if (!conversation) {
       res.status(404).json({ error: 'Conversation not found' });
       return;
@@ -48,7 +48,7 @@ chatRouter.get('/conversations/:id', async (req, res, next) => {
   }
 });
 
-chatRouter.delete('/conversations/:id', async (req, res, next) => {
+agentRouter.delete('/conversations/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const conversationId = req.params.id!;
@@ -74,7 +74,7 @@ chatRouter.delete('/conversations/:id', async (req, res, next) => {
   }
 });
 
-chatRouter.post('/conversations/:id/reset', async (req, res, next) => {
+agentRouter.post('/conversations/:id/reset', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const conversationId = req.params.id!;
@@ -100,7 +100,7 @@ chatRouter.post('/conversations/:id/reset', async (req, res, next) => {
   }
 });
 
-chatRouter.post('/conversations/:id/duplicate', async (req, res, next) => {
+agentRouter.post('/conversations/:id/duplicate', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const conversationId = req.params.id!;
@@ -116,7 +116,7 @@ chatRouter.post('/conversations/:id/duplicate', async (req, res, next) => {
   }
 });
 
-chatRouter.post('/chat', async (req, res, next) => {
+agentRouter.post('/agent', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { message, conversationId, projectId } = req.body as {
@@ -130,7 +130,7 @@ chatRouter.post('/chat', async (req, res, next) => {
       return;
     }
 
-    log.info('Chat request', { userId, conversationId: conversationId ?? 'new' });
+    log.info('Agent request', { userId, conversationId: conversationId ?? 'new' });
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -139,14 +139,14 @@ chatRouter.post('/chat', async (req, res, next) => {
 
     await streamEvents(
       res,
-      chatService.streamChat(userId, message.trim(), conversationId, projectId)
+      agentService.streamAgent(userId, message.trim(), conversationId, projectId)
     );
 
-    log.info('Chat stream completed', { userId, conversationId });
+    log.info('Agent stream completed', { userId, conversationId });
   } catch (error) {
     if (res.headersSent) {
-      const message = error instanceof Error ? error.message : 'Chat failed';
-      log.error('Chat stream error', { message });
+      const message = error instanceof Error ? error.message : 'Agent request failed';
+      log.error('Agent stream error', { message });
       res.write(`data: ${JSON.stringify({ type: 'error', message })}\n\n`);
       res.end();
       return;
@@ -155,7 +155,7 @@ chatRouter.post('/chat', async (req, res, next) => {
   }
 });
 
-chatRouter.post('/chat/proposals', async (req, res, next) => {
+agentRouter.post('/agent/proposals', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { conversationId, name, arguments: toolArgs } = req.body as {
@@ -169,7 +169,7 @@ chatRouter.post('/chat/proposals', async (req, res, next) => {
       return;
     }
 
-    const result = await chatService.submitManualProposal(userId, conversationId, name, toolArgs);
+    const result = await agentService.submitManualProposal(userId, conversationId, name, toolArgs);
     if ('error' in result) {
       res.status(400).json({ error: result.error });
       return;
@@ -181,7 +181,7 @@ chatRouter.post('/chat/proposals', async (req, res, next) => {
   }
 });
 
-chatRouter.post('/chat/approve', async (req, res, next) => {
+agentRouter.post('/agent/approve', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { conversationId, proposalId, action } = req.body as {
@@ -209,7 +209,7 @@ chatRouter.post('/chat/approve', async (req, res, next) => {
 
     await streamEvents(
       res,
-      chatService.resumeAfterApproval(userId, conversationId, proposalId, action)
+      agentService.resumeAfterApproval(userId, conversationId, proposalId, action)
     );
 
     log.info('Approve stream completed', { userId, conversationId, proposalId, action });

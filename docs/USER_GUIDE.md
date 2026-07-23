@@ -1,6 +1,6 @@
 # QTask — User Guide
 
-How to use QTask day to day: projects, tasks, chat, and sharing.
+How to use QTask day to day: projects, tasks, agent, and sharing.
 
 Official site: **https://qtask.dev** · Source: [github.com/dbeasty/qtask](https://github.com/dbeasty/qtask)
 
@@ -12,7 +12,7 @@ Official site: **https://qtask.dev** · Source: [github.com/dbeasty/qtask](https
 2. [Projects](#2-projects)
 3. [Active project](#3-active-project)
 4. [Tasks](#4-tasks)
-5. [Chat](#5-chat)
+5. [Agent](#5-agent)
 6. [Sharing and roles](#6-sharing-and-roles)
 7. [More help](#7-more-help)
 
@@ -21,10 +21,10 @@ Official site: **https://qtask.dev** · Source: [github.com/dbeasty/qtask](https
 ## 1. Getting started
 
 1. Create an account and verify your email.
-2. Sign in. You will see the app header with three main views: **Projects**, **Tasks**, and **Chat**.
+2. Sign in. You will see the app header with three main views: **Projects**, **Tasks**, and **Agent**.
 3. Open your account menu (your name or email in the header) for preferences, password, legal pages, and **Help**.
 
-Use **Projects** to organize workspaces, **Tasks** to manage work items, and **Chat** to ask the AI assistant to create or update work (with your approval).
+Use **Projects** to organize workspaces, **Tasks** to manage work items, and **Agent** to ask the AI assistant to create or update work (with your approval).
 
 ---
 
@@ -66,8 +66,8 @@ Projects group related tasks. They can form a **tree**: a project may sit under 
 
 The header shows your **active project** (click the name next to the tagline to switch).
 
-- Chat and Tasks are scoped to the active project.
-- Switching projects changes which work you see and where new chat-driven work tends to land.
+- Agent and Tasks are scoped to the active project.
+- Switching projects changes which work you see and where new agent-driven work tends to land.
 - From the active-project menu you can also jump to the Projects view.
 
 ---
@@ -81,14 +81,15 @@ The header shows your **active project** (click the name next to the tagline to 
 
 ---
 
-## 5. Chat
+## 5. Agent
 
-Chat is the AI assistant for QTask.
+Agent is the AI assistant for QTask.
 
 - Ask in natural language to find, create, or update tasks and projects.
+- Use **New session** in the sidebar to start fresh threads; switch between **Sessions** as needed.
 - **Write** actions (create/update/share, and similar) appear as proposals. Review and **Approve** or **Reject** them before they become real (unless you enable auto-approve in preferences).
 - **Read** actions (search, get task, list projects, summarize) run without approval.
-- Nesting projects (parent/child) is managed in the **Projects** UI today. Chat can create top-level projects and work with tasks; use Projects to build and rearrange the hierarchy.
+- Nesting projects (parent/child) is managed in the **Projects** UI today. The agent can create top-level projects and work with tasks; use Projects to build and rearrange the hierarchy.
 
 ---
 
