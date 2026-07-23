@@ -5,6 +5,9 @@ const userPreferencesSchema = new Schema(
   {
     autoApproveProposals: { type: Boolean, default: false },
     skipConfirmations: { type: Boolean, default: false },
+    trackExpenses: { type: Boolean, default: true },
+    /** @deprecated Legacy field; migrated to trackExpenses on read */
+    enableHourlyTracking: { type: Boolean },
   },
   { _id: false }
 );
@@ -24,6 +27,7 @@ const userSchema = new Schema(
     lastLoginAt: { type: Date },
     lastActiveAt: { type: Date },
     mustChangePassword: { type: Boolean, default: false },
+    hourlyRate: { type: Number, min: 0 },
     preferences: { type: userPreferencesSchema, default: () => ({}) },
   },
   { timestamps: true }
@@ -60,6 +64,36 @@ const taskStepSchema = new Schema(
   { _id: true }
 );
 
+const materialLineSchema = new Schema(
+  {
+    description: { type: String, required: true, trim: true },
+    quantity: { type: Number, required: true, min: 0, default: 0 },
+    unitPrice: { type: Number, required: true, min: 0, default: 0 },
+  },
+  { _id: true }
+);
+
+const laborLineSchema = new Schema(
+  {
+    description: { type: String, trim: true },
+    hours: { type: Number, required: true, min: 0, default: 0 },
+  },
+  { _id: true }
+);
+
+const trackingRollupSchema = new Schema(
+  {
+    hoursSpent: { type: Number, default: 0, min: 0 },
+    hoursRemaining: { type: Number, default: 0, min: 0 },
+    materialsTotal: { type: Number, default: 0, min: 0 },
+    laborCost: { type: Number, default: 0, min: 0 },
+    trainingCost: { type: Number, default: 0, min: 0 },
+    totalCost: { type: Number, default: 0, min: 0 },
+    updatedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const subtaskSchema = new Schema(
   {
     title: { type: String, required: true, trim: true },
@@ -86,6 +120,12 @@ const subtaskSchema = new Schema(
       type: String,
       enum: ['percent', 'hoursSpent', 'hoursRemaining'],
     },
+    materials: { type: [materialLineSchema], default: [] },
+    laborLines: { type: [laborLineSchema], default: [] },
+    hourlyRate: { type: Number, min: 0 },
+    trainingHourlyRate: { type: Number, min: 0 },
+    trainingHoursSpent: { type: Number, min: 0 },
+    trainingHoursRemaining: { type: Number, min: 0 },
     subtasks: { type: [Schema.Types.Mixed], default: [] },
     links: { type: [taskLinkSchema], default: [] },
   },
@@ -124,6 +164,12 @@ const taskSchema = new Schema(
       type: String,
       enum: ['percent', 'hoursSpent', 'hoursRemaining'],
     },
+    materials: { type: [materialLineSchema], default: [] },
+    laborLines: { type: [laborLineSchema], default: [] },
+    hourlyRate: { type: Number, min: 0 },
+    trainingHourlyRate: { type: Number, min: 0 },
+    trainingHoursSpent: { type: Number, min: 0 },
+    trainingHoursRemaining: { type: Number, min: 0 },
     subtasks: { type: [subtaskSchema], default: [] },
     links: { type: [taskLinkSchema], default: [] },
     sortOrder: { type: Number, default: 0 },
@@ -194,6 +240,9 @@ const projectSchema = new Schema(
     },
     percentComplete: { type: Number, default: 0, min: 0, max: 100 },
     progressShare: { type: Number, min: 0, max: 100 },
+    hourlyRate: { type: Number, min: 0 },
+    trainingHourlyRate: { type: Number, min: 0 },
+    trackingRollup: { type: trackingRollupSchema },
     collaborators: { type: [projectCollaboratorSchema], default: [] },
     staging: { type: stagingSchema },
   },

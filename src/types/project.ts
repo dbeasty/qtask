@@ -47,6 +47,15 @@ export interface SerializedCollaborator {
   role: CollaboratorRole;
 }
 
+export interface ProjectTrackingRollup {
+  hoursSpent: number;
+  hoursRemaining: number;
+  materialsTotal: number;
+  laborCost: number;
+  totalCost: number;
+  updatedAt: string;
+}
+
 export interface SerializedProject {
   _id: string;
   userId: string;
@@ -59,6 +68,8 @@ export interface SerializedProject {
   status: ProjectStatus;
   percentComplete: number;
   progressShare?: number;
+  hourlyRate?: number;
+  trackingRollup?: ProjectTrackingRollup;
   role: ProjectRole;
   canEdit: boolean;
   canUpdateStatus: boolean;

@@ -14,7 +14,7 @@ import type { StagingContext } from '../types/staging.js';
 import { canEditProject, roleAtLeast, type ProjectRole } from '../types/project.js';
 import { HttpError } from '../utils/httpError.js';
 import { applyPercentComplete } from '../utils/percentComplete.js';
-import { buildSubtaskTree, normalizeStepsInput, serializeTask } from '../utils/serialization.js';
+import { buildSubtaskTree, normalizeLaborLinesInput, normalizeMaterialsInput, normalizeStepsInput, serializeTask, sumLaborHours } from '../utils/serialization.js';
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
 import { cosineSimilarity, generateEmbedding } from './embeddingService.js';
@@ -144,6 +144,32 @@ function applyProgressInputFields(
     node.lastProgressField =
       input.lastProgressField === null ? undefined : input.lastProgressField;
     changes.lastProgressField = input.lastProgressField;
+  }
+}
+
+function applyTrackingInputFields(
+  node: ProgressNode,
+  input: {
+    materials?: import('../types/task.js').MaterialLineInput[];
+    laborLines?: import('../types/task.js').LaborLineInput[];
+    hourlyRate?: number | null;
+  },
+  changes: Record<string, unknown>
+) {
+  if (input.materials !== undefined) {
+    node.materials = normalizeMaterialsInput(input.materials);
+    changes.materials = input.materials;
+  }
+  if (input.laborLines !== undefined) {
+    const normalized = normalizeLaborLinesInput(input.laborLines);
+    node.laborLines = normalized;
+    node.hoursSpent = sumLaborHours(normalized);
+    changes.laborLines = input.laborLines;
+    changes.hoursSpent = node.hoursSpent;
+  }
+  if (input.hourlyRate !== undefined) {
+    node.hourlyRate = input.hourlyRate === null ? undefined : input.hourlyRate;
+    changes.hourlyRate = input.hourlyRate;
   }
 }
 
@@ -299,6 +325,15 @@ export class TaskService {
       tags: input.tags ?? [],
       percentComplete: input.percentComplete ?? 0,
       percentCompleteOverride: input.percentCompleteOverride,
+      hoursSpent:
+        input.laborLines !== undefined
+          ? sumLaborHours(normalizeLaborLinesInput(input.laborLines))
+          : input.hoursSpent,
+      hoursRemaining: input.hoursRemaining,
+      lastProgressField: input.lastProgressField,
+      materials: normalizeMaterialsInput(input.materials),
+      laborLines: normalizeLaborLinesInput(input.laborLines),
+      hourlyRate: input.hourlyRate,
       subtasks,
       links: [],
       staging: staging ? { ...staging, stagedAt: new Date() } : undefined,
@@ -475,6 +510,7 @@ export class TaskService {
             changes.tags = input.tags;
           }
           applyProgressInputFields(task as unknown as ProgressNode, input, changes);
+          applyTrackingInputFields(task as unknown as ProgressNode, input, changes);
           if (input.projectIds !== undefined) {
             if (input.projectIds === null || input.projectIds.length === 0) {
               throw new HttpError(400, 'projectIds must contain at least one project');
@@ -580,6 +616,9 @@ export class TaskService {
         hoursSpent: child.hoursSpent,
         hoursRemaining: child.hoursRemaining,
         lastProgressField: child.lastProgressField,
+        materials: child.materials ?? [],
+        laborLines: child.laborLines ?? [],
+        hourlyRate: child.hourlyRate,
         subtasks: child.subtasks ?? [],
         links: child.links ?? [],
         sortOrder: parentSortOrder + index,
@@ -789,6 +828,7 @@ export class TaskService {
             changes.tags = input.tags;
           }
           applyProgressInputFields(node as ProgressNode, input, changes);
+          applyTrackingInputFields(node as ProgressNode, input, changes);
         }
 
         finalizeTaskProgress(task);
@@ -1174,6 +1214,9 @@ export class TaskService {
       hoursSpent: source.hoursSpent,
       hoursRemaining: source.hoursRemaining,
       lastProgressField: source.lastProgressField,
+      materials: source.materials ?? [],
+      laborLines: source.laborLines ?? [],
+      hourlyRate: source.hourlyRate,
       subtasks: duplicatedSubtasks,
       links: [],
     });
@@ -1248,6 +1291,9 @@ export class TaskService {
       hoursSpent: nodeObj.hoursSpent,
       hoursRemaining: nodeObj.hoursRemaining,
       lastProgressField: nodeObj.lastProgressField,
+      materials: nodeObj.materials ?? [],
+      laborLines: nodeObj.laborLines ?? [],
+      hourlyRate: nodeObj.hourlyRate,
       subtasks: duplicatedSubtasks,
       links: [],
     });

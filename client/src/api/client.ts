@@ -110,9 +110,16 @@ export async function updateProject(
     parentId?: string | null;
     sortOrder?: number;
     progressShare?: number | null;
+    hourlyRate?: number | null;
   }
 ): Promise<{ project: import('../types').Project }> {
   return request(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
+export async function getProjectTracking(
+  id: string
+): Promise<{ tracking: import('../types').ProjectTrackingResult }> {
+  return request(`/api/projects/${id}/tracking`);
 }
 
 export async function moveProject(

@@ -42,10 +42,13 @@ const changePasswordSchema = z.object({
 
 const updateProfileSchema = z.object({
   displayName: z.union([z.string().trim().min(1), z.null()]).optional(),
+  hourlyRate: z.number().min(0).nullable().optional(),
   preferences: z
     .object({
       autoApproveProposals: z.boolean().optional(),
       skipConfirmations: z.boolean().optional(),
+      trackExpenses: z.boolean().optional(),
+      enableHourlyTracking: z.boolean().optional(),
     })
     .optional(),
 });

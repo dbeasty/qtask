@@ -59,12 +59,13 @@ projectsRouter.post('/', async (req, res, next) => {
 projectsRouter.patch('/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const { name, description, parentId, sortOrder, progressShare } = req.body as {
+    const { name, description, parentId, sortOrder, progressShare, hourlyRate } = req.body as {
       name?: string;
       description?: string | null;
       parentId?: string | null;
       sortOrder?: number;
       progressShare?: number | null;
+      hourlyRate?: number | null;
     };
     const project = await projectService.updateProject(userId, req.params.id!, {
       name,
@@ -72,6 +73,7 @@ projectsRouter.patch('/:id', async (req, res, next) => {
       parentId,
       sortOrder,
       progressShare,
+      hourlyRate,
     });
     if (!project) {
       res.status(404).json({ error: 'Project not found' });
@@ -181,6 +183,16 @@ projectsRouter.get('/:id/summary', async (req, res, next) => {
     const userId = getUserId(req);
     const summary = await projectService.summarizeProject(userId, req.params.id!);
     res.json({ summary });
+  } catch (error) {
+    next(error);
+  }
+});
+
+projectsRouter.get('/:id/tracking', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const tracking = await projectService.getProjectTracking(userId, req.params.id!);
+    res.json({ tracking });
   } catch (error) {
     next(error);
   }

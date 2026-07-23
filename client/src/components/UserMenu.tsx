@@ -186,6 +186,17 @@ export function UserMenu({
         />
         <span>Skip delete confirmations</span>
       </label>
+      <label className="user-menu-toggle">
+        <input
+          type="checkbox"
+          checked={preferences.trackExpenses}
+          disabled={prefSaving || saving}
+          onChange={(event) =>
+            void handleTogglePreference('trackExpenses', event.target.checked)
+          }
+        />
+        <span>Track expenses</span>
+      </label>
 
       <div className="user-menu-divider" role="separator" />
 

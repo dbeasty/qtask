@@ -33,12 +33,15 @@ import {
   TaskForm,
   type TaskFormValues,
 } from '../components/TaskForm';
+import { materialsForApi } from '../components/TaskMaterialsEditor';
+import { laborLinesForApi, laborLinesFromTask } from '../components/TaskLaborEditor';
 import { stepsForApi, stepsFromTask } from '../components/TaskStepsEditor';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectToolbar } from '../components/ProjectToolbar';
 import { TaskListPanel } from '../components/TaskListPanel';
 import { type Selection } from '../components/TaskHierarchyTree';
-import type { CollaboratorRole, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
+import type { CollaboratorRole, MaterialLine, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
+import { buildExpenseTree, computeTaskCostRollup } from '../utils/costRollup';
 import {
   getDefaultProject,
   groupTasksByProject,
@@ -62,6 +65,8 @@ interface TasksPageProps {
   activeProjectId: string | null;
   onActiveProjectChange: (projectId: string | null) => void;
   onNeedProject?: () => void;
+  pendingSelection?: Selection | null;
+  onPendingSelectionApplied?: () => void;
 }
 
 type PendingConfirm =
@@ -142,6 +147,17 @@ function formatOptionalHours(value?: number): string {
   return value !== undefined && value !== null ? String(value) : '';
 }
 
+function formatOptionalRate(value?: number): string {
+  return value !== undefined && value !== null ? String(value) : '';
+}
+
+function materialsFromTask(materials?: MaterialLine[]): MaterialLine[] {
+  return (materials ?? []).map((line) => ({
+    ...line,
+    clientKey: line.clientKey ?? (line._id ? `server-${line._id}` : undefined),
+  }));
+}
+
 function taskToFormValues(task: Task, projects: Project[]): TaskFormValues {
   return {
     title: task.title,
@@ -156,6 +172,9 @@ function taskToFormValues(task: Task, projects: Project[]): TaskFormValues {
     hoursSpent: formatOptionalHours(task.hoursSpent),
     hoursRemaining: formatOptionalHours(task.hoursRemaining),
     lastProgressField: task.lastProgressField ?? 'percent',
+    laborLines: laborLinesFromTask(task.laborLines, task.hoursSpent),
+    materials: materialsFromTask(task.materials),
+    hourlyRate: formatOptionalRate(task.hourlyRate),
   };
 }
 
@@ -173,28 +192,22 @@ function subtaskToFormValues(subtask: Subtask): TaskFormValues {
     hoursSpent: formatOptionalHours(subtask.hoursSpent),
     hoursRemaining: formatOptionalHours(subtask.hoursRemaining),
     lastProgressField: subtask.lastProgressField ?? 'percent',
+    laborLines: laborLinesFromTask(subtask.laborLines, subtask.hoursSpent),
+    materials: materialsFromTask(subtask.materials),
+    hourlyRate: formatOptionalRate(subtask.hourlyRate),
   };
 }
 
-function buildTaskUpdatePatch(
-  values: TaskFormValues,
-  forTask: Task,
-  projectId?: string
-): UpdateTaskInput {
-  const progressPatch = forTask.subtasks.length === 0 ? buildProgressPatch(values) : {};
-  const patch: UpdateTaskInput = {
-    title: values.title,
-    description: values.description || undefined,
-    steps: stepsForApi(values.steps),
-    status: values.status,
-    priority: values.priority,
-    tags: parseTagsInput(values.tags),
-    ...progressPatch,
+function buildExpensePatch(values: TaskFormValues): Pick<
+  UpdateTaskInput,
+  'materials' | 'laborLines' | 'hourlyRate'
+> {
+  const hourlyRate = parseOptionalNumber(values.hourlyRate);
+  return {
+    materials: materialsForApi(values.materials),
+    laborLines: laborLinesForApi(values.laborLines),
+    hourlyRate: hourlyRate ?? null,
   };
-  if (projectId) {
-    patch.projectId = projectId;
-  }
-  return patch;
 }
 
 function buildProgressPatch(values: TaskFormValues): Pick<
@@ -214,6 +227,26 @@ function buildProgressPatch(values: TaskFormValues): Pick<
   };
 }
 
+function buildTaskUpdatePatch(
+  values: TaskFormValues,
+  projectId?: string
+): UpdateTaskInput {
+  const patch: UpdateTaskInput = {
+    title: values.title,
+    description: values.description || undefined,
+    steps: stepsForApi(values.steps),
+    status: values.status,
+    priority: values.priority,
+    tags: parseTagsInput(values.tags),
+    ...buildProgressPatch(values),
+    ...buildExpensePatch(values),
+  };
+  if (projectId) {
+    patch.projectId = projectId;
+  }
+  return patch;
+}
+
 function subtaskParentPath(selection: Selection): string[] {
   return selection.kind === 'subtask' ? selection.path : [];
 }
@@ -224,8 +257,10 @@ export function TasksPage({
   activeProjectId,
   onActiveProjectChange,
   onNeedProject,
+  pendingSelection = null,
+  onPendingSelectionApplied,
 }: TasksPageProps) {
-  const { user, updatePreferences } = useAuth();
+  const { user, updatePreferences, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -577,6 +612,28 @@ export function TasksPage({
       setSelection(null);
       return;
     }
+
+    if (pendingSelection) {
+      if (tasks.length === 0) return;
+
+      const task = tasks.find((item) => item._id === pendingSelection.taskId);
+      if (task && taskBelongsToProject(task, activeProjectId)) {
+        if (pendingSelection.kind === 'subtask') {
+          const subtask = findSubtaskByPath(task.subtasks, pendingSelection.path);
+          if (subtask) {
+            setSelection(pendingSelection);
+            onPendingSelectionApplied?.();
+            return;
+          }
+        } else {
+          setSelection(pendingSelection);
+          onPendingSelectionApplied?.();
+          return;
+        }
+      }
+      onPendingSelectionApplied?.();
+    }
+
     setSelection((current) => {
       if (!current) {
         const first = tasks.find((task) => taskBelongsToProject(task, activeProjectId));
@@ -589,7 +646,7 @@ export function TasksPage({
       }
       return current;
     });
-  }, [activeProjectId, tasks]);
+  }, [activeProjectId, tasks, pendingSelection, onPendingSelectionApplied]);
 
   const detail = selectedTask && selection ? getDetailItem(selectedTask, selection) : null;
   const breadcrumbs = selectedTask && selection ? buildBreadcrumb(selectedTask, selection) : [];
@@ -640,6 +697,28 @@ export function TasksPage({
     [projects, resolvedActiveProjectId]
   );
 
+  const projectRates = useMemo(
+    () => ({
+      hourlyRate: activeProject?.hourlyRate,
+      userHourlyRate: user?.hourlyRate,
+    }),
+    [activeProject?.hourlyRate, user?.hourlyRate]
+  );
+
+  const childExpenseNodes = useMemo(() => {
+    if (!selectedTask || !detail || detail.subtasks.length === 0) return [];
+    return buildExpenseTree(selectedTask._id, detail.subtasks, projectRates);
+  }, [selectedTask, detail, projectRates]);
+
+  const detailCostRollup = useMemo(() => {
+    if (!selectedTask || !selection || !isParentDetail) return undefined;
+    if (selection.kind === 'task') {
+      return computeTaskCostRollup(selectedTask, projectRates);
+    }
+    const subtask = findSubtaskByPath(selectedTask.subtasks, selection.path);
+    return subtask ? computeTaskCostRollup(subtask, projectRates) : undefined;
+  }, [selectedTask, selection, isParentDetail, projectRates]);
+
   const saveTaskDetail = useCallback(
     async (
       values: TaskFormValues,
@@ -657,7 +736,7 @@ export function TasksPage({
         const projectId = await resolveAndRefreshProjects(values.projectName);
         const { task } = await updateTask(
           forTask._id,
-          buildTaskUpdatePatch(values, forTask, projectId)
+          buildTaskUpdatePatch(values, projectId)
         );
         applyTaskUpdate(task);
         return taskToFormValues(task, projects);
@@ -670,16 +749,14 @@ export function TasksPage({
           const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
           return subtask ? subtaskToFormValues(subtask) : values;
         }
-        const isLeaf =
-          (findSubtaskByPath(forTask.subtasks, forSelection.path)?.subtasks.length ?? 0) === 0;
-        const progressPatch = isLeaf ? buildProgressPatch(values) : {};
         const { task } = await updateSubtask(forTask._id, forSelection.path, {
           title: values.title,
           description: values.description || undefined,
           steps: stepsForApi(values.steps),
           status: values.status,
           priority: values.priority,
-          ...progressPatch,
+          ...buildProgressPatch(values),
+          ...buildExpensePatch(values),
         });
         applyTaskUpdate(task);
         const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
@@ -1024,10 +1101,34 @@ export function TasksPage({
                   className="task-detail-form"
                   initialValues={editFormValues}
                   showProjectFields={false}
-                  showProgressFields={isLeafDetail}
+                  showProgressFields={isLeafDetail || isParentDetail}
                   showProgressShare={selection.kind === 'subtask'}
                   readOnlyProgress={isParentDetail}
                   progressValue={detail.percentComplete}
+                  childExpenseNodes={childExpenseNodes}
+                  onNavigateToSubtask={(taskId, path) =>
+                    handleSelect({ kind: 'subtask', taskId, path })
+                  }
+                  trackingPreferences={{
+                    trackExpenses: preferences.trackExpenses,
+                  }}
+                  projectRates={projectRates}
+                  costRollup={detailCostRollup}
+                  userHourlyRate={user?.hourlyRate}
+                  projectId={resolvedActiveProjectId ?? undefined}
+                  canEditProject={Boolean(activeProject?.canEdit)}
+                  onProjectRateChange={async (rate) => {
+                    if (!resolvedActiveProjectId) return;
+                    const { project } = await updateProject(resolvedActiveProjectId, {
+                      hourlyRate: rate,
+                    });
+                    setProjects((current) =>
+                      current.map((item) => (item._id === project._id ? project : item))
+                    );
+                  }}
+                  onUserRateChange={async (rate) => {
+                    await updateProfile({ hourlyRate: rate });
+                  }}
                   projects={projects}
                   disabled={!activeProject?.canEdit}
                   statusEditable={Boolean(activeProject?.canUpdateStatus)}

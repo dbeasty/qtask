@@ -16,6 +16,47 @@ export interface TaskStepInput {
   done?: boolean;
 }
 
+export interface MaterialLine {
+  _id?: string;
+  clientKey?: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface MaterialLineInput {
+  _id?: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface LaborLine {
+  _id?: string;
+  clientKey?: string;
+  description?: string;
+  hours: number;
+}
+
+export interface LaborLineInput {
+  _id?: string;
+  description?: string;
+  hours: number;
+}
+
+export interface CostRollupTotals {
+  hoursSpent: number;
+  hoursRemaining: number;
+  materialsTotal: number;
+  laborCost: number;
+  totalCost: number;
+}
+
+export interface ProjectRates {
+  hourlyRate?: number;
+  userHourlyRate?: number;
+}
+
 export interface Task {
   _id: string;
   userId: string;
@@ -35,6 +76,9 @@ export interface Task {
   hoursSpent?: number;
   hoursRemaining?: number;
   lastProgressField?: ProgressField;
+  materials?: MaterialLine[];
+  laborLines?: LaborLine[];
+  hourlyRate?: number;
   subtasks: Subtask[];
   sortOrder?: number;
   createdAt: string;
@@ -54,6 +98,9 @@ export interface Subtask {
   hoursSpent?: number;
   hoursRemaining?: number;
   lastProgressField?: ProgressField;
+  materials?: MaterialLine[];
+  laborLines?: LaborLine[];
+  hourlyRate?: number;
   subtasks: Subtask[];
 }
 
@@ -65,6 +112,45 @@ export interface ProjectCollaborator {
   email: string;
   displayName?: string;
   role: CollaboratorRole;
+}
+
+export interface ExpenseTreeNode {
+  taskId: string;
+  title: string;
+  path: string[];
+  isLeaf: boolean;
+  rollup: CostRollupTotals;
+  ownRollup: CostRollupTotals;
+  children: ExpenseTreeNode[];
+}
+
+export interface ProjectTrackingRollup {
+  hoursSpent: number;
+  hoursRemaining: number;
+  materialsTotal: number;
+  laborCost: number;
+  totalCost: number;
+  updatedAt: string;
+}
+
+export interface ProjectTrackingLine {
+  taskId: string;
+  title: string;
+  path?: string;
+  hoursSpent: number;
+  hoursRemaining: number;
+  materials: MaterialLine[];
+  materialsTotal: number;
+  laborCost: number;
+  totalCost: number;
+}
+
+export interface ProjectTrackingResult {
+  hourlyRate?: number;
+  trackingRollup: ProjectTrackingRollup;
+  totals: Omit<ProjectTrackingRollup, 'updatedAt'>;
+  lines: ProjectTrackingLine[];
+  tree: ExpenseTreeNode[];
 }
 
 export interface Project {
@@ -79,6 +165,8 @@ export interface Project {
   status: TaskStatus;
   percentComplete: number;
   progressShare?: number;
+  hourlyRate?: number;
+  trackingRollup?: ProjectTrackingRollup;
   role: ProjectRole;
   canEdit: boolean;
   canUpdateStatus: boolean;
@@ -203,6 +291,9 @@ export interface UpdateTaskInput {
   hoursSpent?: number | null;
   hoursRemaining?: number | null;
   lastProgressField?: ProgressField | null;
+  materials?: MaterialLineInput[];
+  laborLines?: LaborLineInput[];
+  hourlyRate?: number | null;
 }
 
 export interface MoveSubtaskInput {
@@ -229,4 +320,7 @@ export interface UpdateSubtaskInput {
   hoursSpent?: number | null;
   hoursRemaining?: number | null;
   lastProgressField?: ProgressField | null;
+  materials?: MaterialLineInput[];
+  laborLines?: LaborLineInput[];
+  hourlyRate?: number | null;
 }

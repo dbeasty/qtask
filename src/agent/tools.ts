@@ -17,6 +17,13 @@ const objectIdMessage =
   'must be a real 24-character hex id copied from a previous tool result. Do not invent ids — use find_tasks, get_task, get_workload, or list_projects to look up the real id first';
 const objectIdSchema = z.string().regex(OBJECT_ID_PATTERN, objectIdMessage);
 
+const materialLineSchema = z.object({
+  _id: z.string().optional(),
+  description: z.string().min(1),
+  quantity: z.number().min(0),
+  unitPrice: z.number().min(0),
+});
+
 const subtaskInputSchema: z.ZodType<{
   title: string;
   description?: string;
@@ -25,6 +32,10 @@ const subtaskInputSchema: z.ZodType<{
   dueDate?: string;
   tags?: string[];
   percentComplete?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  materials?: z.infer<typeof materialLineSchema>[];
+  hourlyRate?: number;
   subtasks?: unknown[];
 }> = z.lazy(() =>
   z.object({
@@ -35,6 +46,10 @@ const subtaskInputSchema: z.ZodType<{
     dueDate: z.string().optional(),
     tags: z.array(z.string()).optional(),
     percentComplete: z.number().min(0).max(100).optional(),
+    hoursSpent: z.number().min(0).optional(),
+    hoursRemaining: z.number().min(0).optional(),
+    materials: z.array(materialLineSchema).optional(),
+    hourlyRate: z.number().min(0).optional(),
     subtasks: z.array(subtaskInputSchema).optional(),
   })
 );
@@ -88,6 +103,21 @@ export const toolDefinitions: ToolDefinition[] = [
         priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
         dueDate: { type: 'string', description: 'ISO 8601 due date' },
         tags: { type: 'array', items: { type: 'string' } },
+        hoursSpent: { type: 'number', minimum: 0 },
+        hoursRemaining: { type: 'number', minimum: 0 },
+        materials: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              description: { type: 'string' },
+              quantity: { type: 'number', minimum: 0 },
+              unitPrice: { type: 'number', minimum: 0 },
+            },
+            required: ['description', 'quantity', 'unitPrice'],
+          },
+        },
+        hourlyRate: { type: 'number', minimum: 0 },
         projectId: { type: 'string' },
         subtasks: {
           type: 'array',
@@ -117,6 +147,10 @@ export const toolDefinitions: ToolDefinition[] = [
       priority: taskPrioritySchema.optional(),
       dueDate: z.string().optional().describe('ISO 8601 due date'),
       tags: z.array(z.string()).optional(),
+      hoursSpent: z.number().min(0).optional(),
+      hoursRemaining: z.number().min(0).optional(),
+      materials: z.array(materialLineSchema).optional(),
+      hourlyRate: z.number().min(0).optional(),
       projectId: objectIdSchema.optional(),
       subtasks: z.array(subtaskInputSchema).optional().describe('Nested subtasks'),
     },
@@ -149,6 +183,22 @@ export const toolDefinitions: ToolDefinition[] = [
         tags: { type: 'array', items: { type: 'string' } },
         percentComplete: { type: 'number', minimum: 0, maximum: 100 },
         percentCompleteOverride: { type: 'number', nullable: true, minimum: 0, maximum: 100 },
+        hoursSpent: { type: 'number', nullable: true, minimum: 0 },
+        hoursRemaining: { type: 'number', nullable: true, minimum: 0 },
+        materials: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              _id: { type: 'string' },
+              description: { type: 'string' },
+              quantity: { type: 'number', minimum: 0 },
+              unitPrice: { type: 'number', minimum: 0 },
+            },
+            required: ['description', 'quantity', 'unitPrice'],
+          },
+        },
+        hourlyRate: { type: 'number', nullable: true, minimum: 0 },
         projectId: { type: 'string', nullable: true },
         assigneeId: { type: 'string', nullable: true },
       },
@@ -164,6 +214,10 @@ export const toolDefinitions: ToolDefinition[] = [
       tags: z.array(z.string()).optional(),
       percentComplete: z.number().min(0).max(100).optional(),
       percentCompleteOverride: z.number().min(0).max(100).nullable().optional(),
+      hoursSpent: z.number().min(0).nullable().optional(),
+      hoursRemaining: z.number().min(0).nullable().optional(),
+      materials: z.array(materialLineSchema).optional(),
+      hourlyRate: z.number().min(0).nullable().optional(),
       projectId: objectIdSchema.nullable().optional(),
       assigneeId: objectIdSchema.nullable().optional(),
     },
@@ -505,6 +559,50 @@ export const toolDefinitions: ToolDefinition[] = [
     async execute(userId) {
       const projects = await projectService.listProjects(userId);
       return ok(JSON.stringify({ count: projects.length, projects }, null, 2));
+    },
+  },
+  {
+    name: 'update_project',
+    description: 'Update project fields such as name, description, or hourly billing rates.',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        name: { type: 'string' },
+        description: { type: 'string', nullable: true },
+        hourlyRate: { type: 'number', nullable: true, minimum: 0 },
+      },
+      required: ['projectId'],
+    },
+    zodShape: {
+      projectId: objectIdSchema,
+      name: z.string().optional(),
+      description: z.string().nullable().optional(),
+      hourlyRate: z.number().min(0).nullable().optional(),
+    },
+    async execute(userId, input) {
+      const { projectId, ...updates } = input;
+      const project = await projectService.updateProject(userId, String(projectId), updates);
+      if (!project) return err('Project not found');
+      return ok(JSON.stringify(project, null, 2));
+    },
+  },
+  {
+    name: 'get_project_tracking',
+    description: 'Fetch project cost/hours tracking rollup and per-task breakdown.',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+      },
+      required: ['projectId'],
+    },
+    zodShape: {
+      projectId: objectIdSchema,
+    },
+    async execute(userId, input) {
+      const tracking = await projectService.getProjectTracking(userId, String(input.projectId));
+      return ok(JSON.stringify(tracking, null, 2));
     },
   },
 ];

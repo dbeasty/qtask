@@ -15,6 +15,7 @@ export function clearStoredToken(): void {
 export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
+  trackExpenses: boolean;
 }
 
 export interface AuthUser {
@@ -23,18 +24,21 @@ export interface AuthUser {
   displayName?: string;
   emailVerified?: boolean;
   mustChangePassword?: boolean;
+  hourlyRate?: number;
   preferences?: UserPreferences;
 }
 
 export const DEFAULT_PREFERENCES: UserPreferences = {
   autoApproveProposals: false,
   skipConfirmations: false,
+  trackExpenses: true,
 };
 
 export function getUserPreferences(user: AuthUser | null | undefined): UserPreferences {
   return {
     autoApproveProposals: user?.preferences?.autoApproveProposals === true,
     skipConfirmations: user?.preferences?.skipConfirmations === true,
+    trackExpenses: user?.preferences?.trackExpenses !== false,
   };
 }
 
@@ -145,7 +149,9 @@ export async function changePassword(
   return parseAuthResponse(response, 'Could not change password') as Promise<ChangePasswordResult>;
 }
 
-export async function updateProfile(displayName: string | null): Promise<{ user: AuthUser }> {
+export async function updateProfile(
+  body: { displayName?: string | null; hourlyRate?: number | null }
+): Promise<{ user: AuthUser }> {
   const token = getStoredToken();
   const response = await fetch('/api/auth/me', {
     method: 'PATCH',
@@ -153,7 +159,7 @@ export async function updateProfile(displayName: string | null): Promise<{ user:
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ displayName }),
+    body: JSON.stringify(body),
   });
   return parseAuthResponse(response, 'Could not update profile') as Promise<{ user: AuthUser }>;
 }

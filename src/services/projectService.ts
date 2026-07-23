@@ -18,6 +18,11 @@ import {
   computeLeafProjectProgress,
   computeParentProjectProgress,
 } from '../utils/projectProgress.js';
+import {
+  computeLeafProjectTracking,
+  computeParentProjectTracking,
+  toStoredTrackingRollup,
+} from '../utils/projectTracking.js';
 import { taskService } from './taskService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 import type { StagingContext } from '../types/staging.js';
@@ -34,6 +39,15 @@ type LeanProject = {
   status?: ProjectStatus;
   percentComplete?: number;
   progressShare?: number | null;
+  hourlyRate?: number | null;
+  trackingRollup?: {
+    hoursSpent?: number;
+    hoursRemaining?: number;
+    materialsTotal?: number;
+    laborCost?: number;
+    totalCost?: number;
+    updatedAt?: Date;
+  } | null;
   collaborators?: Array<{ userId: string; role: CollaboratorRole }> | null;
   createdAt: Date;
   updatedAt: Date;
@@ -100,6 +114,19 @@ async function serializeProject(project: LeanProject, viewerId: string): Promise
       project.progressShare === undefined || project.progressShare === null
         ? undefined
         : project.progressShare,
+    hourlyRate: project.hourlyRate ?? undefined,
+    trackingRollup: project.trackingRollup
+      ? {
+          hoursSpent: project.trackingRollup.hoursSpent ?? 0,
+          hoursRemaining: project.trackingRollup.hoursRemaining ?? 0,
+          materialsTotal: project.trackingRollup.materialsTotal ?? 0,
+          laborCost: project.trackingRollup.laborCost ?? 0,
+          totalCost: project.trackingRollup.totalCost ?? 0,
+          updatedAt: project.trackingRollup.updatedAt
+            ? project.trackingRollup.updatedAt.toISOString()
+            : new Date().toISOString(),
+        }
+      : undefined,
     role,
     canEdit: canEditProject(role),
     canUpdateStatus: canUpdateStatus(role),
@@ -218,6 +245,7 @@ export class ProjectService {
       parentId?: string | null;
       sortOrder?: number;
       progressShare?: number | null;
+      hourlyRate?: number | null;
     }
   ) {
     const structural =
@@ -225,6 +253,8 @@ export class ProjectService {
       input.description !== undefined ||
       input.parentId !== undefined ||
       input.sortOrder !== undefined;
+
+    const rateChanged = input.hourlyRate !== undefined;
 
     if (structural) {
       await this.assertProjectAccess(userId, projectId, 'owner');
@@ -263,11 +293,22 @@ export class ProjectService {
         project.progressShare = Math.max(0, Math.min(100, Math.round(input.progressShare)));
       }
     }
+    if (input.hourlyRate !== undefined) {
+      if (input.hourlyRate === null) {
+        project.set('hourlyRate', undefined);
+        project.markModified('hourlyRate');
+      } else {
+        project.hourlyRate = Math.max(0, input.hourlyRate);
+      }
+    }
 
     await project.save();
 
     if (input.progressShare === null) {
       await ProjectModel.updateOne({ _id: projectId }, { $unset: { progressShare: 1 } });
+    }
+    if (input.hourlyRate === null) {
+      await ProjectModel.updateOne({ _id: projectId }, { $unset: { hourlyRate: 1 } });
     }
 
     const affected = new Set<string>([projectId]);
@@ -276,6 +317,10 @@ export class ProjectService {
       project.parentId !== undefined && project.parentId !== null ? String(project.parentId) : null;
     if (newParentId) affected.add(newParentId);
     await this.recalculateProjects([...affected]);
+
+    if (rateChanged) {
+      await this.recalculateProjectTracking(projectId);
+    }
 
     const refreshed = await ProjectModel.findById(projectId).lean();
     if (!refreshed) return null;
@@ -633,6 +678,155 @@ export class ProjectService {
       { _id: projectId },
       { $set: { status, percentComplete } }
     );
+
+    await this.recalculateSingleProjectTracking(projectId);
+  }
+
+  private projectRatesFromDoc(project: { hourlyRate?: number | null }) {
+    return {
+      hourlyRate: project.hourlyRate ?? undefined,
+    };
+  }
+
+  async recalculateSingleProjectTracking(projectId: string): Promise<void> {
+    const project = await ProjectModel.findById(projectId)
+      .select('hourlyRate parentId')
+      .lean();
+    if (!project) return;
+
+    const projectRates = this.projectRatesFromDoc(project);
+
+    const children = await ProjectModel.find({
+      parentId: projectId,
+      staging: { $exists: false },
+    })
+      .select('progressShare trackingRollup')
+      .lean();
+
+    let tracking;
+    if (children.length > 0) {
+      tracking = computeParentProjectTracking(
+        children.map((child) => ({
+          progressShare: child.progressShare,
+          trackingRollup: child.trackingRollup
+            ? {
+                hoursSpent: child.trackingRollup.hoursSpent ?? 0,
+                hoursRemaining: child.trackingRollup.hoursRemaining ?? 0,
+                materialsTotal: child.trackingRollup.materialsTotal ?? 0,
+                laborCost: child.trackingRollup.laborCost ?? 0,
+                totalCost: child.trackingRollup.totalCost ?? 0,
+                updatedAt: child.trackingRollup.updatedAt
+                  ? child.trackingRollup.updatedAt.toISOString()
+                  : new Date().toISOString(),
+              }
+            : undefined,
+        })),
+        projectRates
+      );
+    } else {
+      const tasks = await TaskModel.find({
+        staging: { $exists: false },
+        $or: [{ projectIds: projectId }, { projectId }],
+      }).lean();
+
+      tracking = computeLeafProjectTracking(
+        tasks.map((task) => task as unknown as Record<string, unknown>),
+        projectRates
+      );
+    }
+
+    await ProjectModel.updateOne(
+      { _id: projectId },
+      { $set: { trackingRollup: toStoredTrackingRollup(tracking.totals) } }
+    );
+  }
+
+  async recalculateProjectTracking(projectId: string): Promise<void> {
+    if (!isValidObjectId(projectId)) return;
+
+    let cursor: string | null = projectId;
+    const seen = new Set<string>();
+
+    while (cursor) {
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+
+      await this.recalculateSingleProjectTracking(cursor);
+
+      const project: { parentId?: string | null } | null = await ProjectModel.findById(cursor)
+        .select('parentId')
+        .lean();
+      if (!project) break;
+      cursor = project.parentId ? String(project.parentId) : null;
+    }
+  }
+
+  async getProjectTracking(userId: string, projectId: string) {
+    await this.assertProjectAccess(userId, projectId, 'viewer');
+
+    const project = await ProjectModel.findById(projectId).lean();
+    if (!project) {
+      throw new HttpError(404, 'Project not found');
+    }
+
+    const projectRates = this.projectRatesFromDoc(project);
+    const children = await ProjectModel.find({
+      parentId: projectId,
+      staging: { $exists: false },
+    })
+      .select('progressShare trackingRollup')
+      .lean();
+
+    let tracking;
+    if (children.length > 0) {
+      tracking = computeParentProjectTracking(
+        children.map((child) => ({
+          progressShare: child.progressShare,
+          trackingRollup: child.trackingRollup
+            ? {
+                hoursSpent: child.trackingRollup.hoursSpent ?? 0,
+                hoursRemaining: child.trackingRollup.hoursRemaining ?? 0,
+                materialsTotal: child.trackingRollup.materialsTotal ?? 0,
+                laborCost: child.trackingRollup.laborCost ?? 0,
+                totalCost: child.trackingRollup.totalCost ?? 0,
+                updatedAt: child.trackingRollup.updatedAt
+                  ? child.trackingRollup.updatedAt.toISOString()
+                  : new Date().toISOString(),
+              }
+            : undefined,
+        })),
+        projectRates
+      );
+    } else {
+      const tasks = await TaskModel.find({
+        staging: { $exists: false },
+        $or: [{ projectIds: projectId }, { projectId }],
+      }).lean();
+
+      tracking = computeLeafProjectTracking(
+        tasks.map((task) => task as unknown as Record<string, unknown>),
+        projectRates
+      );
+    }
+
+    return {
+      hourlyRate: projectRates.hourlyRate,
+      trackingRollup: project.trackingRollup
+        ? {
+            hoursSpent: project.trackingRollup.hoursSpent ?? 0,
+            hoursRemaining: project.trackingRollup.hoursRemaining ?? 0,
+            materialsTotal: project.trackingRollup.materialsTotal ?? 0,
+            laborCost: project.trackingRollup.laborCost ?? 0,
+            totalCost: project.trackingRollup.totalCost ?? 0,
+            updatedAt: project.trackingRollup.updatedAt
+              ? project.trackingRollup.updatedAt.toISOString()
+              : new Date().toISOString(),
+          }
+        : toStoredTrackingRollup(tracking.totals),
+      totals: tracking.totals,
+      lines: tracking.lines,
+      tree: tracking.tree,
+    };
   }
 
   async addCollaborator(

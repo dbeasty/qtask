@@ -20,6 +20,45 @@ export interface TaskStepInput {
   done?: boolean;
 }
 
+export interface MaterialLine {
+  _id: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface MaterialLineInput {
+  _id?: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface LaborLine {
+  _id: string;
+  description?: string;
+  hours: number;
+}
+
+export interface LaborLineInput {
+  _id?: string;
+  description?: string;
+  hours: number;
+}
+
+export interface CostRollupTotals {
+  hoursSpent: number;
+  hoursRemaining: number;
+  materialsTotal: number;
+  laborCost: number;
+  totalCost: number;
+}
+
+export interface ProjectRates {
+  hourlyRate?: number;
+  userHourlyRate?: number;
+}
+
 export interface Subtask {
   _id: string;
   title: string;
@@ -35,6 +74,9 @@ export interface Subtask {
   hoursSpent?: number;
   hoursRemaining?: number;
   lastProgressField?: ProgressField;
+  materials?: MaterialLine[];
+  laborLines?: LaborLine[];
+  hourlyRate?: number;
   subtasks: Subtask[];
   links: TaskLink[];
   createdAt: Date;
@@ -60,6 +102,9 @@ export interface Task {
   hoursSpent?: number;
   hoursRemaining?: number;
   lastProgressField?: ProgressField;
+  materials?: MaterialLine[];
+  laborLines?: LaborLine[];
+  hourlyRate?: number;
   subtasks: Subtask[];
   links: TaskLink[];
   assigneeId?: string;
@@ -82,6 +127,9 @@ export interface CreateTaskInput {
   hoursSpent?: number;
   hoursRemaining?: number;
   lastProgressField?: ProgressField;
+  materials?: MaterialLineInput[];
+  laborLines?: LaborLineInput[];
+  hourlyRate?: number;
   projectId?: string;
   projectIds?: string[];
   subtasks?: CreateSubtaskInput[];
@@ -101,6 +149,9 @@ export interface CreateSubtaskInput {
   hoursSpent?: number;
   hoursRemaining?: number;
   lastProgressField?: ProgressField;
+  materials?: MaterialLineInput[];
+  laborLines?: LaborLineInput[];
+  hourlyRate?: number;
   subtasks?: CreateSubtaskInput[];
 }
 
@@ -118,6 +169,9 @@ export interface UpdateTaskInput {
   hoursSpent?: number | null;
   hoursRemaining?: number | null;
   lastProgressField?: ProgressField | null;
+  materials?: MaterialLineInput[];
+  laborLines?: LaborLineInput[];
+  hourlyRate?: number | null;
   projectId?: string | null;
   projectIds?: string[] | null;
   assigneeId?: string | null;
@@ -149,6 +203,9 @@ export interface UpdateSubtaskInput {
   hoursSpent?: number | null;
   hoursRemaining?: number | null;
   lastProgressField?: ProgressField | null;
+  materials?: MaterialLineInput[];
+  laborLines?: LaborLineInput[];
+  hourlyRate?: number | null;
 }
 
 export interface TaskSearchFilters {

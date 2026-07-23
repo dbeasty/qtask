@@ -22,15 +22,23 @@ function isEmailVerified(user: { emailVerified?: boolean | null }): boolean {
 export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
+  trackExpenses: boolean;
 }
 
 function serializePreferences(preferences?: {
   autoApproveProposals?: boolean | null;
   skipConfirmations?: boolean | null;
+  trackExpenses?: boolean | null;
+  enableHourlyTracking?: boolean | null;
 } | null): UserPreferences {
+  const trackExpenses =
+    preferences?.trackExpenses !== undefined && preferences?.trackExpenses !== null
+      ? preferences.trackExpenses === true
+      : true;
   return {
     autoApproveProposals: preferences?.autoApproveProposals === true,
     skipConfirmations: preferences?.skipConfirmations === true,
+    trackExpenses,
   };
 }
 
@@ -40,9 +48,12 @@ function serializeUser(user: {
   displayName?: string | null;
   emailVerified?: boolean | null;
   mustChangePassword?: boolean | null;
+  hourlyRate?: number | null;
   preferences?: {
     autoApproveProposals?: boolean | null;
     skipConfirmations?: boolean | null;
+    trackExpenses?: boolean | null;
+    enableHourlyTracking?: boolean | null;
   } | null;
 }) {
   return {
@@ -51,6 +62,7 @@ function serializeUser(user: {
     displayName: user.displayName ?? undefined,
     emailVerified: isEmailVerified(user),
     mustChangePassword: user.mustChangePassword === true,
+    hourlyRate: user.hourlyRate ?? undefined,
     preferences: serializePreferences(user.preferences),
   };
 }
@@ -213,9 +225,12 @@ export class AuthService {
     userId: string,
     input: {
       displayName?: string | null;
+      hourlyRate?: number | null;
       preferences?: {
         autoApproveProposals?: boolean;
         skipConfirmations?: boolean;
+        trackExpenses?: boolean;
+        enableHourlyTracking?: boolean;
       };
     }
   ) {
@@ -229,11 +244,16 @@ export class AuthService {
       user.displayName = trimmed || undefined;
     }
 
+    if (input.hourlyRate !== undefined) {
+      user.hourlyRate = input.hourlyRate === null ? undefined : Math.max(0, input.hourlyRate);
+    }
+
     if (input.preferences) {
       if (!user.preferences) {
         user.preferences = {
           autoApproveProposals: false,
           skipConfirmations: false,
+          trackExpenses: true,
         };
       }
       if (input.preferences.autoApproveProposals !== undefined) {
@@ -241,6 +261,11 @@ export class AuthService {
       }
       if (input.preferences.skipConfirmations !== undefined) {
         user.preferences.skipConfirmations = input.preferences.skipConfirmations;
+      }
+      if (input.preferences.trackExpenses !== undefined) {
+        user.preferences.trackExpenses = input.preferences.trackExpenses;
+      } else if (input.preferences.enableHourlyTracking !== undefined) {
+        user.preferences.trackExpenses = input.preferences.enableHourlyTracking;
       }
       user.markModified('preferences');
     }

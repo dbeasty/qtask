@@ -228,6 +228,7 @@ export function ChatPage({
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
@@ -319,6 +320,7 @@ export function ChatPage({
       };
     });
     setMessages(uiMessages);
+    setSidebarOpen(false);
   }
 
   function handleUseAgain(content: string) {
@@ -668,10 +670,20 @@ export function ChatPage({
       ) : (
         <>
       <aside className="chat-sidebar">
-        <button type="button" className="primary-button" onClick={startNewConversation}>
-          New chat
-        </button>
-        <ul className="conversation-list">
+        <div className="chat-sidebar-toolbar">
+          <button type="button" className="primary-button" onClick={startNewConversation}>
+            New chat
+          </button>
+          <button
+            type="button"
+            className="chat-sidebar-toggle secondary-button"
+            aria-expanded={sidebarOpen}
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            Chats{conversations.length > 0 ? ` (${conversations.length})` : ''}
+          </button>
+        </div>
+        <ul className={`conversation-list${sidebarOpen ? ' conversation-list-open' : ''}`}>
           {conversations.map((conversation) => {
             const menuOpen = openMenuConversationId === conversation._id;
             const rowBusy =

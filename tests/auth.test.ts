@@ -68,6 +68,7 @@ describe('auth', () => {
     assert.deepEqual(me.body.user.preferences, {
       autoApproveProposals: false,
       skipConfirmations: false,
+      trackExpenses: true,
     });
   });
 
@@ -185,17 +186,19 @@ describe('auth', () => {
     assert.deepEqual(enabled.body.user.preferences, {
       autoApproveProposals: true,
       skipConfirmations: false,
+      trackExpenses: true,
     });
 
     const merged = await request(app)
       .patch('/api/auth/me')
       .set('Authorization', `Bearer ${token}`)
-      .send({ preferences: { skipConfirmations: true } })
+      .send({ preferences: { skipConfirmations: true, trackExpenses: false } })
       .expect(200);
 
     assert.deepEqual(merged.body.user.preferences, {
       autoApproveProposals: true,
       skipConfirmations: true,
+      trackExpenses: false,
     });
 
     const me = await request(app)
@@ -206,17 +209,25 @@ describe('auth', () => {
     assert.deepEqual(me.body.user.preferences, {
       autoApproveProposals: true,
       skipConfirmations: true,
+      trackExpenses: false,
     });
 
     const disabled = await request(app)
       .patch('/api/auth/me')
       .set('Authorization', `Bearer ${token}`)
-      .send({ preferences: { autoApproveProposals: false, skipConfirmations: false } })
+      .send({
+        preferences: {
+          autoApproveProposals: false,
+          skipConfirmations: false,
+          trackExpenses: true,
+        },
+      })
       .expect(200);
 
     assert.deepEqual(disabled.body.user.preferences, {
       autoApproveProposals: false,
       skipConfirmations: false,
+      trackExpenses: true,
     });
   });
 

@@ -12,6 +12,7 @@ import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { TasksPage } from './pages/TasksPage';
+import type { Selection } from './components/TaskHierarchyTree';
 import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
 import { WelcomePage } from './pages/WelcomePage';
@@ -44,6 +45,7 @@ export function App() {
     getStoredActiveProjectId()
   );
   const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
+  const [pendingTaskSelection, setPendingTaskSelection] = useState<Selection | null>(null);
   const [headerProjects, setHeaderProjects] = useState<Project[]>([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [activeProjectMenuOpen, setActiveProjectMenuOpen] = useState(false);
@@ -217,7 +219,7 @@ export function App() {
                 onChangePassword={() => setChangePasswordOpen(true)}
                 onOpenHelp={() => setView('help')}
                 onOpenAbout={() => setView('about')}
-                onUpdateDisplayName={updateProfile}
+                onUpdateDisplayName={(displayName) => updateProfile({ displayName })}
                 onUpdatePreferences={updatePreferences}
                 onSignOut={logout}
                 onClose={() => setUserMenuOpen(false)}
@@ -228,11 +230,13 @@ export function App() {
 
         <div className="header-row header-row-bottom">
           <p className="header-tagline muted">
-            AI-native task management
+            <span className="header-tagline-text">AI-native task management</span>
             {activeProjectName ? (
               <>
-                {' '}
-                ·{' '}
+                <span className="header-tagline-separator" aria-hidden="true">
+                  {' '}
+                  ·{' '}
+                </span>
                 <button
                   ref={activeProjectMenuTriggerRef}
                   type="button"
@@ -241,7 +245,7 @@ export function App() {
                   aria-haspopup="menu"
                   onClick={() => setActiveProjectMenuOpen((open) => !open)}
                 >
-                  {activeProjectName}
+                  <span className="header-active-project-name">{activeProjectName}</span>
                   <span className="header-active-project-chevron" aria-hidden="true">
                     ▾
                   </span>
@@ -299,6 +303,14 @@ export function App() {
               handleProjectsChanged();
             }}
             onOpenTasks={() => setView('tasks')}
+            onOpenTask={(taskId, path) => {
+              setPendingTaskSelection(
+                path.length === 0
+                  ? { kind: 'task', taskId }
+                  : { kind: 'subtask', taskId, path }
+              );
+              setView('tasks');
+            }}
             externalRefreshKey={projectsVersion}
           />
         ) : view === 'chat' ? (
@@ -319,6 +331,8 @@ export function App() {
             externalRefreshKey={tasksVersion}
             suggestedProjectName={suggestedProjectName}
             onNeedProject={() => setView('projects')}
+            pendingSelection={pendingTaskSelection}
+            onPendingSelectionApplied={() => setPendingTaskSelection(null)}
           />
         )}
       </main>

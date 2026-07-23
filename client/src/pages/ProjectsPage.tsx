@@ -3,6 +3,7 @@ import {
   addProjectCollaborator,
   createProject,
   deleteProject,
+  getProjectTracking,
   listProjects,
   moveProject,
   removeProjectCollaborator,
@@ -10,18 +11,23 @@ import {
   updateProjectCollaborator,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { getUserPreferences } from '../auth/storage';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectHierarchyTree } from '../components/ProjectHierarchyTree';
 import { TaskSplitInput } from '../components/TaskSplitInput';
-import type { CollaboratorRole, Project, TaskStatus } from '../types';
+import { ExpenseTree } from '../components/ExpenseTree';
+import type { CollaboratorRole, ExpenseTreeNode, Project, TaskStatus } from '../types';
+import { filterNonZeroExpenseNodes, formatMoney } from '../utils/costRollup';
 import { getDefaultProject } from '../utils/project';
 import { buildProjectTree } from '../utils/projectTree';
+import { shouldExpandProjectTrackingOnLoad } from '../utils/trackingExpand';
 
 interface ProjectsPageProps {
   activeProjectId: string | null;
   onActiveProjectChange: (projectId: string | null) => void;
   onOpenTasks?: () => void;
+  onOpenTask?: (taskId: string, path: string[]) => void;
   externalRefreshKey?: number;
 }
 
@@ -42,9 +48,11 @@ export function ProjectsPage({
   activeProjectId,
   onActiveProjectChange,
   onOpenTasks,
+  onOpenTask,
   externalRefreshKey = 0,
 }: ProjectsPageProps) {
   const { user } = useAuth();
+  const preferences = getUserPreferences(user);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -60,6 +68,9 @@ export function ProjectsPage({
   const [detailName, setDetailName] = useState('');
   const [detailDescription, setDetailDescription] = useState('');
   const [detailProgressShare, setDetailProgressShare] = useState('');
+  const [detailHourlyRate, setDetailHourlyRate] = useState('');
+  const [trackingTree, setTrackingTree] = useState<ExpenseTreeNode[]>([]);
+  const [trackingOpen, setTrackingOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -133,13 +144,39 @@ export function ProjectsPage({
     setDetailName(activeProject?.name ?? '');
     setDetailDescription(activeProject?.description ?? '');
     setDetailProgressShare(progressShareToFormValue(activeProject?.progressShare));
+    setDetailHourlyRate(
+      activeProject?.hourlyRate !== undefined ? String(activeProject.hourlyRate) : ''
+    );
     lastSavedRef.current = {
       name: activeProject?.name ?? '',
       description: activeProject?.description ?? '',
     };
     setSaveStatus('idle');
     setSaveError(null);
-  }, [activeProject?._id, activeProject?.progressShare, clearDebounce]);
+  }, [activeProject?._id, activeProject?.progressShare, activeProject?.hourlyRate, clearDebounce]);
+
+  useEffect(() => {
+    if (!activeProject) {
+      setTrackingOpen(false);
+      return;
+    }
+    setTrackingOpen(
+      shouldExpandProjectTrackingOnLoad(activeProject, preferences.trackExpenses, trackingTree)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- expand default only when switching projects
+  }, [activeProject?._id]);
+
+  useEffect(() => {
+    if (!activeProject) {
+      setTrackingTree([]);
+      return;
+    }
+    void getProjectTracking(activeProject._id)
+      .then(({ tracking }) => {
+        setTrackingTree(filterNonZeroExpenseNodes(tracking.tree ?? []));
+      })
+      .catch(() => setTrackingTree([]));
+  }, [activeProject?._id, externalRefreshKey, activeProject?.trackingRollup?.updatedAt]);
 
   const tree = useMemo(() => buildProjectTree(projects), [projects]);
 
@@ -256,6 +293,29 @@ export function ProjectsPage({
       detailName.trim() !== lastSavedRef.current.name ||
       value.trim() !== lastSavedRef.current.description;
     scheduleAutoSave(detailName, value);
+  };
+
+  const handleRateChange = async (raw: string) => {
+    setDetailHourlyRate(raw);
+
+    if (!activeProject?.canEdit) return;
+
+    const trimmed = raw.trim();
+    const nextValue = trimmed === '' ? null : Math.max(0, Number(trimmed));
+    if (trimmed !== '' && !Number.isFinite(nextValue)) return;
+
+    setSaving(true);
+    setActionError(null);
+    try {
+      const { project } = await updateProject(activeProject._id, {
+        hourlyRate: nextValue,
+      });
+      replaceProject(project);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update project rate');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleProgressShareChange = async (value: string) => {
@@ -575,6 +635,81 @@ export function ProjectsPage({
                       />
                     </div>
                   )}
+
+                  <label className="task-form-field">
+                    <span>Hourly rate</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      value={detailHourlyRate}
+                      onChange={(event) => setDetailHourlyRate(event.target.value)}
+                      onBlur={() => void handleRateChange(detailHourlyRate)}
+                      disabled={saving || !activeProject.canEdit}
+                      placeholder="optional"
+                    />
+                  </label>
+
+                  <details
+                    className="task-form-tracking-section"
+                    open={trackingOpen}
+                    onToggle={(event) => setTrackingOpen(event.currentTarget.open)}
+                  >
+                    <summary className="task-form-tracking-summary">
+                      <span
+                        className={`project-toolbar-chevron${trackingOpen ? ' expanded' : ''}`}
+                        aria-hidden="true"
+                      >
+                        ›
+                      </span>
+                      Tracking
+                    </summary>
+                    <div className="task-form-tracking-body">
+                      {activeProject.trackingRollup &&
+                      activeProject.trackingRollup.totalCost > 0 ? (
+                        <div className="task-cost-summary">
+                          {preferences.trackExpenses && (
+                            <>
+                              <div className="task-cost-summary-row">
+                                <span>Hours spent</span>
+                                <span>{activeProject.trackingRollup.hoursSpent.toFixed(2)}</span>
+                              </div>
+                              <div className="task-cost-summary-row">
+                                <span>Hours remaining</span>
+                                <span>{activeProject.trackingRollup.hoursRemaining.toFixed(2)}</span>
+                              </div>
+                            </>
+                          )}
+                          <div className="task-cost-summary-row">
+                            <span>Materials</span>
+                            <span>{formatMoney(activeProject.trackingRollup.materialsTotal)}</span>
+                          </div>
+                          <div className="task-cost-summary-row">
+                            <span>Labor</span>
+                            <span>{formatMoney(activeProject.trackingRollup.laborCost)}</span>
+                          </div>
+                          <div className="task-cost-summary-row task-cost-summary-total">
+                            <span>Total</span>
+                            <span>{formatMoney(activeProject.trackingRollup.totalCost)}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="muted">No tracking data yet.</p>
+                      )}
+
+                      {trackingTree.length > 0 && (
+                        <div className="project-tracking-lines">
+                          <div className="project-tracking-lines-title">Task breakdown</div>
+                          <ExpenseTree
+                            nodes={trackingTree}
+                            showHours={preferences.trackExpenses}
+                            onNavigate={onOpenTask}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </details>
+
                   <p className="muted">
                     Role: {activeProject.role}
                     {activeProject.parentId

@@ -1,8 +1,25 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { Project, TaskPriority, TaskStatus, TaskStep } from '../types';
+import type { CostRollupTotals, ExpenseTreeNode, LaborLine, MaterialLine, Project, TaskPriority, TaskStatus, TaskStep } from '../types';
+import { computeFormCostSummary, deriveHoursProgressPercent, formatMoney } from '../utils/costRollup';
+import { ExpenseTree } from './ExpenseTree';
+import { HourlyRateDialog } from './HourlyRateDialog';
 import { ProjectComboBox } from './ProjectComboBox';
 import { TaskProgressSlider } from './TaskProgressSlider';
 import { TaskSplitInput } from './TaskSplitInput';
+import {
+  laborLinesEqualForSave,
+  laborLinesSyncedEqual,
+  mergeLocalLaborLines,
+  sumLaborHours,
+  TaskLaborEditor,
+} from './TaskLaborEditor';
+import {
+  mergeLocalMaterials,
+  materialsEqualForSave,
+  materialsSyncedEqual,
+  TaskMaterialsEditor,
+} from './TaskMaterialsEditor';
+import { shouldExpandTrackingSection } from '../utils/trackingExpand';
 import { mergeLocalSteps, stepsSyncedEqual, stepsEqualForSave, stepsForApi, debugSteps, TaskStepsEditor } from './TaskStepsEditor';
 
 export interface TaskFormValues {
@@ -18,6 +35,43 @@ export interface TaskFormValues {
   hoursSpent: string;
   hoursRemaining: string;
   lastProgressField: 'percent' | 'hoursSpent' | 'hoursRemaining';
+  laborLines: LaborLine[];
+  materials: MaterialLine[];
+  hourlyRate: string;
+}
+
+export interface TrackingPreferences {
+  trackExpenses: boolean;
+}
+
+export interface ProjectRates {
+  hourlyRate?: number;
+  userHourlyRate?: number;
+}
+
+function hasTrackingMaterials(materials: MaterialLine[]): boolean {
+  return materials.some((line) => line.description.trim().length > 0);
+}
+
+function hasTrackingLabor(laborLines: LaborLine[], hoursRemaining: string): boolean {
+  return laborLines.some((line) => Number(line.hours) > 0) || hoursRemaining.trim().length > 0;
+}
+
+export function shouldExpandTrackingOnLoad(
+  values: TaskFormValues,
+  trackingPreferences: TrackingPreferences,
+  options?: { costRollup?: CostRollupTotals }
+): boolean {
+  return shouldExpandTrackingSection({
+    status: values.status,
+    priorityNotMedium: values.priority !== 'medium',
+    hasMaterials: hasTrackingMaterials(values.materials),
+    hasLaborOrEstimate: hasTrackingLabor(values.laborLines, values.hoursRemaining),
+    hasHourlyRate: values.hourlyRate.trim().length > 0,
+    hasHoursSpent: values.hoursSpent.trim().length > 0,
+    totalCost: options?.costRollup?.totalCost,
+    trackExpenses: trackingPreferences.trackExpenses,
+  });
 }
 
 const STATUS_OPTIONS: TaskStatus[] = ['todo', 'in_progress', 'done', 'cancelled'];
@@ -38,7 +92,10 @@ function valuesEqual(a: TaskFormValues, b: TaskFormValues): boolean {
     a.progressShare === b.progressShare &&
     a.hoursSpent === b.hoursSpent &&
     a.hoursRemaining === b.hoursRemaining &&
-    a.lastProgressField === b.lastProgressField
+    a.lastProgressField === b.lastProgressField &&
+    laborLinesSyncedEqual(a.laborLines, b.laborLines) &&
+    materialsSyncedEqual(a.materials, b.materials) &&
+    a.hourlyRate === b.hourlyRate
   );
 }
 
@@ -55,7 +112,10 @@ function valuesEqualForSave(a: TaskFormValues, b: TaskFormValues): boolean {
     a.progressShare === b.progressShare &&
     a.hoursSpent === b.hoursSpent &&
     a.hoursRemaining === b.hoursRemaining &&
-    a.lastProgressField === b.lastProgressField
+    a.lastProgressField === b.lastProgressField &&
+    laborLinesEqualForSave(a.laborLines, b.laborLines) &&
+    materialsEqualForSave(a.materials, b.materials) &&
+    a.hourlyRate === b.hourlyRate
   );
 }
 
@@ -66,6 +126,8 @@ function applySavedValuesToRefs(
   isDirtyRef: { current: boolean }
 ): void {
   const mergedSteps = mergeLocalSteps(savedValues.steps, valuesRef.current.steps);
+  const mergedMaterials = mergeLocalMaterials(savedValues.materials, valuesRef.current.materials);
+  const mergedLaborLines = mergeLocalLaborLines(savedValues.laborLines, valuesRef.current.laborLines);
   valuesRef.current = {
     ...valuesRef.current,
     percentComplete: savedValues.percentComplete,
@@ -74,6 +136,9 @@ function applySavedValuesToRefs(
     progressShare: savedValues.progressShare,
     status: savedValues.status,
     steps: mergedSteps,
+    laborLines: mergedLaborLines,
+    materials: mergedMaterials,
+    hourlyRate: savedValues.hourlyRate,
   };
   lastSavedRef.current = savedValues;
   isDirtyRef.current = !valuesEqualForSave(valuesRef.current, lastSavedRef.current);
@@ -94,6 +159,16 @@ interface TaskFormBaseProps {
   className?: string;
   readOnlyProgress?: boolean;
   progressValue?: number;
+  childExpenseNodes?: ExpenseTreeNode[];
+  onNavigateToSubtask?: (taskId: string, path: string[]) => void;
+  trackingPreferences?: TrackingPreferences;
+  projectRates?: ProjectRates;
+  costRollup?: CostRollupTotals;
+  userHourlyRate?: number;
+  projectId?: string;
+  canEditProject?: boolean;
+  onProjectRateChange?: (rate: number | null) => Promise<void>;
+  onUserRateChange?: (rate: number | null) => Promise<void>;
 }
 
 interface TaskFormSubmitProps extends TaskFormBaseProps {
@@ -129,6 +204,15 @@ export function TaskForm(props: TaskFormProps) {
     className,
     readOnlyProgress = false,
     progressValue,
+    childExpenseNodes = [],
+    onNavigateToSubtask,
+    trackingPreferences = { trackExpenses: true },
+    projectRates = {},
+    costRollup,
+    userHourlyRate,
+    canEditProject = false,
+    onProjectRateChange,
+    onUserRateChange,
     autoSave,
   } = props;
 
@@ -140,6 +224,31 @@ export function TaskForm(props: TaskFormProps) {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [rateDialogOpen, setRateDialogOpen] = useState(false);
+  const [rateSaving, setRateSaving] = useState(false);
+  const [trackingOpen, setTrackingOpen] = useState(() =>
+    shouldExpandTrackingOnLoad(initialValues, trackingPreferences, { costRollup })
+  );
+
+  const taskHourlyRate = parseOptionalNumber(values.hourlyRate);
+  const effectiveHourlyRate =
+    taskHourlyRate ?? projectRates.hourlyRate ?? userHourlyRate ?? projectRates.userHourlyRate ?? 0;
+
+  const showExpenseEditors = trackingPreferences.trackExpenses && showProgressFields;
+
+  const hoursEstimate = parseOptionalNumber(values.hoursRemaining) ?? 0;
+  const laborSpent = sumLaborHours(values.laborLines);
+  const progressMode: 'aggregate' | 'hours' | 'manual' = readOnlyProgress
+    ? 'aggregate'
+    : hoursEstimate > 0 ||
+        ((values.lastProgressField === 'hoursSpent' || values.lastProgressField === 'hoursRemaining') &&
+          hoursEstimate + laborSpent > 0)
+      ? 'hours'
+      : 'manual';
+  const derivedProgressPercent =
+    progressMode === 'hours'
+      ? deriveHoursProgressPercent(laborSpent, hoursEstimate, values.status)
+      : values.percentComplete;
 
   const lastSavedRef = useRef<TaskFormValues>(initialValues);
   const valuesRef = useRef<TaskFormValues>(initialValues);
@@ -172,9 +281,13 @@ export function TaskForm(props: TaskFormProps) {
     if (!isDirtyRef.current) {
       setValues((current) => {
         const mergedSteps = mergeLocalSteps(initialValues.steps, current.steps);
+        const mergedMaterials = mergeLocalMaterials(initialValues.materials, current.materials);
+        const mergedLaborLines = mergeLocalLaborLines(initialValues.laborLines, current.laborLines);
         const next = {
           ...initialValues,
           steps: mergedSteps,
+          materials: mergedMaterials,
+          laborLines: mergedLaborLines,
         };
         if (valuesEqual(current, next)) {
           debugSteps('initialValues sync skipped (no change)', {
@@ -345,19 +458,6 @@ export function TaskForm(props: TaskFormProps) {
     }));
   };
 
-  const handleHoursChange = (field: 'hoursSpent' | 'hoursRemaining', raw: string) => {
-    updateValues((current) => {
-      const next = { ...current, [field]: raw, lastProgressField: field };
-      const spent = parseFloat(field === 'hoursSpent' ? raw : current.hoursSpent) || 0;
-      const remaining = parseFloat(field === 'hoursRemaining' ? raw : current.hoursRemaining) || 0;
-      const total = spent + remaining;
-      if (total > 0) {
-        next.percentComplete = Math.round((spent / total) * 100);
-      }
-      return next;
-    });
-  };
-
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (autoSave) return;
@@ -372,6 +472,17 @@ export function TaskForm(props: TaskFormProps) {
   };
 
   const formClassName = ['task-form', className].filter(Boolean).join(' ');
+
+  const ownCostSummary =
+    showProgressFields && showExpenseEditors ? computeFormCostSummary(values, projectRates) : null;
+
+  const displayCostSummary =
+    readOnlyProgress && costRollup
+      ? costRollup
+      : childExpenseNodes.length > 0 && costRollup
+        ? costRollup
+        : ownCostSummary;
+  const hasCostData = Boolean(displayCostSummary && displayCostSummary.totalCost > 0);
 
   return (
     <form className={formClassName} onSubmit={handleSubmit}>
@@ -424,9 +535,18 @@ export function TaskForm(props: TaskFormProps) {
         disabled={fieldsDisabled}
       />
 
-      <details className="task-form-tracking-section">
+      <details
+        className="task-form-tracking-section"
+        open={trackingOpen}
+        onToggle={(event) => setTrackingOpen(event.currentTarget.open)}
+      >
         <summary className="task-form-tracking-summary">
-          <span className="project-toolbar-chevron" aria-hidden="true" />
+          <span
+            className={`project-toolbar-chevron${trackingOpen ? ' expanded' : ''}`}
+            aria-hidden="true"
+          >
+            ›
+          </span>
           Tracking
         </summary>
         <div className="task-form-tracking-body">
@@ -467,54 +587,143 @@ export function TaskForm(props: TaskFormProps) {
             </label>
           </div>
 
-          {readOnlyProgress && progressValue !== undefined && (
+          {showProgressFields && progressMode === 'aggregate' && progressValue !== undefined && (
             <div className="task-form-field">
               <span>Progress</span>
               <TaskProgressSlider value={progressValue} disabled />
             </div>
           )}
 
-          {showProgressFields && !readOnlyProgress && (
-            <>
-              <div className="task-form-field">
-                <span>Progress</span>
-                <TaskProgressSlider
-                  value={values.percentComplete}
-                  disabled={fieldsDisabled}
-                  onChange={handlePercentChange}
-                />
-              </div>
+          {showProgressFields && progressMode === 'hours' && (
+            <div className="task-form-field">
+              <span>Progress</span>
+              <TaskProgressSlider value={derivedProgressPercent} disabled />
+            </div>
+          )}
 
-              <div className="task-form-row">
-                <label className="task-form-field">
-                  <span>Hours spent</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={0.25}
-                    value={values.hoursSpent}
-                    onChange={(event) => handleHoursChange('hoursSpent', event.target.value)}
-                    disabled={fieldsDisabled}
-                    placeholder="optional"
-                  />
-                </label>
-                <label className="task-form-field">
-                  <span>Hours remaining</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={0.25}
-                    value={values.hoursRemaining}
-                    onChange={(event) => handleHoursChange('hoursRemaining', event.target.value)}
-                    disabled={fieldsDisabled}
-                    placeholder="optional"
-                  />
-                </label>
-              </div>
+          {showProgressFields && progressMode === 'manual' && (
+            <div className="task-form-field">
+              <span>Progress</span>
+              <TaskProgressSlider
+                value={values.percentComplete}
+                disabled={fieldsDisabled}
+                onChange={handlePercentChange}
+              />
+            </div>
+          )}
+
+          {showExpenseEditors && (
+            <>
+              <TaskLaborEditor
+                laborLines={values.laborLines}
+                hoursRemaining={values.hoursRemaining}
+                effectiveHourlyRate={effectiveHourlyRate}
+                onLaborChange={(updater) =>
+                  updateValues((current) => {
+                    const laborLines = updater(current.laborLines);
+                    const spent = sumLaborHours(laborLines);
+                    const remaining = parseOptionalNumber(current.hoursRemaining) ?? 0;
+                    const useHoursProgress = remaining > 0 || spent > 0;
+                    return {
+                      ...current,
+                      laborLines,
+                      hoursSpent: spent > 0 ? String(spent) : '',
+                      lastProgressField: useHoursProgress ? 'hoursSpent' : current.lastProgressField,
+                    };
+                  })
+                }
+                onHoursRemainingChange={(raw) =>
+                  updateValues((current) => ({
+                    ...current,
+                    hoursRemaining: raw,
+                    lastProgressField: raw.trim() ? 'hoursRemaining' : 'percent',
+                  }))
+                }
+                onRateClick={() => setRateDialogOpen(true)}
+                onCommit={autoSave ? flushAutoSave : undefined}
+                disabled={fieldsDisabled}
+              />
+
+              <TaskMaterialsEditor
+                materials={values.materials}
+                onChange={(updater) =>
+                  updateValues((current) => ({ ...current, materials: updater(current.materials) }))
+                }
+                onCommit={autoSave ? flushAutoSave : undefined}
+                disabled={fieldsDisabled}
+              />
             </>
+          )}
+
+          {showExpenseEditors && childExpenseNodes.length > 0 && (
+            <div className="expense-tree-section">
+              <div className="expense-tree-section-title">From subtasks</div>
+              <ExpenseTree
+                nodes={childExpenseNodes}
+                showHours={trackingPreferences.trackExpenses}
+                onNavigate={onNavigateToSubtask}
+              />
+            </div>
+          )}
+
+          {hasCostData && displayCostSummary && (
+            <div className="task-cost-summary">
+              <div className="task-cost-summary-title">Estimated cost</div>
+              <div className="task-cost-summary-row">
+                <span>Materials</span>
+                <span>{formatMoney(displayCostSummary.materialsTotal)}</span>
+              </div>
+              <div className="task-cost-summary-row">
+                <span>Labor</span>
+                <span>{formatMoney(displayCostSummary.laborCost)}</span>
+              </div>
+              <div className="task-cost-summary-row task-cost-summary-total">
+                <span>Total</span>
+                <span>{formatMoney(displayCostSummary.totalCost)}</span>
+              </div>
+            </div>
           )}
         </div>
       </details>
+
+      {rateDialogOpen && (
+        <HourlyRateDialog
+          effectiveRate={effectiveHourlyRate}
+          userRate={userHourlyRate ?? projectRates.userHourlyRate}
+          projectRate={projectRates.hourlyRate}
+          taskRate={taskHourlyRate}
+          canEditProject={canEditProject}
+          saving={rateSaving}
+          onClose={() => setRateDialogOpen(false)}
+          onSaveUserRate={async (rate) => {
+            if (!onUserRateChange) return;
+            setRateSaving(true);
+            try {
+              await onUserRateChange(rate);
+            } finally {
+              setRateSaving(false);
+            }
+          }}
+          onSaveProjectRate={async (rate) => {
+            if (!onProjectRateChange) return;
+            setRateSaving(true);
+            try {
+              await onProjectRateChange(rate);
+            } finally {
+              setRateSaving(false);
+            }
+          }}
+          onSaveTaskRate={async (rate) => {
+            updateValues((current) => ({
+              ...current,
+              hourlyRate: rate !== null && rate > 0 ? String(rate) : '',
+            }));
+            if (autoSave && canAutoSave) {
+              flushAutoSave();
+            }
+          }}
+        />
+      )}
 
       {showProgressShare && (
         <div className="task-form-field">
@@ -601,5 +810,8 @@ export function emptyFormValues(projectName = ''): TaskFormValues {
     hoursSpent: '',
     hoursRemaining: '',
     lastProgressField: 'percent',
+    laborLines: [],
+    materials: [],
+    hourlyRate: '',
   };
 }

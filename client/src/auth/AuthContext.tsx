@@ -31,7 +31,7 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, displayName?: string, acceptLegal?: boolean) => Promise<{ message: string }>;
   logout: () => void;
-  updateProfile: (displayName: string | null) => Promise<void>;
+  updateProfile: (body: { displayName?: string | null; hourlyRate?: number | null }) => Promise<void>;
   updatePreferences: (preferences: Partial<UserPreferences>) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<ChangePasswordResult>;
 }
@@ -76,8 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
-  const updateProfile = useCallback(async (displayName: string | null) => {
-    const result = await updateProfileRequest(displayName);
+  const updateProfile = useCallback(async (body: { displayName?: string | null; hourlyRate?: number | null }) => {
+    const result = await updateProfileRequest(body);
     setUser(result.user);
   }, []);
 
