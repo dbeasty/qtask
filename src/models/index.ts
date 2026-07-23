@@ -180,7 +180,7 @@ const taskSchema = new Schema(
   { timestamps: true }
 );
 
-taskSchema.index({ title: 'text', description: 'text', tags: 'text' });
+taskSchema.index({ title: 'text', description: 'text', tags: 'text', 'steps.text': 'text' });
 
 export const TaskModel = model('Task', taskSchema);
 
@@ -199,7 +199,16 @@ export const ActivityModel = model('Activity', activitySchema);
 
 const embeddingJobSchema = new Schema(
   {
-    taskId: { type: String, required: true, index: true },
+    entityType: {
+      type: String,
+      enum: ['task', 'project'],
+      default: 'task',
+      required: true,
+      index: true,
+    },
+    entityId: { type: String, required: true, index: true },
+    /** @deprecated Prefer entityId when entityType is task. */
+    taskId: { type: String, index: true },
     status: {
       type: String,
       enum: ['pending', 'processing', 'completed', 'failed'],
@@ -211,6 +220,8 @@ const embeddingJobSchema = new Schema(
   },
   { timestamps: true }
 );
+
+embeddingJobSchema.index({ entityType: 1, entityId: 1 }, { unique: true });
 
 export const EmbeddingJobModel = model('EmbeddingJob', embeddingJobSchema);
 
@@ -244,11 +255,13 @@ const projectSchema = new Schema(
     trainingHourlyRate: { type: Number, min: 0 },
     trackingRollup: { type: trackingRollupSchema },
     collaborators: { type: [projectCollaboratorSchema], default: [] },
+    embedding: { type: [Number] },
     staging: { type: stagingSchema },
   },
   { timestamps: true }
 );
 
+projectSchema.index({ name: 'text', description: 'text' });
 projectSchema.index({ 'collaborators.userId': 1 });
 projectSchema.index({ parentId: 1, sortOrder: 1 });
 

@@ -1,6 +1,10 @@
 import { isValidObjectId } from 'mongoose';
 import { ProjectModel, TaskModel, UserModel } from '../models/index.js';
 import { config } from '../config/index.js';
+import {
+  enqueueProjectEmbeddingJob,
+  enqueueTaskEmbeddingsForProject,
+} from './embeddingQueue.js';
 import { HttpError } from '../utils/httpError.js';
 import {
   canEditProject,
@@ -265,6 +269,9 @@ export class ProjectService {
     const project = await ProjectModel.findById(projectId);
     if (!project) return null;
 
+    const previousName = project.name;
+    const previousDescription = project.description ?? undefined;
+
     const previousParentId =
       project.parentId !== undefined && project.parentId !== null ? String(project.parentId) : null;
 
@@ -322,6 +329,14 @@ export class ProjectService {
       await this.recalculateProjectTracking(projectId);
     }
 
+    const nameChanged = input.name !== undefined && input.name.trim() !== previousName;
+    const descriptionChanged =
+      input.description !== undefined && (input.description ?? undefined) !== previousDescription;
+    if (!project.staging && (nameChanged || descriptionChanged)) {
+      await enqueueProjectEmbeddingJob(projectId);
+      await enqueueTaskEmbeddingsForProject(projectId);
+    }
+
     const refreshed = await ProjectModel.findById(projectId).lean();
     if (!refreshed) return null;
     return serializeProject(refreshed as LeanProject, userId);
@@ -374,6 +389,10 @@ export class ProjectService {
 
     if (parentId) {
       await this.recalculateProjectAndAncestors(parentId);
+    }
+
+    if (!staging) {
+      await enqueueProjectEmbeddingJob(String(project._id));
     }
 
     const refreshed = await ProjectModel.findById(project._id).lean();

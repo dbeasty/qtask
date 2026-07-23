@@ -20,6 +20,7 @@ after(async () => {
   globalThis.fetch = originalFetch;
   const { stopEmbeddingWorker } = await import('../src/services/embeddingQueue.js');
   stopEmbeddingWorker();
+  await new Promise((resolve) => setTimeout(resolve, 50));
   await mongoose.disconnect();
   await mongo.stop();
 });
@@ -114,7 +115,13 @@ describe('embeddingQueue (event-driven)', () => {
     stopEmbeddingWorker();
 
     const taskId = new mongoose.Types.ObjectId().toString();
-    await EmbeddingJobModel.create({ taskId, status: 'completed', attempts: 1 });
+    await EmbeddingJobModel.create({
+      entityType: 'task',
+      entityId: taskId,
+      taskId,
+      status: 'completed',
+      attempts: 1,
+    });
 
     await enqueueEmbeddingJob(taskId);
 
@@ -129,12 +136,78 @@ describe('embeddingQueue (event-driven)', () => {
     stopEmbeddingWorker();
 
     const taskId = new mongoose.Types.ObjectId().toString();
-    await EmbeddingJobModel.create({ taskId, status: 'processing', attempts: 1 });
+    await EmbeddingJobModel.create({
+      entityType: 'task',
+      entityId: taskId,
+      taskId,
+      status: 'processing',
+      attempts: 1,
+    });
 
     await enqueueEmbeddingJob(taskId);
 
     const job = await EmbeddingJobModel.findOne({ taskId }).lean();
     assert.equal(job?.status, 'processing');
     assert.equal(job?.attempts, 1);
+  });
+
+  it('processes a project embedding job', async () => {
+    const { EmbeddingJobModel, ProjectModel } = await import('../src/models/index.js');
+    const {
+      enqueueProjectEmbeddingJob,
+      startEmbeddingWorker,
+      stopEmbeddingWorker,
+    } = await import('../src/services/embeddingQueue.js');
+
+    let embedCalls = 0;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.includes('/api/embeddings')) {
+        embedCalls += 1;
+        return new Response(JSON.stringify({ embedding: [0.4, 0.5, 0.6] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(input);
+    };
+
+    stopEmbeddingWorker();
+    await EmbeddingJobModel.deleteMany({});
+
+    const project = await ProjectModel.create({
+      userId: 'user-project',
+      name: 'Garden Project',
+      description: 'Plant beds',
+      collaborators: [],
+      parentId: null,
+      sortOrder: 0,
+    });
+
+    startEmbeddingWorker();
+    await enqueueProjectEmbeddingJob(String(project._id));
+
+    for (let i = 0; i < 50; i++) {
+      const job = await EmbeddingJobModel.findOne({
+        entityType: 'project',
+        entityId: String(project._id),
+      }).lean();
+      if (job?.status === 'completed') break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const job = await EmbeddingJobModel.findOne({
+      entityType: 'project',
+      entityId: String(project._id),
+    }).lean();
+    assert.equal(job?.status, 'completed');
+    assert.equal(embedCalls, 1);
+
+    const updated = await ProjectModel.findById(project._id).lean();
+    assert.deepEqual(updated?.embedding, [0.4, 0.5, 0.6]);
+
+    stopEmbeddingWorker();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    globalThis.fetch = originalFetch;
   });
 });

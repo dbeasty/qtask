@@ -65,9 +65,24 @@ export function buildTaskEmbeddingText(task: {
   title: string;
   description?: string;
   tags?: string[];
+  projectNames?: string[];
+  steps?: Array<{ text: string }>;
 }): string {
   const parts = [task.title];
   if (task.description) parts.push(task.description);
   if (task.tags?.length) parts.push(`Tags: ${task.tags.join(', ')}`);
+  if (task.projectNames?.length) parts.push(`Projects: ${task.projectNames.join(', ')}`);
+  if (task.steps?.length) {
+    parts.push('Steps:');
+    for (const step of task.steps) {
+      parts.push(`- ${step.text}`);
+    }
+  }
+  return parts.join('\n');
+}
+
+export function buildProjectEmbeddingText(project: { name: string; description?: string }): string {
+  const parts = [project.name];
+  if (project.description) parts.push(project.description);
   return parts.join('\n');
 }

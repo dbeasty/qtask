@@ -61,7 +61,9 @@ button {
 .header-title-group {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 1rem;
+  flex: 1;
+  min-width: 0;
 }
 
 .api-status-dot {
@@ -103,6 +105,34 @@ button {
   color: #94a3b8;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.header-search-input {
+  flex: 1;
+  min-width: 0;
+  margin-left: 0.35rem;
+  border: 1px solid #314158;
+  background: #121826;
+  color: #e8edf5;
+  border-radius: 999px;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.header-search-input::placeholder {
+  color: #64748b;
+}
+
+.header-search-input:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
 }
 
 .header-user {
@@ -2718,4 +2748,88 @@ button.header-active-project:hover {
   .tasks-layout {
     grid-template-columns: 1fr;
   }
+}
+
+.search-page {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1rem 1rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.search-status {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.search-results-section h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.search-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.search-result-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #243041;
+  background: #121826;
+  color: inherit;
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+}
+
+.search-result-row:hover {
+  background: #182030;
+  border-color: #314158;
+}
+
+.search-result-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.search-result-type {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+
+.search-result-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.search-result-snippet {
+  margin: 0.35rem 0 0;
+  font-size: 0.88rem;
+}
+
+.search-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+  font-size: 0.82rem;
+}
+
+.search-result-badge {
+  border: 1px solid #314158;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  color: #cbd5e1;
+}
+
+.search-result-projects {
+  font-size: 0.82rem;
 }

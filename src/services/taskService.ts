@@ -17,7 +17,7 @@ import { applyPercentComplete } from '../utils/percentComplete.js';
 import { buildSubtaskTree, normalizeLaborLinesInput, normalizeMaterialsInput, normalizeStepsInput, serializeTask, sumLaborHours } from '../utils/serialization.js';
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
-import { cosineSimilarity, generateEmbedding } from './embeddingService.js';
+import { searchService } from './searchService.js';
 
 async function projects() {
   const { projectService } = await import('./projectService.js');
@@ -415,43 +415,19 @@ export class TaskService {
     let tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();
 
     if (filters.query) {
-      const textMatches = await TaskModel.find(
-        { ...query, $text: { $search: filters.query } },
-        { score: { $meta: 'textScore' } }
-      )
-        .sort({ score: { $meta: 'textScore' } })
-        .lean();
-
-      const semanticMatches = await this.semanticSearch(userId, filters.query, query);
-
-      const merged = new Map<string, { task: Record<string, unknown>; score: number }>();
-
-      for (const [index, task] of textMatches.entries()) {
-        merged.set(String(task._id), { task: task as Record<string, unknown>, score: 1 - index * 0.01 });
+      const searched = await searchService.searchTasksWithFilters(userId, filters);
+      if (searched.length > 0) {
+        return searched;
       }
 
-      for (const { task, score } of semanticMatches) {
-        const id = String(task._id);
-        const existing = merged.get(id);
-        merged.set(id, {
-          task: task as Record<string, unknown>,
-          score: existing ? existing.score + score : score,
-        });
-      }
-
-      if (merged.size > 0) {
-        tasks = Array.from(merged.values())
-          .sort((a, b) => b.score - a.score)
-          .map((entry) => entry.task) as typeof tasks;
-      } else {
-        const regex = new RegExp(filters.query, 'i');
-        tasks = tasks.filter(
-          (t) =>
-            regex.test(t.title) ||
-            (t.description && regex.test(t.description)) ||
-            t.tags.some((tag) => regex.test(tag))
-        );
-      }
+      const regex = new RegExp(filters.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      tasks = tasks.filter(
+        (t) =>
+          regex.test(t.title) ||
+          (t.description && regex.test(t.description)) ||
+          t.tags.some((tag) => regex.test(tag)) ||
+          (t.steps ?? []).some((step) => regex.test(step.text))
+      );
     }
 
     return tasks.map((task) =>
@@ -460,6 +436,10 @@ export class TaskService {
   }
 
   async findTasks(userId: string, filters: TaskSearchFilters, limit = 20) {
+    if (filters.query) {
+      const results = await searchService.searchTasksWithFilters(userId, filters, limit);
+      return results;
+    }
     const results = await this.listTasks(userId, filters);
     return results.slice(0, limit);
   }
@@ -1489,34 +1469,6 @@ export class TaskService {
     }
 
     return node as { subtasks: Array<{ _id: Types.ObjectId; subtasks?: unknown[] }> } | null;
-  }
-
-  private async semanticSearch(
-    userId: string,
-    queryText: string,
-    baseQuery: Record<string, unknown>
-  ): Promise<Array<{ task: Record<string, unknown>; score: number }>> {
-    try {
-      const queryEmbedding = await generateEmbedding(queryText, {
-        userId,
-        source: 'semantic_search',
-        degradedFallback: true,
-      });
-      const candidates = await TaskModel.find({
-        ...baseQuery,
-        embedding: { $exists: true, $ne: [] },
-      }).lean();
-
-      return candidates
-        .map((task) => ({
-          task,
-          score: cosineSimilarity(queryEmbedding, task.embedding ?? []),
-        }))
-        .filter((entry) => entry.score > 0.3)
-        .sort((a, b) => b.score - a.score);
-    } catch {
-      return [];
-    }
   }
 }
 

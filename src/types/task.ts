@@ -231,7 +231,10 @@ export interface ActivityEntry {
 
 export interface EmbeddingJob {
   _id: string;
-  taskId: string;
+  entityType: 'task' | 'project';
+  entityId: string;
+  /** @deprecated Prefer entityId when entityType is task. */
+  taskId?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   attempts: number;
   lastError?: string;

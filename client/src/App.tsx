@@ -12,6 +12,7 @@ import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { TasksPage } from './pages/TasksPage';
+import { SearchPage } from './pages/SearchPage';
 import type { Selection } from './components/TaskHierarchyTree';
 import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
@@ -25,7 +26,7 @@ import {
 import { getDefaultProject, taskBelongsToProject } from './utils/project';
 import './styles.css';
 
-type View = 'projects' | 'chat' | 'tasks' | 'help' | 'about';
+type View = 'projects' | 'chat' | 'tasks' | 'search' | 'help' | 'about';
 
 const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
 
@@ -46,12 +47,17 @@ export function App() {
   );
   const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
   const [pendingTaskSelection, setPendingTaskSelection] = useState<Selection | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [headerProjects, setHeaderProjects] = useState<Project[]>([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [activeProjectMenuOpen, setActiveProjectMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const userMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const activeProjectMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const previousViewRef = useRef<View>('projects');
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const defaultViewSetRef = useRef(false);
 
   const setActiveProjectId = useCallback((projectId: string | null) => {
@@ -144,6 +150,24 @@ export function App() {
     setProjectsVersion((version) => version + 1);
   }, []);
 
+  useEffect(() => {
+    if (!user) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        if (searchQuery.trim()) {
+          setView('search');
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [user, searchQuery]);
+
   if (loading) {
     return (
       <div className="auth-page">
@@ -197,8 +221,31 @@ export function App() {
               aria-label={apiStatusLabel}
               onClick={() => refreshHealth()}
             />
+            <input
+              ref={searchInputRef}
+              type="search"
+              className="header-search-input"
+              value={searchQuery}
+              onChange={(event) => {
+                const value = event.target.value;
+                setSearchQuery(value);
+                if (value.trim()) {
+                  if (viewRef.current !== 'search') {
+                    previousViewRef.current = viewRef.current;
+                  }
+                  setView('search');
+                } else if (viewRef.current === 'search') {
+                  setView(previousViewRef.current);
+                }
+              }}
+              placeholder="Search projects and tasks, try task title, project name or step"
+              aria-label="Search projects and tasks"
+              title="Search (⌘K)"
+              autoComplete="off"
+            />
           </div>
-          <div className="header-user">
+          <div className="header-actions">
+            <div className="header-user">
             <button
               ref={userMenuTriggerRef}
               type="button"
@@ -225,6 +272,7 @@ export function App() {
                 onClose={() => setUserMenuOpen(false)}
               />
             )}
+            </div>
           </div>
         </div>
 
@@ -319,6 +367,20 @@ export function App() {
             onTasksChanged={handleTasksChanged}
             onProjectSuggested={setSuggestedProjectName}
             onNeedProject={() => setView('projects')}
+          />
+        ) : view === 'search' ? (
+          <SearchPage
+            query={searchQuery}
+            onOpenProject={(projectId) => {
+              const project = headerProjects.find((item) => item._id === projectId);
+              setActiveProjectId(projectId);
+              if (project) setActiveProjectName(project.name);
+              setView('projects');
+            }}
+            onOpenTask={(taskId) => {
+              setPendingTaskSelection({ kind: 'task', taskId });
+              setView('tasks');
+            }}
           />
         ) : view === 'help' ? (
           <HelpPage onBack={() => setView('projects')} />

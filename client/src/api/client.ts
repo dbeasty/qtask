@@ -96,6 +96,11 @@ export async function listProjects(): Promise<{ projects: import('../types').Pro
   return request('/api/projects');
 }
 
+export async function search(query: string): Promise<import('../types').SearchResults> {
+  const params = new URLSearchParams({ q: query });
+  return request(`/api/search?${params.toString()}`);
+}
+
 export async function createProject(
   body: { name: string; description?: string; parentId?: string | null }
 ): Promise<{ project: import('../types').Project }> {

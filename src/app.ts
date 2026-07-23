@@ -9,6 +9,7 @@ import { projectsRouter } from './routes/projects.js';
 import { tasksRouter } from './routes/tasks.js';
 import { chatRouter } from './routes/chat.js';
 import { authRouter } from './routes/auth.js';
+import { searchRouter } from './routes/search.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
 import { requireAuth } from './middleware/auth.js';
 import { startEmbeddingWorker } from './services/embeddingQueue.js';
@@ -105,6 +106,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
 
   app.use('/api/tasks', requireAuth, tasksRouter);
   app.use('/api/projects', requireAuth, projectsRouter);
+  app.use('/api/search', requireAuth, searchRouter);
   app.use('/api', requireAuth, chatLimiter, chatRouter);
 
   if (config.serveClient && config.nodeEnv === 'production') {

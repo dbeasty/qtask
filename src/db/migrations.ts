@@ -1,4 +1,5 @@
 import { ConversationModel, ProjectModel, TaskModel } from '../models/index.js';
+import mongoose from 'mongoose';
 
 const DEFAULT_PROJECT_NAME = 'Project One';
 
@@ -10,6 +11,7 @@ export async function runDataMigrations(): Promise<void> {
   await migrateProjectHierarchyDefaults();
   await migrateProjectProgressDefaults();
   await migrateConversationProjectIds();
+  await migrateSearchEmbeddingBackfill();
 }
 
 async function migrateTaskProjectIds(): Promise<void> {
@@ -144,4 +146,28 @@ async function migrateConversationProjectIds(): Promise<void> {
       { $set: { projectId } }
     );
   }
+}
+
+async function migrateSearchEmbeddingBackfill(): Promise<void> {
+  const meta = await mongoose.connection.collection('app_meta').findOne({ key: 'search_embedding_v1' });
+  if (meta) return;
+
+  const { enqueueEmbeddingJob, enqueueProjectEmbeddingJob } = await import(
+    '../services/embeddingQueue.js'
+  );
+
+  const [tasks, projects] = await Promise.all([
+    TaskModel.find({ staging: { $exists: false } }).select('_id').lean(),
+    ProjectModel.find({ staging: { $exists: false } }).select('_id').lean(),
+  ]);
+
+  await Promise.all([
+    ...tasks.map((task) => enqueueEmbeddingJob(String(task._id))),
+    ...projects.map((project) => enqueueProjectEmbeddingJob(String(project._id))),
+  ]);
+
+  await mongoose.connection.collection('app_meta').insertOne({
+    key: 'search_embedding_v1',
+    at: new Date(),
+  });
 }
