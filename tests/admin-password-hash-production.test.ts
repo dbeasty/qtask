@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
+process.env.QTASK_SKIP_DOTENV = 'true';
 process.env.NODE_ENV = 'production';
 process.env.JWT_SECRET = 'test-user-jwt-secret';
 process.env.ADMIN_JWT_SECRET = 'test-admin-jwt-secret';
