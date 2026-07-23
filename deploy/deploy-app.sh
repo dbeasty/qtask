@@ -49,7 +49,8 @@ if grep -qE 'JWT_SECRET=change-me|ADMIN_JWT_SECRET=change-me' "${ENV_FILE}"; the
   needs_config=true
 fi
 if grep -qE '^HASH_ADMIN_PASSWORD=true' "${ENV_FILE}"; then
-  if ! grep -qE '^ADMIN_PASSWORD_HASH=\$2[aby]\$' "${ENV_FILE}"; then
+  hash_val="$(grep -E '^ADMIN_PASSWORD_HASH=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d "\"'"'"' | tr -d ' ')"
+  if [[ -z "${hash_val}" || ! "${hash_val}" =~ ^\$2[aby]\$ ]]; then
     needs_config=true
   fi
 elif grep -qE 'ADMIN_PASSWORD=change-me' "${ENV_FILE}"; then
