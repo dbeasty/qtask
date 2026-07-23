@@ -150,7 +150,7 @@ export function RegisterPage() {
           </button>
         </form>
 
-        <p className="auth-hint muted">
+        <p className="auth-hint auth-hint--switch muted">
           Already have an account? <a href="/login">Sign in</a>
         </p>
 
