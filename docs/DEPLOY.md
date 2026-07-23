@@ -97,7 +97,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `APP_URL` | `http://localhost:5173` | Public web URL for email links |
 | `MAIL_RESEND` | `false` | Set `true` to send auth email via Resend HTTP API |
 | `RESEND_API_KEY` | — | Resend API key (required when `MAIL_RESEND=true`) |
-| `RESEND_FROM` | `noreply@qtask.dev` | From address for Resend (e.g. `QTask <notify@qtask.dev>`; use a verified domain) |
+| `RESEND_FROM` | `noreply@qtask.dev` | From address for Resend (e.g. `"QTask <notify@qtask.dev>"` — **quote** if the value contains spaces or `<>`; systemd and `start-mongodb.sh` source `.env` as shell) |
 | `MAIL_SMTP` | `false` | Set `true` to send auth email via SMTP (nodemailer) |
 | `SMTP_HOST` | — | SMTP host (required when `MAIL_SMTP=true`; also enables SMTP if set with neither flag) |
 | `SMTP_PORT` | `587` | SMTP port |
@@ -111,6 +111,9 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL (Jetson LAN IP in production; see §4.1.1) |
 | `OLLAMA_MODEL` | `llama3.1` | Chat / tool-calling model (`llama3.2:3b` recommended on Jetson 8GB) |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Chat/generate keep-alive passed to Ollama (`-1` = keep chat loaded) |
+| `OLLAMA_EMBEDDING_KEEP_ALIVE` | `0` | Embedding keep-alive (`0` = unload after request; on-demand indexing) |
+| `OLLAMA_EMBEDDING_NUM_GPU` | `0` | GPU layers for embeddings (`0` = CPU; keeps chat on GPU) |
 | `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.44`) |
 | `OLLAMA_DOCKER_CONTAINER` | `qtask-ollama` | Container name for Docker stats |
 | `DCGM_METRICS_URL` | — | Discrete GPU metrics; leave unset for Jetson |
@@ -266,14 +269,20 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app up
 
 #### 4.1.1 Jetson Ollama
 
-Target board for these notes: **Jetson Orin Nano 8GB** (classic Jetson Nano is 4GB — use smaller models there). The Jetson runs **only** the SLM (Ollama). The app host runs API, admin, and MongoDB and calls the Jetson over a **service VLAN** (not the admin/access interface).
+Target board for these notes: **Jetson Orin Nano 8GB** (classic Jetson Nano is 4GB — use smaller models there). The Jetson runs **only** the SLM (Ollama). The **app server** runs API, admin, and MongoDB and calls the Jetson over a **service VLAN** (not the admin/access interface).
 
 Typical layout:
 
+| Host | Access / SSH | Service VLAN | Install path |
+|------|--------------|--------------|--------------|
+| **App server** | `qtask@192.168.13.13` (or your access IP) | `192.168.13.13` | `/opt/qtask` |
+| **Jetson** | `qtask@192.168.1.14` | `192.168.13.14` | `/opt/qtask-ollama` |
+
 | Interface | Example IP | Use |
 |-----------|------------|-----|
-| Access / SSH | `192.168.1.14` | SSH as **`qtask`** — do **not** expose Ollama here |
-| Service VLAN | `192.168.13.14` | `JETSON_BIND_ADDRESS`, `OLLAMA_BASE_URL` — QTask traffic only |
+| App service VLAN | `192.168.13.13` | QTask API, MongoDB, admin |
+| Jetson access / SSH | `192.168.1.14` | SSH as **`qtask`** — do **not** expose Ollama here |
+| Jetson service VLAN | `192.168.13.14` | `JETSON_BIND_ADDRESS`, `OLLAMA_BASE_URL` — QTask traffic only |
 
 | Port on service VLAN | Purpose | Internet? |
 |----------------------|---------|-----------|
@@ -354,16 +363,28 @@ npm run publish:jetson
 |----------|---------------------|
 | `/opt/qtask-ollama/deploy/*` | Yes |
 | `/opt/qtask-ollama/.env` on Jetson | **No** if it already exists — only set `JETSON_BIND_ADDRESS` once (default in example: `192.168.13.14`) |
-| App host `/opt/qtask/.env` (`OLLAMA_*`) | **No** — edit manually on the QTask server and restart API/admin |
+| App host `/opt/qtask/.env` on `192.168.13.13` | **No** — use `npm run publish:app`; edit secrets on first install |
 
-On the **app host**, set (and restart QTask after editing):
+On the **app host**, set (and **rebuild/restart QTask** after API changes — embedding queue and CPU embed settings ship with the app, not the Jetson tar):
 
 ```bash
 OLLAMA_BASE_URL=http://192.168.13.14:11434
 OLLAMA_MODEL=llama3.2:3b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_KEEP_ALIVE=-1
+OLLAMA_EMBEDDING_KEEP_ALIVE=0
+OLLAMA_EMBEDDING_NUM_GPU=0
 OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
+```
+
+After deploy, verify chat stays loaded and embeddings are on demand:
+
+```bash
+# Jetson — only chat should remain after idle embed work
+docker exec qtask-ollama ollama ps
+
+# App — create/update a task; embedding should run immediately (no 2s poll wait)
 ```
 
 Use **`v1.44`** for `OLLAMA_DOCKER_STATS_URL` (not `v1.41`) — current Docker daemons reject older API versions.
@@ -395,13 +416,13 @@ Redeploy without re-pulling models (on Jetson, after a new tar is extracted):
 
 `start-ollama-jetson.sh` removes legacy containers named `qtask-ollama` / `qtask-ollama-docker-proxy` (from older compose project names) and migrates model data from volume `deploy_qtask_ollama_data` to `qtask_ollama_data` when needed.
 
-Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=2` so chat and embedding models stay loaded; `deploy-jetson-ollama.sh` warms both after start. On 8GB Jetson, if RAM is tight, Ollama may still evict a model — check with `docker exec qtask-ollama ollama ps`.
+Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=1` so only the **chat** model stays loaded on Jetson; `deploy-jetson-ollama.sh` warms chat only. Embeddings run on demand from the app with `OLLAMA_EMBEDDING_KEEP_ALIVE=0` and `OLLAMA_EMBEDDING_NUM_GPU=0` (CPU, unload after each request). Task indexing is **event-driven** (no 2s poll) — jobs run when tasks are created/updated.
 
-**Firewall** (restrict to app host — replace `192.168.13.10`):
+**Firewall** (on Jetson — allow only app server `192.168.13.13`):
 
 ```bash
-sudo ufw allow from 192.168.13.10 to 192.168.13.14 port 11434 proto tcp
-sudo ufw allow from 192.168.13.10 to 192.168.13.14 port 2375 proto tcp
+sudo ufw allow from 192.168.13.13 to 192.168.13.14 port 11434 proto tcp
+sudo ufw allow from 192.168.13.13 to 192.168.13.14 port 2375 proto tcp
 sudo ufw deny 11434/tcp
 sudo ufw deny 2375/tcp
 ```
@@ -433,6 +454,76 @@ docker compose -p qtask-ollama -f /opt/qtask-ollama/deploy/docker-compose.jetson
 
 See also [`deploy/.env.jetson.example`](../deploy/.env.jetson.example), [`deploy/deploy-jetson-ollama.sh`](../deploy/deploy-jetson-ollama.sh), and [`scripts/publish-jetson-release.sh`](../scripts/publish-jetson-release.sh).
 
+#### 4.1.2 App server (QTask API + MongoDB)
+
+The app server runs at **`/opt/qtask`** as system user **`qtask`**. Deploy from your dev machine over SSH (same account model as Jetson).
+
+**Prerequisites on app server:** Docker, Docker Compose, Node.js 20+.
+
+**First-time bootstrap** (once, as an admin user with sudo — e.g. `davja@192.168.13.13`):
+
+```bash
+# From release tar or repo
+./deploy/bootstrap-app-server.sh
+
+# Optional: passwordless systemd deploy for qtask
+sudo cp deploy/qtask-deploy.sudoers.example /etc/sudoers.d/qtask-deploy
+sudo chmod 440 /etc/sudoers.d/qtask-deploy
+sudo visudo -cf /etc/sudoers.d/qtask-deploy
+
+# Allow qtask SSH from dev machine
+ssh-copy-id -i ~/.ssh/id_ed25519.pub qtask@192.168.13.13
+```
+
+**One command from dev machine** (build → scp → install → MongoDB → systemd → health checks):
+
+```bash
+npm run publish:app
+# or: APP_SSH=qtask@192.168.13.13 npm run publish:app
+```
+
+**What publish updates**
+
+| Location | Updated by publish? |
+|----------|---------------------|
+| `/opt/qtask/dist`, client, admin-client, `deploy/*` | Yes |
+| `/opt/qtask/.env` on app server | **No** if it already exists — edit secrets manually on first install |
+
+On first publish, edit `/opt/qtask/.env` (JWT, admin passwords, domain, mail), then run `npm run publish:app` again.
+
+**App server `.env`** (Jetson Ollama on service VLAN):
+
+```bash
+OLLAMA_BASE_URL=http://192.168.13.14:11434
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_KEEP_ALIVE=-1
+OLLAMA_EMBEDDING_KEEP_ALIVE=0
+OLLAMA_EMBEDDING_NUM_GPU=0
+OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
+OLLAMA_DOCKER_CONTAINER=qtask-ollama
+```
+
+**On app server only** (from extracted release tar, as `qtask`):
+
+```bash
+tar xzf qtask-<version>-linux.tar.gz
+cd qtask-<version>
+./deploy/deploy-app.sh
+```
+
+Options: `--install-only`, `--skip-mongodb`, `--skip-systemd`, `--force` (start with placeholder secrets — not recommended).
+
+Day-to-day ops (as `qtask` on app server):
+
+```bash
+sudo systemctl restart qtask qtask-admin
+/opt/qtask/deploy/start-mongodb.sh
+curl http://127.0.0.1:3003/health && curl http://127.0.0.1:3004/health
+```
+
+See also [`deploy/.env.production.example`](../deploy/.env.production.example), [`deploy/deploy-app.sh`](../deploy/deploy-app.sh), [`deploy/bootstrap-app-server.sh`](../deploy/bootstrap-app-server.sh), and [`scripts/publish-app-release.sh`](../scripts/publish-app-release.sh).
+
 ### 4.2 Release tar (bootstrap / offline)
 
 Build a deployable archive on your dev machine:
@@ -455,14 +546,26 @@ Publish to Jetson (build + scp + deploy):
 npm run publish:jetson
 ```
 
-Copy to your Ubuntu server and install:
+Publish to app server (build + scp + deploy):
 
 ```bash
-scp release/qtask-<version>-linux.tar.gz user@server:
-ssh user@server
+npm run publish:app
+```
+
+App-only tarball without bumping version:
+
+```bash
+npm run release:app
+```
+
+Copy to your Ubuntu server and install manually:
+
+```bash
+scp release/qtask-<version>-linux.tar.gz qtask@192.168.13.13:
+ssh qtask@192.168.13.13
 tar xzf qtask-<version>-linux.tar.gz
 cd qtask-<version>
-./deploy/install.sh          # installs to /opt/qtask by default
+./deploy/deploy-app.sh          # installs to /opt/qtask by default
 ```
 
 Then follow the install script's next steps: edit `/opt/qtask/.env` (JWT, admin secrets, mail, domain, `OLLAMA_BASE_URL`), start MongoDB, and enable **both** systemd units:
@@ -492,12 +595,12 @@ npm run release
 
 ```bash
 # Copy the new archive (adjust version and host)
-scp release/qtask-<version>-linux.tar.gz user@server:
+scp release/qtask-<version>-linux.tar.gz qtask@192.168.13.13:
 
-ssh user@server
+ssh qtask@192.168.13.13
 tar xzf qtask-<version>-linux.tar.gz
 cd qtask-<version>
-./deploy/install.sh              # rsyncs into /opt/qtask, keeps /opt/qtask/.env
+./deploy/deploy-app.sh
 sudo systemctl restart qtask
 sudo systemctl restart qtask-admin
 curl http://127.0.0.1:3003/health && curl http://127.0.0.1:3004/health
@@ -726,6 +829,16 @@ Obtain certificates with [certbot](https://certbot.eff.org/):
 sudo certbot certonly --nginx -d qtask.dev
 ```
 
+Many installs use **Cloudflare Origin** certs on the origin (e.g. `/etc/nginx/ssl/qtask.pem`) while `qtask.dev` / `www` are **proxied** through Cloudflare (edge cert in the browser). A wildcard Origin cert (`*.qtask.dev`) covers `admin.qtask.dev` for TLS on nginx; browsers that hit the origin **directly** on the LAN do not trust the Origin CA unless you install [Cloudflare’s Origin CA root](https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem) on each device (Keychain + **Certificate Trust Settings** on macOS) or append that root to the pem nginx serves.
+
+With Let’s Encrypt instead of Origin certs, reuse the same files for admin or expand the SAN:
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx   # if needed
+sudo certbot certonly --nginx --expand -d qtask.dev -d admin.qtask.dev
+sudo certbot certificates   # confirm admin.qtask.dev appears in Domains
+```
+
 ### Standalone admin application
 
 The admin UI/API runs as a separate process on port `3004`. It can reset passwords,
@@ -781,10 +894,59 @@ Although deployment can set `ADMIN_PASSWORD` and `MONGO_ROOT_PASSWORD` to the
 same value, separate secrets are strongly recommended because the web process
 does not need the MongoDB root credential.
 
-For password mode, proxy a firewall-restricted hostname to
-`http://127.0.0.1:3004`. To use a verified client certificate instead of a
-password, set `ADMIN_AUTH_MODE=mtls`, generate a long `ADMIN_PROXY_SECRET`, and
-configure nginx:
+#### Admin on internal IP only (recommended for home / LAN)
+
+Keep **`https://qtask.dev`** on `listen 443` (all interfaces → `127.0.0.1:3003`). Serve admin on a **separate hostname** bound to the app server’s **LAN/service IP** (e.g. `192.168.13.13`) so `admin.qtask.dev` is only reachable on your LAN (UniFi local DNS → service IP). Do **not** publish a public DNS record for `admin` if you want it off the public internet.
+
+**Port forward:** WAN `443` → **`192.168.13.13:443`** (nginx), not `:3003` or `:3004`.
+
+**Critical nginx detail:** NAT sends public traffic to **`SERVICE_IP:443`**, not `127.0.0.1:443`. If only the admin vhost listens on `SERVICE_IP:443`, requests for `www.qtask.dev` hit that socket, fail to match `admin.qtask.dev`, and nginx’s **default** on that IP can proxy to **3004 (admin)**. Add a **duplicate main-site** block on the same IP (see [`deploy/nginx-qtask-service-ip.conf.example`](../deploy/nginx-qtask-service-ip.conf.example)) in addition to [`deploy/nginx-admin-internal.conf.example`](../deploy/nginx-admin-internal.conf.example).
+
+Setup checklist:
+
+1. Ensure the TLS cert covers `admin.qtask.dev` (wildcard `*.qtask.dev` on Origin certs is enough).
+2. UniFi / Pi-hole **local DNS:** `admin.qtask.dev` → service IP (e.g. `192.168.13.13`). Leave `qtask.dev` / `www` on Cloudflare public DNS.
+3. Enable admin systemd: `qtask-admin.service`; `curl http://127.0.0.1:3004/health`.
+4. Copy nginx examples; set `listen` to your service IP and cert paths (`/etc/nginx/ssl/qtask.pem` or Let’s Encrypt paths).
+5. Verify on the app server:
+
+```bash
+curl -sk --resolve www.qtask.dev:443:127.0.0.1 https://www.qtask.dev/health          # → service qtask
+curl -sk --resolve www.qtask.dev:443:YOUR.WAN.IP https://www.qtask.dev/health        # → service qtask
+curl -sk --resolve admin.qtask.dev:443:192.168.13.13 https://admin.qtask.dev/health  # → service qtask-admin
+```
+
+#### Access admin from your Mac (SSH tunnel — recommended with Cloudflare Origin certs)
+
+Direct `https://admin.qtask.dev` on the LAN uses the **Origin cert** on nginx. Browsers often reject it (`ERR_CERT_AUTHORITY_INVALID`), and HSTS from the main site (`includeSubDomains` on `qtask.dev`) can block bypass. **SSH local port forwarding** avoids HTTPS and nginx for admin on the operator machine:
+
+```bash
+ssh -L 3004:127.0.0.1:3004 qtask@192.168.13.13
+```
+
+Leave that session open. On the same Mac, open **`http://localhost:3004`** and log in with **`ADMIN_PASSWORD`** from `/opt/qtask/.env`.
+
+Health check through the tunnel:
+
+```bash
+curl -s http://localhost:3004/health
+```
+
+Background tunnel (no shell):
+
+```bash
+ssh -f -N -L 3004:127.0.0.1:3004 qtask@192.168.13.13
+```
+
+If login succeeds but the session does not stick, production sets `ADMIN_COOKIE_SECURE=true` (cookies require HTTPS). For tunnel-only use, temporarily set `ADMIN_COOKIE_SECURE=false` in `/opt/qtask/.env`, run `sudo systemctl restart qtask-admin.service`, then set it back to `true` when you finish.
+
+Optional: trust the [Origin CA root](https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem) on each operator Mac (Keychain **and** System Settings → Privacy & Security → **Certificate Trust Settings**), append the root to `qtask.pem` on the server for a full chain, or use a **separate Let’s Encrypt cert** on the admin nginx blocks only.
+
+For password mode without mTLS, log in with `ADMIN_PASSWORD` (not your normal QTask user password).
+
+#### Admin mTLS (optional)
+
+To use a verified client certificate instead of a password, set `ADMIN_AUTH_MODE=mtls`, generate a long `ADMIN_PROXY_SECRET`, and configure nginx:
 
 ```nginx
 server {

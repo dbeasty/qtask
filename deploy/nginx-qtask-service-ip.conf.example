@@ -1,0 +1,34 @@
+# Main site on the app server's service/LAN IP — required when WAN port forward targets
+# SERVICE_IP:443 (e.g. UniFi 443 → 192.168.13.13:443).
+#
+# Without this block, NAT traffic to SERVICE_IP:443 hits only the admin listener
+# (see nginx-admin-internal.conf.example); www.qtask.dev then defaults to admin (3004).
+#
+# Merge into /etc/nginx/sites-available/qtask or include from sites-enabled.
+# Replace 192.168.13.13 and ssl paths to match your host.
+
+server {
+    listen 192.168.13.13:443 ssl http2;
+    server_name qtask.dev www.qtask.dev;
+
+    ssl_certificate     /etc/nginx/ssl/qtask.pem;
+    ssl_certificate_key /etc/nginx/ssl/qtask.key;
+    # Let's Encrypt alternative:
+    # ssl_certificate     /etc/letsencrypt/live/qtask.dev/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/qtask.dev/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3003;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_cache_bypass $http_upgrade;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+}

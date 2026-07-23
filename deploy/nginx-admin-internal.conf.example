@@ -1,0 +1,41 @@
+# Admin UI — internal service IP only (Option C).
+# Public qtask.dev stays on listen 443 (all interfaces); admin hostname on SERVICE_IP only.
+#
+# Prerequisites:
+#   - qtask-admin.service running (curl http://127.0.0.1:3004/health)
+#   - Also add deploy/nginx-qtask-service-ip.conf.example on the same SERVICE_IP if WAN
+#     port forward targets SERVICE_IP:443 (see docs/DEPLOY.md §5)
+#   - LAN DNS: admin.qtask.dev → SERVICE_IP (e.g. UniFi local DNS A record)
+#
+# Install:
+#   sudo cp deploy/nginx-admin-internal.conf.example /etc/nginx/sites-available/qtask-admin-internal
+#   sudo ln -sf /etc/nginx/sites-available/qtask-admin-internal /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# Operator access with Cloudflare Origin certs: prefer SSH tunnel (docs/DEPLOY.md §5).
+
+server {
+    listen 192.168.13.13:443 ssl http2;
+    server_name admin.qtask.dev;
+
+    ssl_certificate     /etc/nginx/ssl/qtask.pem;
+    ssl_certificate_key /etc/nginx/ssl/qtask.key;
+    # Let's Encrypt alternative:
+    # ssl_certificate     /etc/letsencrypt/live/qtask.dev/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/qtask.dev/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3004;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+server {
+    listen 192.168.13.13:80;
+    server_name admin.qtask.dev;
+    return 301 https://$host$request_uri;
+}
