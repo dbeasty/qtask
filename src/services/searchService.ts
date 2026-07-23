@@ -6,7 +6,7 @@ import { serializeTask } from '../utils/serialization.js';
 import { cosineSimilarity, generateEmbedding } from './embeddingService.js';
 import { escapeRegex, mergeHybridSearchScores } from './searchUtils.js';
 
-const SEMANTIC_THRESHOLD = 0.3;
+const SEMANTIC_THRESHOLD = 0.6;
 
 type LeanTask = Record<string, unknown> & {
   _id: unknown;
