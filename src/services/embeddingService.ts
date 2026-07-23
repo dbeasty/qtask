@@ -25,6 +25,8 @@ export async function generateEmbedding(
       body: JSON.stringify({
         model: config.ollama.embeddingModel,
         prompt: text,
+        keep_alive: config.ollama.embeddingKeepAlive,
+        options: { num_gpu: config.ollama.embeddingNumGpu },
       }),
     });
 

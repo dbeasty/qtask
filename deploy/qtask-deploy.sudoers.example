@@ -1,0 +1,14 @@
+# Allow qtask to install and manage QTask API/admin systemd units (passwordless deploy).
+# MongoDB is managed via docker compose (start-mongodb.sh) — no sudo needed.
+# Installed automatically by bootstrap-app-server.sh, or manually:
+#   sudo cp qtask-deploy.sudoers.example /etc/sudoers.d/qtask-deploy && sudo chmod 440 /etc/sudoers.d/qtask-deploy
+qtask ALL=(ALL) NOPASSWD: /bin/cp /opt/qtask/deploy/qtask.service /etc/systemd/system/qtask.service
+qtask ALL=(ALL) NOPASSWD: /bin/cp /opt/qtask/deploy/qtask-admin.service /etc/systemd/system/qtask-admin.service
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl enable qtask.service
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl enable qtask-admin.service
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl enable qtask.service qtask-admin.service
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl enable --now qtask.service
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl enable --now qtask-admin.service
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl restart qtask.service
+qtask ALL=(ALL) NOPASSWD: /bin/systemctl restart qtask-admin.service

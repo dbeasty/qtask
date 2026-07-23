@@ -80,7 +80,7 @@ async function consumeSseStream(
   }
 }
 
-export async function checkHealth(): Promise<{ status: string; service: string }> {
+export async function checkHealth(): Promise<{ status: string; service: string; version?: string }> {
   const response = await fetch('/health');
   if (!response.ok) {
     throw new Error('Health check failed');

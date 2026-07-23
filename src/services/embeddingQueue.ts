@@ -1,37 +1,45 @@
 import { EmbeddingJobModel, TaskModel } from '../models/index.js';
 import { buildTaskEmbeddingText, generateEmbedding } from './embeddingService.js';
 
-const POLL_INTERVAL_MS = 2000;
 const MAX_ATTEMPTS = 3;
 
-let workerTimer: ReturnType<typeof setInterval> | null = null;
+let drainDisabled = true;
 let processing = false;
 
+function scheduleDrain(): void {
+  if (drainDisabled || processing) return;
+  void processNextJob();
+}
+
 export async function enqueueEmbeddingJob(taskId: string): Promise<void> {
+  const existing = await EmbeddingJobModel.findOne({ taskId }).lean();
+  if (existing?.status === 'processing') {
+    return;
+  }
+
   await EmbeddingJobModel.findOneAndUpdate(
-    { taskId, status: { $in: ['pending', 'processing'] } },
-    { $setOnInsert: { taskId, status: 'pending', attempts: 0 } },
+    { taskId },
+    {
+      $set: { status: 'pending', lastError: undefined },
+      $setOnInsert: { attempts: 0 },
+    },
     { upsert: true }
   );
+
+  scheduleDrain();
 }
 
 export function startEmbeddingWorker(): void {
-  if (workerTimer) return;
-
-  workerTimer = setInterval(() => {
-    void processNextJob();
-  }, POLL_INTERVAL_MS);
+  drainDisabled = false;
+  scheduleDrain();
 }
 
 export function stopEmbeddingWorker(): void {
-  if (workerTimer) {
-    clearInterval(workerTimer);
-    workerTimer = null;
-  }
+  drainDisabled = true;
 }
 
 async function processNextJob(): Promise<void> {
-  if (processing) return;
+  if (drainDisabled || processing) return;
   processing = true;
 
   try {
@@ -80,5 +88,6 @@ async function processNextJob(): Promise<void> {
     }
   } finally {
     processing = false;
+    scheduleDrain();
   }
 }

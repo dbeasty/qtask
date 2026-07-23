@@ -628,6 +628,79 @@ button {
   color: #8ba3c7;
 }
 
+.about-page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 0.5rem 1rem 2rem;
+}
+
+.about-page-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.about-intro {
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.about-section {
+  margin-bottom: 1.25rem;
+}
+
+.about-section h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.about-section p {
+  margin: 0 0 0.6rem;
+  line-height: 1.55;
+  color: #b8c4d6;
+}
+
+.about-section p:last-child {
+  margin-bottom: 0;
+}
+
+.about-section a {
+  color: #8ba3c7;
+}
+
+.about-version-list {
+  margin: 0 0 0.6rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.about-version-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid #243041;
+  border-radius: 0.5rem;
+  background: #151d29;
+}
+
+.about-version-row dt {
+  margin: 0;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.about-version-row dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9rem;
+}
+
+.about-version-note {
+  font-size: 0.85rem;
+}
+
 .legal-crosslink {
   margin: 0 0 1rem;
   font-size: 0.9rem;
@@ -1955,6 +2028,10 @@ button.task-done-toggle:not(.task-done-toggle--done):hover:not(:disabled)
   margin-top: 0;
 }
 
+.task-detail-form .task-form-field-title-edit > span {
+  display: none;
+}
+
 .task-detail-form .task-form-field-title input {
   font-size: 1.25rem;
   font-weight: 600;
@@ -1967,6 +2044,88 @@ button.task-done-toggle:not(.task-done-toggle--done):hover:not(:disabled)
   border-color: #3b82f6;
   background: #0f1724;
   padding: 0.5rem 0.65rem;
+}
+
+.task-steps-editor > span {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.task-steps-list {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.task-step-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  border: 1px solid transparent;
+  background: #111827;
+  color: #e8edf5;
+  border-radius: 0.75rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.task-step-row:hover {
+  border-color: #314158;
+  background: #1b2738;
+}
+
+.task-step-main {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.task-step-row .task-step-checkbox {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  accent-color: #3b82f6;
+}
+
+.task-step-row .task-step-text {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  border-color: transparent;
+  background: transparent;
+  padding: 0;
+  border-radius: 0.35rem;
+  font-weight: 600;
+  color: #e8edf5;
+}
+
+.task-step-row .task-step-text:focus {
+  border-color: #3b82f6;
+  background: #0f1724;
+  padding: 0.35rem 0.5rem;
+}
+
+.task-step-row .task-step-text::placeholder {
+  color: #64748b;
+  font-weight: 400;
+}
+
+.task-step-row .task-tree-move-wrap {
+  flex-shrink: 0;
+  position: relative;
+  align-self: center;
+}
+
+.task-steps-add {
+  align-self: flex-start;
 }
 
 .task-detail-form .task-form-readonly-fields {

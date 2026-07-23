@@ -41,7 +41,21 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     app.set('trust proxy', 1);
   }
 
-  app.use(helmet());
+  const cspScriptSources = ["'self'", 'https://static.cloudflareinsights.com'];
+  const cspConnectSources = ["'self'", 'https://cloudflareinsights.com'];
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          'script-src': cspScriptSources,
+          'script-src-elem': cspScriptSources,
+          'connect-src': cspConnectSources,
+        },
+      },
+    })
+  );
   app.use(
     cors({
       origin: config.corsOrigin,

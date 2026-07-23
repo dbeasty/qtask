@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
+# Build app release tarball at the current version (no bump).
+# Used by release:app for local builds; publish:app bumps first.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-echo "Bumping patch version..."
-npm version patch --no-git-tag-version
-npm version patch --no-git-tag-version --prefix client
-npm version patch --no-git-tag-version --prefix admin-client
-
 VERSION="$(node -p "require('./package.json').version")"
 STAGING="${ROOT}/release/qtask-${VERSION}"
 ARCHIVE="${ROOT}/release/qtask-${VERSION}-linux.tar.gz"
 
-echo "Building QTask release ${VERSION}..."
+echo "Building QTask app release ${VERSION}..."
 
-rm -rf "${ROOT}/release"
+rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
 npm ci
@@ -41,20 +38,13 @@ tar -czf "${ARCHIVE}" -C "${ROOT}/release" "qtask-${VERSION}"
 CHECKSUM="$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')"
 
 echo ""
-echo "Release ready:"
+echo "App release ready:"
 echo "  ${ARCHIVE}"
 echo "  sha256: ${CHECKSUM}"
 echo ""
-echo "Version bumped to ${VERSION}. Commit package.json, package-lock.json,"
-echo "client/package*.json, and admin-client/package*.json before deploying."
-echo ""
-echo "Deploy:"
-echo "  npm run publish:app    # app server (qtask@192.168.13.13)"
-echo "  npm run publish:jetson"
+echo "Publish to app server (as qtask):"
+echo "  ./scripts/publish-app-release.sh qtask@192.168.13.13"
 echo ""
 echo "Or manually:"
 echo "  scp ${ARCHIVE} qtask@192.168.13.13:"
 echo "  ssh qtask@192.168.13.13 'tar xzf qtask-${VERSION}-linux.tar.gz && cd qtask-${VERSION} && ./deploy/deploy-app.sh'"
-echo ""
-echo "Jetson Ollama-only tarball (same version):"
-bash "${ROOT}/scripts/build-jetson-release.sh"

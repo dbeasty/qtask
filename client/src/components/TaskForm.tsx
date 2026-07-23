@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { Project, TaskPriority, TaskStatus } from '../types';
+import type { Project, TaskPriority, TaskStatus, TaskStep } from '../types';
 import { ProjectComboBox } from './ProjectComboBox';
 import { TaskProgressSlider } from './TaskProgressSlider';
 import { TaskSplitInput } from './TaskSplitInput';
+import { mergeLocalSteps, stepsSyncedEqual, stepsEqualForSave, stepsForApi, debugSteps, TaskStepsEditor } from './TaskStepsEditor';
 
 export interface TaskFormValues {
   title: string;
   description: string;
+  steps: TaskStep[];
   status: TaskStatus;
   priority: TaskPriority;
   projectName: string;
@@ -27,6 +29,24 @@ function valuesEqual(a: TaskFormValues, b: TaskFormValues): boolean {
   return (
     a.title === b.title &&
     a.description === b.description &&
+    stepsSyncedEqual(a.steps, b.steps) &&
+    a.status === b.status &&
+    a.priority === b.priority &&
+    a.projectName === b.projectName &&
+    a.tags === b.tags &&
+    a.percentComplete === b.percentComplete &&
+    a.progressShare === b.progressShare &&
+    a.hoursSpent === b.hoursSpent &&
+    a.hoursRemaining === b.hoursRemaining &&
+    a.lastProgressField === b.lastProgressField
+  );
+}
+
+function valuesEqualForSave(a: TaskFormValues, b: TaskFormValues): boolean {
+  return (
+    a.title.trim() === b.title.trim() &&
+    a.description === b.description &&
+    stepsEqualForSave(a.steps, b.steps) &&
     a.status === b.status &&
     a.priority === b.priority &&
     a.projectName === b.projectName &&
@@ -65,7 +85,7 @@ interface TaskFormSubmitProps extends TaskFormBaseProps {
 
 interface TaskFormAutoSaveProps extends TaskFormBaseProps {
   autoSave: {
-    onSave: (values: TaskFormValues) => Promise<void>;
+    onSave: (values: TaskFormValues) => Promise<TaskFormValues | void>;
     debounceMs?: number;
   };
   submitLabel?: never;
@@ -102,6 +122,7 @@ export function TaskForm(props: TaskFormProps) {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const lastSavedRef = useRef<TaskFormValues>(initialValues);
+  const valuesRef = useRef<TaskFormValues>(initialValues);
   const saveGenerationRef = useRef(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -123,11 +144,31 @@ export function TaskForm(props: TaskFormProps) {
 
   useEffect(() => {
     clearDebounce();
-    saveGenerationRef.current += 1;
+    if (isDirtyRef.current) {
+      saveGenerationRef.current += 1;
+    }
 
     if (!isDirtyRef.current) {
-      setValues(initialValues);
-      lastSavedRef.current = initialValues;
+      setValues((current) => {
+        const mergedSteps = mergeLocalSteps(initialValues.steps, current.steps);
+        const next = {
+          ...initialValues,
+          steps: mergedSteps,
+        };
+        if (valuesEqual(current, next)) {
+          debugSteps('initialValues sync skipped (no change)', {
+            stepCount: current.steps.length,
+          });
+          return current;
+        }
+        debugSteps('initialValues sync applied', {
+          beforeStepCount: current.steps.length,
+          afterStepCount: mergedSteps.length,
+        });
+        valuesRef.current = next;
+        lastSavedRef.current = next;
+        return next;
+      });
     }
 
     setValidationError(null);
@@ -135,25 +176,20 @@ export function TaskForm(props: TaskFormProps) {
     setSaveError(null);
   }, [initialValues, clearDebounce]);
 
-  useEffect(() => {
-    return () => {
-      clearDebounce();
-      clearSavedFade();
-    };
-  }, [clearDebounce, clearSavedFade]);
-
   const performAutoSave = useCallback(
     async (nextValues: TaskFormValues) => {
       if (!autoSave || !canAutoSave) return;
 
       if (!nextValues.title.trim()) {
+        debugSteps('autoSave skipped', { reason: 'title missing' });
         setValidationError('Title is required');
         setSaveStatus('error');
         setSaveError('Title is required');
         return;
       }
 
-      if (valuesEqual(nextValues, lastSavedRef.current)) {
+      if (valuesEqualForSave(nextValues, lastSavedRef.current)) {
+        debugSteps('autoSave skipped', { reason: 'no-op' });
         return;
       }
 
@@ -162,23 +198,37 @@ export function TaskForm(props: TaskFormProps) {
       setSaveError(null);
       setSaveStatus('saving');
 
+      debugSteps('autoSave started', {
+        stepCount: nextValues.steps.length,
+        apiStepCount: stepsForApi(nextValues.steps).length,
+      });
+
       try {
         const normalized = { ...nextValues, title: nextValues.title.trim() };
-        await autoSave.onSave(normalized);
+        const savedValues = (await autoSave.onSave(normalized)) ?? normalized;
 
-        if (generation !== saveGenerationRef.current) return;
+        if (generation !== saveGenerationRef.current) {
+          debugSteps('autoSave aborted', { reason: 'generation stale' });
+          return;
+        }
 
-        lastSavedRef.current = normalized;
-        isDirtyRef.current = false;
-        setSaveStatus('saved');
-        clearSavedFade();
-        savedFadeTimerRef.current = setTimeout(() => {
+        if (valuesEqualForSave(valuesRef.current, savedValues)) {
+          lastSavedRef.current = savedValues;
+          isDirtyRef.current = false;
+          setSaveStatus('saved');
+          debugSteps('autoSave succeeded', { stepCount: savedValues.steps.length });
+          clearSavedFade();
+          savedFadeTimerRef.current = setTimeout(() => {
+            setSaveStatus('idle');
+          }, 2000);
+        } else {
           setSaveStatus('idle');
-        }, 2000);
+        }
       } catch (err) {
         if (generation !== saveGenerationRef.current) return;
 
         const message = err instanceof Error ? err.message : 'Save failed';
+        debugSteps('autoSave failed', { error: message });
         setSaveStatus('error');
         setSaveError(message);
       }
@@ -187,22 +237,49 @@ export function TaskForm(props: TaskFormProps) {
   );
 
   const scheduleAutoSave = useCallback(
-    (nextValues: TaskFormValues) => {
+    (_nextValues: TaskFormValues) => {
       if (!autoSave || !canAutoSave) return;
+
+      debugSteps('autoSave scheduled', {
+        debounceMs: autoSave.debounceMs ?? 500,
+        stepCount: valuesRef.current.steps.length,
+      });
 
       clearDebounce();
       debounceTimerRef.current = setTimeout(() => {
-        void performAutoSave(nextValues);
+        void performAutoSave(valuesRef.current);
       }, autoSave.debounceMs ?? 500);
     },
     [autoSave, clearDebounce, performAutoSave, canAutoSave]
   );
 
+  const flushAutoSave = useCallback(() => {
+    if (!autoSave || !canAutoSave) return;
+    clearDebounce();
+    debugSteps('autoSave flush', { stepCount: valuesRef.current.steps.length });
+    void performAutoSave(valuesRef.current);
+  }, [autoSave, canAutoSave, clearDebounce, performAutoSave]);
+
+  useEffect(() => {
+    return () => {
+      clearDebounce();
+      clearSavedFade();
+      if (autoSave && canAutoSave && isDirtyRef.current) {
+        debugSteps('autoSave flush on unmount', {
+          stepCount: valuesRef.current.steps.length,
+          apiStepCount: stepsForApi(valuesRef.current.steps).length,
+        });
+        void performAutoSave(valuesRef.current);
+      }
+    };
+  }, [autoSave, canAutoSave, clearDebounce, clearSavedFade, performAutoSave]);
+
   const updateValues = useCallback(
     (updater: (current: TaskFormValues) => TaskFormValues) => {
       setValues((current) => {
         const next = updater(current);
-        isDirtyRef.current = !valuesEqual(next, lastSavedRef.current);
+        valuesRef.current = next;
+        isDirtyRef.current = !valuesEqualForSave(next, lastSavedRef.current);
         if (autoSave && canAutoSave) {
           scheduleAutoSave(next);
         }
@@ -276,8 +353,10 @@ export function TaskForm(props: TaskFormProps) {
         <p className="error-banner">{validationError}</p>
       )}
 
-      <label className="task-form-field task-form-field-title">
-        <span>Title</span>
+      <label
+        className={`task-form-field task-form-field-title${mode === 'edit' ? ' task-form-field-title-edit' : ''}`}
+      >
+        {mode === 'create' && <span>Title</span>}
         <input
           type="text"
           value={values.title}
@@ -298,6 +377,13 @@ export function TaskForm(props: TaskFormProps) {
           rows={3}
         />
       </label>
+
+      <TaskStepsEditor
+        steps={values.steps}
+        onChange={(updater) => updateValues((current) => ({ ...current, steps: updater(current.steps) }))}
+        onStepCommit={autoSave ? flushAutoSave : undefined}
+        disabled={fieldsDisabled}
+      />
 
       <div className="task-form-row">
         <label className="task-form-field">
@@ -458,6 +544,7 @@ export function emptyFormValues(projectName = ''): TaskFormValues {
   return {
     title: '',
     description: '',
+    steps: [],
     status: 'todo',
     priority: 'medium',
     projectName,

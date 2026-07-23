@@ -3,6 +3,7 @@ import { useAuth } from './auth/AuthContext';
 import { ActiveProjectMenu } from './components/ActiveProjectMenu';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { UserMenu } from './components/UserMenu';
+import { AboutPage } from './pages/AboutPage';
 import { ChatPage } from './pages/ChatPage';
 import { HelpPage } from './pages/HelpPage';
 import { LoginPage } from './pages/LoginPage';
@@ -14,16 +15,16 @@ import { TasksPage } from './pages/TasksPage';
 import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
 import { WelcomePage } from './pages/WelcomePage';
-import { checkHealth, listProjects } from './api/client';
+import { checkHealth, listProjects, listTasks } from './api/client';
 import type { Project } from './types';
 import {
   getStoredActiveProjectId,
   setStoredActiveProjectId,
 } from './utils/projectTree';
-import { getDefaultProject } from './utils/project';
+import { getDefaultProject, taskBelongsToProject } from './utils/project';
 import './styles.css';
 
-type View = 'projects' | 'chat' | 'tasks' | 'help';
+type View = 'projects' | 'chat' | 'tasks' | 'help' | 'about';
 
 const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
 
@@ -35,6 +36,7 @@ export function App() {
   const { user, loading, mustChangePassword, logout, updateProfile, updatePreferences } = useAuth();
   const [view, setView] = useState<View>('projects');
   const [healthy, setHealthy] = useState<boolean | null>(null);
+  const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
   const [projectsVersion, setProjectsVersion] = useState(0);
   const [suggestedProjectName, setSuggestedProjectName] = useState('');
@@ -48,6 +50,7 @@ export function App() {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const userMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const activeProjectMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const defaultViewSetRef = useRef(false);
 
   const setActiveProjectId = useCallback((projectId: string | null) => {
     setActiveProjectIdState(projectId);
@@ -57,7 +60,10 @@ export function App() {
   const refreshHealth = useCallback(() => {
     setHealthy(null);
     checkHealth()
-      .then(() => setHealthy(true))
+      .then((result) => {
+        setHealthy(true);
+        if (result.version) setApiVersion(result.version);
+      })
       .catch(() => setHealthy(false));
   }, []);
 
@@ -70,6 +76,35 @@ export function App() {
     if (AUTH_PATHS.has(getAuthPathname())) {
       window.history.replaceState(null, '', '/');
     }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      defaultViewSetRef.current = false;
+      return;
+    }
+    if (defaultViewSetRef.current) return;
+
+    Promise.all([listProjects(), listTasks()])
+      .then(([{ projects }, { tasks }]) => {
+        if (defaultViewSetRef.current) return;
+        defaultViewSetRef.current = true;
+
+        if (projects.length === 0) {
+          setView('projects');
+          return;
+        }
+
+        const storedId = getStoredActiveProjectId();
+        const matched = storedId ? projects.find((project) => project._id === storedId) : undefined;
+        const activeProject = matched ?? getDefaultProject(projects) ?? projects[0]!;
+        const taskCount = tasks.filter((task) => taskBelongsToProject(task, activeProject._id)).length;
+
+        setView(taskCount > 0 ? 'tasks' : 'chat');
+      })
+      .catch(() => {
+        defaultViewSetRef.current = true;
+      });
   }, [user]);
 
   useEffect(() => {
@@ -181,6 +216,7 @@ export function App() {
                 anchorRef={userMenuTriggerRef}
                 onChangePassword={() => setChangePasswordOpen(true)}
                 onOpenHelp={() => setView('help')}
+                onOpenAbout={() => setView('about')}
                 onUpdateDisplayName={updateProfile}
                 onUpdatePreferences={updatePreferences}
                 onSignOut={logout}
@@ -274,6 +310,8 @@ export function App() {
           />
         ) : view === 'help' ? (
           <HelpPage onBack={() => setView('projects')} />
+        ) : view === 'about' ? (
+          <AboutPage apiVersion={apiVersion} onBack={() => setView('projects')} />
         ) : (
           <TasksPage
             activeProjectId={activeProjectId}

@@ -16,9 +16,9 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
-      # Keep chat + embedding models resident; redeploy warms both after start.
+      # Pin chat only; embeddings load on demand via app (CPU, keep_alive 0).
       OLLAMA_KEEP_ALIVE: "-1"
-      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_MAX_LOADED_MODELS: "1"
     volumes:
       - qtask_ollama_data:/root/.ollama
     ports:

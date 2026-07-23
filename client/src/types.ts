@@ -2,6 +2,20 @@ export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 export type ProgressField = 'percent' | 'hoursSpent' | 'hoursRemaining';
 
+export interface TaskStep {
+  _id?: string;
+  /** Stable client-side key for React list identity; survives server _id assignment. */
+  clientKey?: string;
+  text: string;
+  done: boolean;
+}
+
+export interface TaskStepInput {
+  _id?: string;
+  text: string;
+  done?: boolean;
+}
+
 export interface Task {
   _id: string;
   userId: string;
@@ -10,6 +24,7 @@ export interface Task {
   projectIds: string[];
   title: string;
   description?: string;
+  steps?: TaskStep[];
   status: TaskStatus;
   priority: TaskPriority;
   dueDate?: string;
@@ -30,6 +45,7 @@ export interface Subtask {
   _id: string;
   title: string;
   description?: string;
+  steps?: TaskStep[];
   status: TaskStatus;
   priority: TaskPriority;
   percentComplete: number;
@@ -156,6 +172,7 @@ export interface UiMessage {
 export interface CreateTaskInput {
   title: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
   tags?: string[];
@@ -166,6 +183,7 @@ export interface CreateTaskInput {
 export interface CreateSubtaskInput {
   title: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
 }
@@ -173,6 +191,7 @@ export interface CreateSubtaskInput {
 export interface UpdateTaskInput {
   title?: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
   tags?: string[];
@@ -201,6 +220,7 @@ export interface AttachTaskAsSubtaskInput {
 export interface UpdateSubtaskInput {
   title?: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
   percentComplete?: number;

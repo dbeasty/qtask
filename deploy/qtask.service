@@ -1,6 +1,6 @@
 [Unit]
 Description=QTask API and web client
-After=network.target docker.service qtask-mongodb.service
+After=network.target docker.service
 Wants=docker.service
 
 [Service]

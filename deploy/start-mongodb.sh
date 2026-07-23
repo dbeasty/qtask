@@ -8,7 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${QTASK_ENV_FILE:-${APP_ROOT}/.env}"
-RUN_DIR="${QTASK_RUN_DIR:-/run/qtask}"
+# Under APP_ROOT so the qtask user can write without root (deploy-app.sh runs as qtask).
+RUN_DIR="${QTASK_RUN_DIR:-${APP_ROOT}/run}"
 COMPOSE_BASE="${SCRIPT_DIR}/docker-compose.mongodb.yml"
 COMPOSE_ENC="${SCRIPT_DIR}/docker-compose.mongodb.encrypted.yml"
 

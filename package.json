@@ -1,6 +1,6 @@
 {
   "name": "qtask",
-  "version": "0.1.1",
+  "version": "0.1.16",
   "description": "AI-native, MCP-powered task management backend",
   "type": "module",
   "main": "dist/index.js",
@@ -18,7 +18,9 @@
     "test": "node --import tsx --test tests/**/*.test.ts",
     "release": "bash scripts/build-release.sh",
     "release:jetson": "bash scripts/build-jetson-release.sh",
-    "publish:jetson": "bash scripts/publish-jetson-release.sh"
+    "publish:jetson": "bash scripts/publish-jetson-release.sh",
+    "release:app": "bash scripts/build-app-release.sh",
+    "publish:app": "bash scripts/publish-app-release.sh"
   },
   "engines": {
     "node": ">=20"

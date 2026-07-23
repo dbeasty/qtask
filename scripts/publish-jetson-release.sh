@@ -32,6 +32,4 @@ ssh "${JETSON_SSH}" "set -euo pipefail
 echo ""
 echo "Publish complete (${JETSON_SSH})."
 echo ""
-echo "Reminder: set app host .env manually (publish does not update the QTask server):"
-echo "  OLLAMA_BASE_URL=http://<JETSON_BIND_ADDRESS>:11434"
-echo "  OLLAMA_DOCKER_STATS_URL=http://<JETSON_BIND_ADDRESS>:2375/v1.44"
+echo "Reminder: app server deploy is separate — npm run publish:app (qtask@192.168.13.13)"

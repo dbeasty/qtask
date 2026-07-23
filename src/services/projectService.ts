@@ -797,6 +797,7 @@ export class ProjectService {
           model: config.ollama.model,
           prompt: `You are a project management assistant. Summarize this project status in 2-4 concise paragraphs for the project owner.\n\n${JSON.stringify(summary, null, 2)}`,
           stream: false,
+          keep_alive: config.ollama.keepAlive,
         }),
       });
 

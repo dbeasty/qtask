@@ -57,6 +57,14 @@ const mailProvider = resolveMailProvider();
 const adminAuthMode: AdminAuthMode = process.env.ADMIN_AUTH_MODE === 'mtls' ? 'mtls' : 'password';
 const secretsBackend = resolveSecretsBackend();
 
+/** Ollama keep_alive: -1 (forever), 0 (unload), duration string, or integer seconds. */
+function parseOllamaKeepAlive(value: string | undefined, fallback: string): string | number {
+  const raw = value ?? fallback;
+  if (raw === '-1') return -1;
+  if (/^-?\d+$/.test(raw)) return parseInt(raw, 10);
+  return raw;
+}
+
 export const config = {
   secretsBackend,
   port: parseInt(process.env.PORT ?? '3000', 10),
@@ -87,6 +95,9 @@ export const config = {
     baseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
     model: process.env.OLLAMA_MODEL ?? 'llama3.1',
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'nomic-embed-text',
+    keepAlive: parseOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE, '-1'),
+    embeddingKeepAlive: parseOllamaKeepAlive(process.env.OLLAMA_EMBEDDING_KEEP_ALIVE, '0'),
+    embeddingNumGpu: parseInt(process.env.OLLAMA_EMBEDDING_NUM_GPU ?? '0', 10),
   },
   admin: {
     host: process.env.ADMIN_HOST ?? '127.0.0.1',

@@ -52,10 +52,19 @@ const stagingSchema = new Schema(
   { _id: false }
 );
 
+const taskStepSchema = new Schema(
+  {
+    text: { type: String, required: true, trim: true },
+    done: { type: Boolean, default: false },
+  },
+  { _id: true }
+);
+
 const subtaskSchema = new Schema(
   {
     title: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
+    steps: { type: [taskStepSchema], default: [] },
     status: {
       type: String,
       enum: ['todo', 'in_progress', 'done', 'cancelled'] satisfies TaskStatus[],
@@ -91,6 +100,7 @@ const taskSchema = new Schema(
     projectIds: { type: [String], default: [], index: true },
     title: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
+    steps: { type: [taskStepSchema], default: [] },
     status: {
       type: String,
       enum: ['todo', 'in_progress', 'done', 'cancelled'] satisfies TaskStatus[],

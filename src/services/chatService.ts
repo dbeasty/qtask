@@ -264,6 +264,7 @@ export async function* streamOllamaChat(
         messages,
         tools: getOllamaTools(),
         stream: true,
+        keep_alive: config.ollama.keepAlive,
         options: { temperature: 0.2 },
       }),
     });

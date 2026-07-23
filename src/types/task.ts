@@ -8,10 +8,23 @@ export interface TaskLink {
   type: TaskLinkType;
 }
 
+export interface TaskStep {
+  _id: string;
+  text: string;
+  done: boolean;
+}
+
+export interface TaskStepInput {
+  _id?: string;
+  text: string;
+  done?: boolean;
+}
+
 export interface Subtask {
   _id: string;
   title: string;
   description?: string;
+  steps: TaskStep[];
   status: TaskStatus;
   priority: TaskPriority;
   dueDate?: Date;
@@ -36,6 +49,7 @@ export interface Task {
   projectIds: string[];
   title: string;
   description?: string;
+  steps: TaskStep[];
   status: TaskStatus;
   priority: TaskPriority;
   dueDate?: Date;
@@ -57,6 +71,7 @@ export interface Task {
 export interface CreateTaskInput {
   title: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
   dueDate?: Date | string;
@@ -75,6 +90,7 @@ export interface CreateTaskInput {
 export interface CreateSubtaskInput {
   title: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
   dueDate?: Date | string;
@@ -91,6 +107,7 @@ export interface CreateSubtaskInput {
 export interface UpdateTaskInput {
   title?: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
   dueDate?: Date | string | null;
@@ -121,6 +138,7 @@ export interface AttachTaskAsSubtaskInput {
 export interface UpdateSubtaskInput {
   title?: string;
   description?: string;
+  steps?: TaskStepInput[];
   status?: TaskStatus;
   priority?: TaskPriority;
   dueDate?: Date | string | null;

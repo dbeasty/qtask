@@ -41,7 +41,21 @@ export async function createAdminApp(options?: { connect?: boolean; serveClient?
 
   const app = express();
   app.disable('x-powered-by');
-  app.use(helmet());
+  const cspScriptSources = ["'self'", 'https://static.cloudflareinsights.com'];
+  const cspConnectSources = ["'self'", 'https://cloudflareinsights.com'];
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          'script-src': cspScriptSources,
+          'script-src-elem': cspScriptSources,
+          'connect-src': cspConnectSources,
+        },
+      },
+    })
+  );
   app.use(express.json({ limit: '100kb' }));
 
   const loginLimiter = rateLimit({

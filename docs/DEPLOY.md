@@ -466,7 +466,7 @@ The app server runs at **`/opt/qtask`** as system user **`qtask`**. Deploy from 
 # From release tar or repo
 ./deploy/bootstrap-app-server.sh
 
-# Optional: passwordless systemd deploy for qtask
+# Optional: passwordless systemd deploy for qtask (also done automatically by bootstrap-app-server.sh)
 sudo cp deploy/qtask-deploy.sudoers.example /etc/sudoers.d/qtask-deploy
 sudo chmod 440 /etc/sudoers.d/qtask-deploy
 sudo visudo -cf /etc/sudoers.d/qtask-deploy
@@ -475,12 +475,14 @@ sudo visudo -cf /etc/sudoers.d/qtask-deploy
 ssh-copy-id -i ~/.ssh/id_ed25519.pub qtask@192.168.13.13
 ```
 
-**One command from dev machine** (build → scp → install → MongoDB → systemd → health checks):
+**One command from dev machine** (bump version → build → scp → install → MongoDB → systemd → health checks):
 
 ```bash
 npm run publish:app
 # or: APP_SSH=qtask@192.168.13.13 npm run publish:app
 ```
+
+Each `publish:app` auto-bumps the patch version in root, `client`, and `admin-client` `package.json` files (e.g. `0.1.1` → `0.1.2`). Commit the bumped `package.json` and lockfiles after publishing.
 
 **What publish updates**
 
@@ -546,13 +548,13 @@ Publish to Jetson (build + scp + deploy):
 npm run publish:jetson
 ```
 
-Publish to app server (build + scp + deploy):
+Publish to app server (bump patch version, build, scp, deploy):
 
 ```bash
 npm run publish:app
 ```
 
-App-only tarball without bumping version:
+App-only tarball at current version (no bump):
 
 ```bash
 npm run release:app

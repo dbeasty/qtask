@@ -14,7 +14,7 @@ import type { StagingContext } from '../types/staging.js';
 import { canEditProject, roleAtLeast, type ProjectRole } from '../types/project.js';
 import { HttpError } from '../utils/httpError.js';
 import { applyPercentComplete } from '../utils/percentComplete.js';
-import { buildSubtaskTree, serializeTask } from '../utils/serialization.js';
+import { buildSubtaskTree, normalizeStepsInput, serializeTask } from '../utils/serialization.js';
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
 import { cosineSimilarity, generateEmbedding } from './embeddingService.js';
@@ -227,6 +227,7 @@ export class TaskService {
       projectIds,
       title: input.title,
       description: input.description,
+      steps: normalizeStepsInput(input.steps),
       status: input.status ?? 'todo',
       priority: input.priority ?? 'medium',
       dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
@@ -387,6 +388,11 @@ export class TaskService {
       if (input.description !== undefined) {
         task.description = input.description;
         changes.description = input.description;
+      }
+      if (input.steps !== undefined) {
+        task.steps = normalizeStepsInput(input.steps) as typeof task.steps;
+        task.markModified('steps');
+        changes.steps = input.steps;
       }
       if (input.priority !== undefined) {
         task.priority = input.priority;
@@ -689,6 +695,10 @@ export class TaskService {
       if (input.description !== undefined) {
         node.description = input.description;
         changes.description = input.description;
+      }
+      if (input.steps !== undefined) {
+        node.steps = normalizeStepsInput(input.steps);
+        changes.steps = input.steps;
       }
       if (input.priority !== undefined) {
         node.priority = input.priority;

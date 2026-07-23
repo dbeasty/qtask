@@ -33,6 +33,7 @@ import {
   TaskForm,
   type TaskFormValues,
 } from '../components/TaskForm';
+import { stepsForApi, stepsFromTask } from '../components/TaskStepsEditor';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectToolbar } from '../components/ProjectToolbar';
 import { TaskListPanel } from '../components/TaskListPanel';
@@ -111,24 +112,27 @@ function getDetailItem(task: Task, selection: Selection): DetailItem {
 }
 
 function buildBreadcrumb(task: Task, selection: Selection): Array<{ label: string; selection: Selection }> {
+  if (selection.kind === 'task') {
+    return [];
+  }
+
+  const ancestorPath = selection.path.slice(0, -1);
   const crumbs: Array<{ label: string; selection: Selection }> = [
     { label: task.title, selection: { kind: 'task', taskId: task._id } },
   ];
 
-  if (selection.kind === 'subtask') {
-    let current = task.subtasks;
-    const path: string[] = [];
+  let current = task.subtasks;
+  const path: string[] = [];
 
-    for (const id of selection.path) {
-      const subtask = current.find((item) => item._id === id);
-      if (!subtask) break;
-      path.push(id);
-      crumbs.push({
-        label: subtask.title,
-        selection: { kind: 'subtask', taskId: task._id, path: [...path] },
-      });
-      current = subtask.subtasks;
-    }
+  for (const id of ancestorPath) {
+    const subtask = current.find((item) => item._id === id);
+    if (!subtask) break;
+    path.push(id);
+    crumbs.push({
+      label: subtask.title,
+      selection: { kind: 'subtask', taskId: task._id, path: [...path] },
+    });
+    current = subtask.subtasks;
   }
 
   return crumbs;
@@ -142,6 +146,7 @@ function taskToFormValues(task: Task, projects: Project[]): TaskFormValues {
   return {
     title: task.title,
     description: task.description ?? '',
+    steps: stepsFromTask(task.steps),
     status: task.status,
     priority: task.priority,
     projectName: projectIdToName(taskProjectIds(task)[0] ?? '', projects),
@@ -158,6 +163,7 @@ function subtaskToFormValues(subtask: Subtask): TaskFormValues {
   return {
     title: subtask.title,
     description: subtask.description ?? '',
+    steps: stepsFromTask(subtask.steps),
     status: subtask.status,
     priority: subtask.priority,
     projectName: '',
@@ -168,6 +174,27 @@ function subtaskToFormValues(subtask: Subtask): TaskFormValues {
     hoursRemaining: formatOptionalHours(subtask.hoursRemaining),
     lastProgressField: subtask.lastProgressField ?? 'percent',
   };
+}
+
+function buildTaskUpdatePatch(
+  values: TaskFormValues,
+  forTask: Task,
+  projectId?: string
+): UpdateTaskInput {
+  const progressPatch = forTask.subtasks.length === 0 ? buildProgressPatch(values) : {};
+  const patch: UpdateTaskInput = {
+    title: values.title,
+    description: values.description || undefined,
+    steps: stepsForApi(values.steps),
+    status: values.status,
+    priority: values.priority,
+    tags: parseTagsInput(values.tags),
+    ...progressPatch,
+  };
+  if (projectId) {
+    patch.projectId = projectId;
+  }
+  return patch;
 }
 
 function buildProgressPatch(values: TaskFormValues): Pick<
@@ -295,6 +322,7 @@ export function TasksPage({
       const { task } = await createTask({
         title: values.title,
         description: values.description || undefined,
+        steps: stepsForApi(values.steps),
         status: values.status,
         priority: values.priority,
         projectId: forProjectId,
@@ -311,48 +339,50 @@ export function TasksPage({
     }
   };
 
-  const handleDetailSave = async (values: TaskFormValues) => {
-    if (!selection || !selectedTask) return;
+  const saveTaskDetail = async (
+    values: TaskFormValues,
+    forSelection: Selection,
+    forTask: Task
+  ): Promise<TaskFormValues> => {
+      const statusOnly = !activeProject?.canEdit && Boolean(activeProject?.canUpdateStatus);
 
-    const statusOnly = !activeProject?.canEdit && Boolean(activeProject?.canUpdateStatus);
-
-    if (selection.kind === 'task') {
-      if (statusOnly) {
-        const { task } = await updateTask(selectedTask._id, { status: values.status });
+      if (forSelection.kind === 'task') {
+        if (statusOnly) {
+          const { task } = await updateTask(forTask._id, { status: values.status });
+          applyTaskUpdate(task);
+          return taskToFormValues(task, projects);
+        }
+        const projectId = await resolveAndRefreshProjects(values.projectName);
+        const { task } = await updateTask(
+          forTask._id,
+          buildTaskUpdatePatch(values, forTask, projectId)
+        );
         applyTaskUpdate(task);
-        return;
-      }
-      const projectId = await resolveAndRefreshProjects(values.projectName);
-      const progressPatch = selectedTask.subtasks.length === 0 ? buildProgressPatch(values) : {};
-      const { task } = await updateTask(selectedTask._id, {
-        title: values.title,
-        description: values.description || undefined,
-        status: values.status,
-        priority: values.priority,
-        projectId: projectId ?? null,
-        tags: parseTagsInput(values.tags),
-        ...progressPatch,
-      });
-      applyTaskUpdate(task);
-    } else {
-      if (statusOnly) {
-        const { task } = await updateSubtask(selectedTask._id, selection.path, {
+        return taskToFormValues(task, projects);
+      } else {
+        if (statusOnly) {
+          const { task } = await updateSubtask(forTask._id, forSelection.path, {
+            status: values.status,
+          });
+          applyTaskUpdate(task);
+          const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
+          return subtask ? subtaskToFormValues(subtask) : values;
+        }
+        const isLeaf =
+          (findSubtaskByPath(forTask.subtasks, forSelection.path)?.subtasks.length ?? 0) === 0;
+        const progressPatch = isLeaf ? buildProgressPatch(values) : {};
+        const { task } = await updateSubtask(forTask._id, forSelection.path, {
+          title: values.title,
+          description: values.description || undefined,
+          steps: stepsForApi(values.steps),
           status: values.status,
+          priority: values.priority,
+          ...progressPatch,
         });
         applyTaskUpdate(task);
-        return;
+        const subtask = findSubtaskByPath(task.subtasks, forSelection.path);
+        return subtask ? subtaskToFormValues(subtask) : values;
       }
-      const isLeaf = (findSubtaskByPath(selectedTask.subtasks, selection.path)?.subtasks.length ?? 0) === 0;
-      const progressPatch = isLeaf ? buildProgressPatch(values) : {};
-      const { task } = await updateSubtask(selectedTask._id, selection.path, {
-        title: values.title,
-        description: values.description || undefined,
-        status: values.status,
-        priority: values.priority,
-        ...progressPatch,
-      });
-      applyTaskUpdate(task);
-    }
   };
 
   const handleAddSubtask = async (values: TaskFormValues) => {
@@ -366,6 +396,7 @@ export function TasksPage({
         {
           title: values.title,
           description: values.description || undefined,
+          steps: stepsForApi(values.steps),
           status: values.status,
           priority: values.priority,
         },
@@ -660,6 +691,13 @@ export function TasksPage({
     [projectGroups, resolvedActiveProjectId]
   );
 
+  const newTaskFormValues = useMemo(
+    () => emptyFormValues(activeProjectGroup?.projectName ?? ''),
+    [activeProjectGroup?.projectName]
+  );
+
+  const newSubtaskFormValues = useMemo(() => emptyFormValues(), []);
+
   const activeProjectTasks = activeProjectGroup?.tasks ?? [];
 
   const projectDialogTask = useMemo(
@@ -923,7 +961,7 @@ export function TasksPage({
                 <TaskForm
                   mode="create"
                   className="task-detail-form"
-                  initialValues={emptyFormValues(activeProjectGroup.projectName)}
+                  initialValues={newTaskFormValues}
                   showProjectFields
                   projects={projects}
                   submitLabel="Create task"
@@ -938,7 +976,7 @@ export function TasksPage({
                 <TaskForm
                   mode="create"
                   className="task-detail-form"
-                  initialValues={emptyFormValues()}
+                  initialValues={newSubtaskFormValues}
                   submitLabel={addSubtaskLabel}
                   saving={saving}
                   onSubmit={handleAddSubtask}
@@ -947,23 +985,22 @@ export function TasksPage({
               </article>
             ) : selectedTask && detail && selection ? (
               <article className="task-detail-panel">
-                <nav className="task-breadcrumb" aria-label="Task navigation">
-                  {breadcrumbs.map((crumb, index) => (
-                    <span key={`${crumb.selection.kind}-${index}`} className="task-breadcrumb-item">
-                      {index > 0 && <span className="task-breadcrumb-sep">›</span>}
-                      <button
-                        type="button"
-                        className={
-                          index === breadcrumbs.length - 1 ? 'task-breadcrumb-current' : 'task-breadcrumb-link'
-                        }
-                        onClick={() => handleSelect(crumb.selection)}
-                        disabled={index === breadcrumbs.length - 1}
-                      >
-                        {crumb.label}
-                      </button>
-                    </span>
-                  ))}
-                </nav>
+                {breadcrumbs.length > 0 && (
+                  <nav className="task-breadcrumb" aria-label="Task navigation">
+                    {breadcrumbs.map((crumb, index) => (
+                      <span key={`${crumb.selection.kind}-${index}`} className="task-breadcrumb-item">
+                        {index > 0 && <span className="task-breadcrumb-sep">›</span>}
+                        <button
+                          type="button"
+                          className="task-breadcrumb-link"
+                          onClick={() => handleSelect(crumb.selection)}
+                        >
+                          {crumb.label}
+                        </button>
+                      </span>
+                    ))}
+                  </nav>
+                )}
 
                 <TaskForm
                   key={selectionKey}
@@ -978,7 +1015,12 @@ export function TasksPage({
                   projects={projects}
                   disabled={!activeProject?.canEdit}
                   statusEditable={Boolean(activeProject?.canUpdateStatus)}
-                  autoSave={{ onSave: handleDetailSave }}
+                  autoSave={{
+                    onSave: (values) => {
+                      if (!selection || !selectedTask) return Promise.resolve();
+                      return saveTaskDetail(values, selection, selectedTask);
+                    },
+                  }}
                 />
               </article>
             ) : (

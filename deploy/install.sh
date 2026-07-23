@@ -12,10 +12,35 @@ if [[ ! -f "${APP_ROOT}/package.json" ]]; then
   exit 1
 fi
 
-sudo mkdir -p "${INSTALL_DIR}"
-sudo rsync -a --delete \
+needs_sudo_for_install_dir() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    return 1
+  fi
+  if [[ -d "${INSTALL_DIR}" && -w "${INSTALL_DIR}" ]]; then
+    return 1
+  fi
+  local parent
+  parent="$(dirname "${INSTALL_DIR}")"
+  if [[ ! -d "${INSTALL_DIR}" && -d "${parent}" && -w "${parent}" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+run_privileged() {
+  if needs_sudo_for_install_dir; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+run_privileged mkdir -p "${INSTALL_DIR}"
+run_privileged rsync -a --delete \
   --exclude='.env' \
   --exclude='.env.local' \
+  --exclude='.ssh/' \
+  --exclude='qtask-*/' \
   "${APP_ROOT}/" "${INSTALL_DIR}/"
 
 cd "${INSTALL_DIR}"
@@ -26,14 +51,25 @@ if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
   echo "Created ${INSTALL_DIR}/.env — edit secrets before starting."
 fi
 
-if ! id qtask &>/dev/null; then
-  sudo useradd --system --home "${INSTALL_DIR}" --shell /usr/sbin/nologin qtask
-fi
+if [[ "$(id -u)" -eq 0 ]] || needs_sudo_for_install_dir; then
+  if ! id qtask &>/dev/null; then
+    run_privileged useradd --system --home "${INSTALL_DIR}" --shell /bin/bash qtask
+  else
+    run_privileged usermod -d "${INSTALL_DIR}" -s /bin/bash qtask 2>/dev/null || true
+  fi
 
-sudo chown -R qtask:qtask "${INSTALL_DIR}"
+  if getent group docker >/dev/null 2>&1; then
+    run_privileged usermod -aG docker qtask
+  fi
+
+  run_privileged chown -R qtask:qtask "${INSTALL_DIR}"
+fi
 
 echo ""
 echo "Next steps:"
+echo "  Full deploy: ${INSTALL_DIR}/deploy/deploy-app.sh"
+echo "  Or from dev machine: npm run publish:app"
+echo ""
 echo "  1. Edit ${INSTALL_DIR}/.env (JWT/admin secrets, mail, domain, OLLAMA_BASE_URL)"
 echo "     Optional: SECRETS_BACKEND=vault (see docs/DEPLOY.md §8) or MONGO_ENCRYPT_AT_REST=true (§7)"
 echo "  2. Start MongoDB: ${INSTALL_DIR}/deploy/start-mongodb.sh"
