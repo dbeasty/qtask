@@ -67,6 +67,14 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
+echo "==> Waiting for GPU stats sidecar"
+for _ in $(seq 1 15); do
+  if curl -sf "http://${JETSON_BIND_ADDRESS}:9401/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
 if [[ "${SKIP_MODELS}" != true ]]; then
   echo "==> Pulling models (${CHAT_MODEL}, ${EMBED_MODEL})"
   docker exec qtask-ollama ollama pull "${CHAT_MODEL}"

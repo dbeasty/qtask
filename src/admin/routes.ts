@@ -15,6 +15,7 @@ import {
   UserModel,
 } from '../models/index.js';
 import { requireAdmin, requireCsrf } from './auth.js';
+import { fetchGpuStatus } from './gpuStats.js';
 
 const BCRYPT_ROUNDS = 12;
 const router = Router();
@@ -364,38 +365,9 @@ async function resourceStatus(): Promise<Record<string, unknown>> {
   }
 }
 
-async function gpuStatus(): Promise<Record<string, unknown>> {
-  if (!config.resourceMonitoring.dcgmMetricsUrl) {
-    return { available: false, reason: 'GPU collector is not configured' };
-  }
-  try {
-    const response = await fetch(config.resourceMonitoring.dcgmMetricsUrl, {
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const text = await response.text();
-    const metric = (name: string) => {
-      const values = [...text.matchAll(new RegExp(`^${name}(?:\\{[^}]*\\})?\\s+([\\d.eE+-]+)$`, 'gm'))]
-        .map((match) => Number(match[1]))
-        .filter(Number.isFinite);
-      return values.length ? values.reduce((sum, value) => sum + value, 0) : undefined;
-    };
-    return {
-      available: true,
-      utilizationPercent: metric('DCGM_FI_DEV_GPU_UTIL'),
-      memoryUsedMiB: metric('DCGM_FI_DEV_FB_USED'),
-      memoryFreeMiB: metric('DCGM_FI_DEV_FB_FREE'),
-      temperatureC: metric('DCGM_FI_DEV_GPU_TEMP'),
-      powerWatts: metric('DCGM_FI_DEV_POWER_USAGE'),
-    };
-  } catch (error) {
-    return { available: false, reason: error instanceof Error ? error.message : String(error) };
-  }
-}
-
 router.get('/ollama/status', async (_req, res) => {
   const base = config.ollama.baseUrl.replace(/\/$/, '');
-  const [version, tags, running, queue, resources, gpu] = await Promise.all([
+  const [version, tags, running, queue, resources] = await Promise.all([
     fetchJson(`${base}/api/version`).catch((error) => ({ error: String(error) })),
     fetchJson(`${base}/api/tags`).catch((error) => ({ error: String(error) })),
     fetchJson(`${base}/api/ps`).catch((error) => ({ error: String(error) })),
@@ -404,7 +376,6 @@ router.get('/ollama/status', async (_req, res) => {
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ]),
     resourceStatus(),
-    gpuStatus(),
   ]);
   res.json({
     available: !(version as { error?: string }).error,
@@ -417,8 +388,16 @@ router.get('/ollama/status', async (_req, res) => {
     running,
     embeddingQueue: Object.fromEntries(queue.map((row) => [row._id, row.count])),
     resources,
-    gpu,
   });
+});
+
+router.get('/ollama/gpu', async (_req, res) => {
+  const gpu = await fetchGpuStatus({
+    jetsonGpuStatsUrl: config.resourceMonitoring.jetsonGpuStatsUrl,
+    dcgmMetricsUrl: config.resourceMonitoring.dcgmMetricsUrl,
+    ollamaBaseUrl: config.ollama.baseUrl,
+  });
+  res.json(gpu);
 });
 
 router.get('/ollama/summary', async (req, res, next) => {

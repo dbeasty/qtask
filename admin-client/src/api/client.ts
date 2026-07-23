@@ -1,5 +1,6 @@
 import type {
   AdminStats,
+  GpuResources,
   LoginResponse,
   OllamaCallsResponse,
   OllamaStatusResponse,
@@ -131,6 +132,10 @@ function windowQuery(windowHours: number): URLSearchParams {
 
 export async function fetchOllamaStatus(): Promise<OllamaStatusResponse> {
   return request('/api/admin/ollama/status');
+}
+
+export async function fetchOllamaGpu(): Promise<GpuResources> {
+  return request('/api/admin/ollama/gpu');
 }
 
 export async function fetchOllamaSummary(windowHours: number): Promise<OllamaSummaryResponse> {

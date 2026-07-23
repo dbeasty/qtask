@@ -33,6 +33,7 @@ done
 for f in "${LIB_FILES[@]}"; do
   cp "deploy/${f}" "${STAGING}/deploy/${f}"
 done
+cp -R deploy/jetson-gpu-stats "${STAGING}/deploy/"
 
 chmod +x \
   "${STAGING}/deploy/start-ollama-jetson.sh" \

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AuthError,
+  fetchOllamaGpu,
   fetchOllamaStatus,
   fetchOllamaSummary,
   fetchOllamaTimeseries,
@@ -18,6 +19,7 @@ import {
   formatPercent,
 } from '../utils/format';
 import type {
+  GpuResources,
   OllamaCall,
   OllamaStatusResponse,
   OllamaSummaryGroup,
@@ -25,6 +27,52 @@ import type {
 } from '../types';
 
 const PAGE_SIZE = 20;
+const GPU_POLL_STORAGE_KEY = 'qtask.admin.gpuPollIntervalMs';
+const GPU_POLL_OPTIONS = [
+  { label: 'Off', ms: 0 },
+  { label: '1s', ms: 1_000 },
+  { label: '2s', ms: 2_000 },
+  { label: '5s', ms: 5_000 },
+  { label: '10s', ms: 10_000 },
+  { label: '30s', ms: 30_000 },
+] as const;
+
+function readGpuPollIntervalMs(): number {
+  try {
+    const stored = localStorage.getItem(GPU_POLL_STORAGE_KEY);
+    if (stored == null) return 1_000;
+    const parsed = Number(stored);
+    return GPU_POLL_OPTIONS.some((option) => option.ms === parsed) ? parsed : 1_000;
+  } catch {
+    return 1_000;
+  }
+}
+
+function formatGpuHint(gpu: GpuResources | null): string | undefined {
+  if (!gpu) return undefined;
+  if (!gpu.available) return gpu.reason;
+
+  const parts: string[] = [];
+  if (gpu.memoryUsedMiB != null) {
+    parts.push(
+      gpu.memoryTotalMiB != null
+        ? `${formatNumber(gpu.memoryUsedMiB)} / ${formatNumber(gpu.memoryTotalMiB)} MiB RAM`
+        : `${formatNumber(gpu.memoryUsedMiB)} MiB used`
+    );
+  }
+  if (gpu.temperatureC != null) {
+    parts.push(`${gpu.temperatureC}°C`);
+  }
+  if (gpu.source === 'ollama_ps') {
+    parts.push('Ollama offload only');
+  } else if (gpu.source) {
+    parts.push(gpu.source);
+  }
+  if (gpu.ollama?.gpuOffloadPercent != null) {
+    parts.push(`${gpu.ollama.gpuOffloadPercent}% model on GPU`);
+  }
+  return parts.length > 0 ? parts.join(', ') : undefined;
+}
 const WINDOW_OPTIONS = [
   { hours: 6, label: '6h' },
   { hours: 24, label: '24h' },
@@ -70,6 +118,8 @@ function summarize(groups: OllamaSummaryGroup[]): SummaryTotals {
 export function OllamaPage() {
   const { handleSessionExpired } = useAuth();
   const [status, setStatus] = useState<OllamaStatusResponse | null>(null);
+  const [gpu, setGpu] = useState<GpuResources | null>(null);
+  const [gpuPollIntervalMs, setGpuPollIntervalMs] = useState(readGpuPollIntervalMs);
   const [groups, setGroups] = useState<OllamaSummaryGroup[]>([]);
   const [points, setPoints] = useState<OllamaTimeseriesPoint[]>([]);
   const [calls, setCalls] = useState<OllamaCall[]>([]);
@@ -95,6 +145,43 @@ export function OllamaPage() {
     setError(null);
     fetchOllamaStatus().then(setStatus).catch(handleError);
   }, [handleError, refreshKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadGpu = () => {
+      fetchOllamaGpu()
+        .then((result) => {
+          if (!cancelled) setGpu(result);
+        })
+        .catch((err) => {
+          if (!cancelled) handleError(err);
+        });
+    };
+
+    loadGpu();
+
+    if (gpuPollIntervalMs <= 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = window.setInterval(loadGpu, gpuPollIntervalMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [handleError, refreshKey, gpuPollIntervalMs]);
+
+  const handleGpuPollChange = (ms: number) => {
+    setGpuPollIntervalMs(ms);
+    try {
+      localStorage.setItem(GPU_POLL_STORAGE_KEY, String(ms));
+    } catch {
+      // ignore storage failures
+    }
+  };
 
   useEffect(() => {
     fetchOllamaSummary(windowHours)
@@ -133,16 +220,30 @@ export function OllamaPage() {
   const queue = status?.embeddingQueue ?? {};
   const queuePending = (queue.pending ?? 0) + (queue.processing ?? 0);
   const docker = status?.resources;
-  const gpu = status?.gpu;
 
   return (
     <div className="page">
       <section className="panel">
         <div className="panel-header">
           <h2>Ollama status</h2>
-          <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>
-            Refresh
-          </button>
+          <div className="panel-header-actions">
+            <label className="gpu-poll-control">
+              <span className="muted">GPU refresh</span>
+              <select
+                value={gpuPollIntervalMs}
+                onChange={(event) => handleGpuPollChange(Number(event.target.value))}
+              >
+                {GPU_POLL_OPTIONS.map((option) => (
+                  <option key={option.ms} value={option.ms}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>
+              Refresh
+            </button>
+          </div>
         </div>
         {error && <p className="panel-error">{error}</p>}
         <div className="stat-grid">
@@ -174,12 +275,18 @@ export function OllamaPage() {
           />
           <StatCard
             label="GPU"
-            value={gpu?.available ? formatPercent(gpu.utilizationPercent) : '—'}
-            hint={
-              gpu?.available
-                ? `${formatNumber(gpu.memoryUsedMiB)} MiB used${gpu.temperatureC != null ? `, ${gpu.temperatureC}°C` : ''}`
-                : gpu?.reason
+            value={
+              gpu == null
+                ? '…'
+                : gpu.available
+                  ? gpu.utilizationPercent != null
+                    ? formatPercent(gpu.utilizationPercent)
+                    : gpu.ollama?.gpuOffloadPercent != null
+                      ? `${gpu.ollama.gpuOffloadPercent}% offload`
+                      : '—'
+                  : '—'
             }
+            hint={formatGpuHint(gpu)}
           />
         </div>
 

@@ -116,6 +116,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_EMBEDDING_NUM_GPU` | `0` | GPU layers for embeddings (`0` = CPU; keeps chat on GPU) |
 | `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.44`) |
 | `OLLAMA_DOCKER_CONTAINER` | `qtask-ollama` | Container name for Docker stats |
+| `JETSON_GPU_STATS_URL` | — | Jetson GPU sidecar (e.g. `http://<ip>:9401/gpu`); on-demand sysfs reader |
 | `DCGM_METRICS_URL` | — | Discrete GPU metrics; leave unset for Jetson |
 | `LOG_LEVEL` | `debug` | `debug` \| `info` \| `warn` \| `error` |
 | `MCP_JWT` | — | JWT for MCP stdio server (see §6) |
@@ -215,6 +216,7 @@ One Node process on **3003** serves both the React web UI (static JS/CSS) and th
 | MongoDB | Docker-internal or `127.0.0.1:27017` | No |
 | Ollama (Jetson) | 11434 on LAN | No — LAN only |
 | Jetson docker-proxy (Compose) | 2375 on LAN | No — LAN only |
+| Jetson GPU stats sidecar | 9401 on LAN | No — LAN only; on-demand sysfs reads |
 
 Forward only **80** and **443** on your router. Do not forward 3003, 3004, 27017, 11434, or 2375.
 
@@ -268,6 +270,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app up
 | MongoDB | 27017 (dev only) | Not published in prod override |
 | Ollama | 11434 | Optional `--profile ollama`, or Jetson LAN host |
 | Jetson docker-proxy | 2375 | Compose Jetson only — LAN stats for admin; do not internet-forward |
+| Jetson GPU stats | 9401 | Compose Jetson only — on-demand GPU util/temp/RAM for admin |
 
 #### 4.1.1 Jetson Ollama
 
@@ -378,7 +381,10 @@ OLLAMA_EMBEDDING_KEEP_ALIVE=0
 OLLAMA_EMBEDDING_NUM_GPU=0
 OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
+JETSON_GPU_STATS_URL=http://192.168.13.14:9401/gpu
 ```
+
+The Jetson stack includes a lightweight **`jetson-gpu-stats`** sidecar (`deploy/jetson-gpu-stats/`) that reads GPU load, temperature, and system RAM from sysfs **only when polled**. The admin UI calls `GET /api/admin/ollama/gpu` while the Ollama tab is open (configurable refresh, default 1s). No GPU polling runs on other admin tabs or when the admin UI is closed.
 
 After deploy, verify chat stays loaded and embeddings are on demand:
 
@@ -425,8 +431,10 @@ Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=1` so only the
 ```bash
 sudo ufw allow from 192.168.13.13 to 192.168.13.14 port 11434 proto tcp
 sudo ufw allow from 192.168.13.13 to 192.168.13.14 port 2375 proto tcp
+sudo ufw allow from 192.168.13.13 to 192.168.13.14 port 9401 proto tcp
 sudo ufw deny 11434/tcp
 sudo ufw deny 2375/tcp
+sudo ufw deny 9401/tcp
 ```
 
 ##### Health checks
@@ -435,12 +443,14 @@ sudo ufw deny 2375/tcp
 # From app host — service VLAN
 curl -s http://192.168.13.14:11434/api/tags
 curl -s http://192.168.13.14:2375/v1.44/_ping   # expect: OK
+curl -s http://192.168.13.14:9401/health          # expect: {"ok":true}
+curl -s http://192.168.13.14:9401/gpu           # GPU util/temp/RAM JSON
 
 # Should NOT answer on access VLAN if bind is correct:
 curl -s --connect-timeout 2 http://192.168.1.14:11434/api/tags || echo "ok — not exposed on access VLAN"
 ```
 
-In the admin UI, Ollama status should show the Jetson models. With Path B, container CPU/RAM resources should be available; the GPU (DCGM) panel stays unavailable on Jetson by design.
+In the admin UI, Ollama status should show the Jetson models. With Path B, container CPU/RAM resources should be available. GPU util/temp/RAM appear when `JETSON_GPU_STATS_URL` is set on the app host and you open the **Ollama** admin tab.
 
 Day-to-day ops (as `qtask`):
 
@@ -1018,10 +1028,11 @@ GPUs / DCGM). When Ollama runs on a remote Jetson, use
 ```bash
 OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
+JETSON_GPU_STATS_URL=http://192.168.13.14:9401/gpu
 # Leave DCGM_METRICS_URL unset — Jetson does not use DCGM
 ```
 
-See [§4.1.1 Jetson Ollama](#411-jetson-ollama). Local Docker/GPU collectors on the
+See [§4.1.1 Jetson Ollama](#411-jetson-ollama). GPU stats are fetched only while the admin Ollama tab is open. Local Docker/GPU collectors on the
 app host correctly show unavailable when Ollama is remote and those URLs are unset.
 
 ### Caddy (alternative)

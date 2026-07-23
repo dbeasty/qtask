@@ -42,6 +42,18 @@ services:
     networks:
       - qtask_jetson
 
+  jetson-gpu-stats:
+    build: ./jetson-gpu-stats
+    container_name: qtask-jetson-gpu-stats
+    restart: unless-stopped
+    volumes:
+      - /sys:/sys:ro
+      - /proc:/proc:ro
+    ports:
+      - "${JETSON_BIND_ADDRESS:?Set JETSON_BIND_ADDRESS in .env}:9401:9401"
+    networks:
+      - qtask_jetson
+
 networks:
   qtask_jetson:
     name: qtask_jetson

@@ -75,14 +75,22 @@ export interface DockerResources {
   networkTxBytes?: number;
 }
 
+export interface GpuOllamaStats {
+  modelVramMiB?: number;
+  gpuOffloadPercent?: number;
+}
+
 export interface GpuResources {
   available: boolean;
+  source?: 'jetson_sysfs' | 'dcgm' | 'ollama_ps';
   reason?: string;
   utilizationPercent?: number;
   memoryUsedMiB?: number;
   memoryFreeMiB?: number;
+  memoryTotalMiB?: number;
   temperatureC?: number;
   powerWatts?: number;
+  ollama?: GpuOllamaStats;
 }
 
 export interface OllamaStatusResponse {
@@ -93,7 +101,6 @@ export interface OllamaStatusResponse {
   running: { models?: OllamaRunningModel[]; error?: string };
   embeddingQueue: Record<string, number>;
   resources: DockerResources;
-  gpu: GpuResources;
 }
 
 export interface OllamaStatus {

@@ -65,6 +65,7 @@ services:
       OLLAMA_DOCKER_STATS_URL: ${OLLAMA_DOCKER_STATS_URL:-http://docker-proxy:2375/v1.44}
       OLLAMA_DOCKER_CONTAINER: ${OLLAMA_DOCKER_CONTAINER:-qtask-ollama}
       DCGM_METRICS_URL: ${DCGM_METRICS_URL:-http://dcgm-exporter:9400/metrics}
+      JETSON_GPU_STATS_URL: ${JETSON_GPU_STATS_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

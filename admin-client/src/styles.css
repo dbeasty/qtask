@@ -328,6 +328,24 @@ main {
   font-size: 1.05rem;
 }
 
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.gpu-poll-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.gpu-poll-control select {
+  min-width: 4.5rem;
+}
+
 .panel-error {
   margin: 0;
   color: #f87171;

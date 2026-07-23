@@ -126,6 +126,7 @@ export const config = {
     dockerApiUrl: process.env.OLLAMA_DOCKER_STATS_URL,
     dockerContainer: process.env.OLLAMA_DOCKER_CONTAINER ?? 'qtask-ollama-1',
     dcgmMetricsUrl: process.env.DCGM_METRICS_URL,
+    jetsonGpuStatsUrl: process.env.JETSON_GPU_STATS_URL,
   },
   mongoEncryptAtRest: process.env.MONGO_ENCRYPT_AT_REST === 'true',
   mongoEncryptMount: process.env.MONGO_ENCRYPT_MOUNT ?? '/var/lib/qtask/mongo-data',

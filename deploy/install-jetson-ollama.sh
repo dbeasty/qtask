@@ -40,6 +40,11 @@ for f in "${LIB_FILES[@]}"; do
   fi
 done
 
+if [[ ! -f "${SCRIPT_DIR}/jetson-gpu-stats/serve.py" ]]; then
+  echo "Error: missing ${SCRIPT_DIR}/jetson-gpu-stats/serve.py" >&2
+  exit 1
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "Error: docker is not installed (see docs/DEPLOY.md §4.1.1)" >&2
   exit 1
@@ -50,13 +55,14 @@ if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev
   exit 1
 fi
 
-sudo mkdir -p "${INSTALL_DIR}/deploy/lib"
+sudo mkdir -p "${INSTALL_DIR}/deploy/lib" "${INSTALL_DIR}/deploy/jetson-gpu-stats"
 for f in "${JETSON_FILES[@]}"; do
   sudo cp "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/deploy/"
 done
 for f in "${LIB_FILES[@]}"; do
   sudo cp "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/deploy/${f}"
 done
+sudo cp -R "${SCRIPT_DIR}/jetson-gpu-stats/." "${INSTALL_DIR}/deploy/jetson-gpu-stats/"
 
 if ! id qtask &>/dev/null; then
   echo "Creating system user qtask (home ${INSTALL_DIR})..."
