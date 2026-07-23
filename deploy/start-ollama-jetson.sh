@@ -19,4 +19,4 @@ cd "${APP_ROOT}"
 qtask_migrate_jetson_ollama_volume
 qtask_remove_legacy_jetson_containers
 echo "Starting Jetson Ollama stack (${COMPOSE_FILE}, bind from ${ENV_FILE})"
-qtask_compose_project -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d
+qtask_compose_project -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --build
