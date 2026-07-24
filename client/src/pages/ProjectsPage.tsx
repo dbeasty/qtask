@@ -406,7 +406,7 @@ export function ProjectsPage({
 
   const isCreating = creatingRoot || Boolean(creatingChildOf);
   const addProjectLabel = creatingRoot ? 'Cancel' : '+ Add project';
-  const addChildLabel = creatingChildOf ? 'Cancel' : '+ Add child';
+  const addSubProjectLabel = creatingChildOf ? 'Cancel' : '+ Add sub project';
 
   return (
     <section className="tasks-page">
@@ -474,7 +474,7 @@ export function ProjectsPage({
                         setNewDescription('');
                       }}
                     >
-                      {addChildLabel}
+                      {addSubProjectLabel}
                     </button>
                   </div>
                 </header>
@@ -495,7 +495,7 @@ export function ProjectsPage({
             {isCreating && (
               <article className="task-detail-panel">
                 <h3 className="panel-title">
-                  {creatingChildOf ? 'New child project' : 'New project'}
+                  {creatingChildOf ? 'New sub project' : 'New project'}
                 </h3>
                 <form
                   className="task-form task-detail-form"
@@ -719,7 +719,7 @@ export function ProjectsPage({
       {pendingDeleteProject && (
         <ConfirmDialog
           title="Delete project?"
-          message={`Delete "${pendingDeleteProject.name}"? Child projects move up. Shared tasks are unlinked; tasks only in this project (and its sessions) are deleted.`}
+          message={`Delete "${pendingDeleteProject.name}"? Sub-projects move up. Shared tasks are unlinked; tasks only in this project (and its sessions) are deleted.`}
           confirmLabel="Delete project"
           busy={saving}
           onCancel={() => setPendingDeleteId(null)}

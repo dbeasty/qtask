@@ -2,6 +2,7 @@ import {
   laborLinesEqualForSave,
   laborLinesForApi,
   laborLinesFromTask,
+  mergeLocalLaborLines,
   sumLaborHours,
 } from '../client/src/components/TaskLaborEditor.tsx';
 import type { LaborLine } from '../client/src/types.ts';
@@ -40,5 +41,38 @@ describe('task labor line helpers', () => {
   it('sumLaborHours totals line hours', () => {
     const lines: LaborLine[] = [{ hours: 1.5 }, { hours: 2 }];
     assert.equal(sumLaborHours(lines), 3.5);
+  });
+
+  it('mergeLocalLaborLines preserves empty draft rows during sync', () => {
+    const saved: LaborLine[] = [
+      { _id: 'abc123def456abc123def456', description: 'Setup', hours: 2 },
+    ];
+    const local: LaborLine[] = [
+      {
+        _id: 'abc123def456abc123def456',
+        clientKey: 'server-setup',
+        description: 'Setup',
+        hours: 2,
+      },
+      { _id: 'draft-new', clientKey: 'ck-new', description: '', hours: 0 },
+    ];
+    const merged = mergeLocalLaborLines(saved, local);
+    assert.equal(merged.length, 2);
+    assert.equal(merged[0]!._id, 'abc123def456abc123def456');
+    assert.equal(merged[1]!.clientKey, 'ck-new');
+    assert.equal(merged[1]!.hours, 0);
+  });
+
+  it('mergeLocalLaborLines adopts server ids for newly saved labor lines', () => {
+    const saved: LaborLine[] = [
+      { _id: 'abc123def456abc123def456', description: 'Work', hours: 1.5 },
+    ];
+    const local: LaborLine[] = [
+      { _id: 'draft-new', clientKey: 'ck-new', description: 'Work', hours: 1.5 },
+    ];
+    const merged = mergeLocalLaborLines(saved, local);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0]!._id, 'abc123def456abc123def456');
+    assert.equal(merged[0]!.clientKey, 'ck-new');
   });
 });

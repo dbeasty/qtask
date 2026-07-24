@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { loadAgentContext } from '../agent/loadContext.js';
-import { contentMentionsToolCall, parseTextToolCalls } from '../agent/parseTextToolCall.js';
+import {
+  contentMentionsToolCall,
+  parseTextToolCalls,
+  sameStagedCreateIntent,
+  stripToolArtifactsFromContent,
+} from '../agent/parseTextToolCall.js';
 import {
   buildFindTasksRecoveryArgs,
   needsUpdateTaskIdRecovery,
@@ -132,10 +137,20 @@ function sameProposalArguments(
   args: Record<string, unknown>
 ): boolean {
   if (proposal.status !== 'pending' || proposal.name !== name) return false;
-  if (name === 'create_project') {
-    return proposal.arguments.name === args.name;
+  if (name === 'create_task' || name === 'create_project') {
+    return sameStagedCreateIntent(proposal, name, args);
   }
   return JSON.stringify(proposal.arguments) === JSON.stringify(args);
+}
+
+function hasDuplicateStagedCreate(
+  proposals: PendingProposal[],
+  name: string,
+  args: Record<string, unknown>
+): boolean {
+  return proposals.some(
+    (proposal) => proposal.stagedEntity && sameStagedCreateIntent(proposal, name, args)
+  );
 }
 
 async function stageCreateTool(
@@ -478,6 +493,8 @@ export class AgentService {
       let content = '';
       let toolCalls: OllamaToolCall[] = [];
 
+      yield { type: 'status', message: 'Working…' };
+
       for await (const part of streamOllamaAgent(
         toOllamaMessages(workingMessages),
         iteration,
@@ -493,10 +510,11 @@ export class AgentService {
       }
 
       if (toolCalls.length === 0) {
-        finalAssistantContent = content;
-        workingMessages.push({ role: 'assistant', content });
+        const strippedContent = stripToolArtifactsFromContent(content);
+        finalAssistantContent = strippedContent;
+        workingMessages.push({ role: 'assistant', content: strippedContent });
 
-        const textProposals = parseTextToolCalls(content).filter((p) => isWriteTool(p.name));
+        const textProposals = parseTextToolCalls(strippedContent).filter((p) => isWriteTool(p.name));
         if (textProposals.length > 0) {
           log.info('Text-fallback tool proposals detected', {
             count: textProposals.length,
@@ -541,6 +559,14 @@ export class AgentService {
             }
 
             if (isStagedCreateTool(parsed.name)) {
+              if (hasDuplicateStagedCreate(proposals, parsed.name, validation.data)) {
+                log.info('Text-fallback duplicate skipped', {
+                  name: parsed.name,
+                  title: validation.data.title,
+                });
+                continue;
+              }
+
               yield { type: 'tool_call', name: parsed.name, arguments: validation.data };
               const staged = await stageCreateTool(
                 userId,
@@ -618,8 +644,10 @@ export class AgentService {
           }
         }
 
-        if (contentMentionsToolCall(content)) {
-          log.warn('Model mentioned tool call but none could be parsed', { contentLength: content.length });
+        if (contentMentionsToolCall(strippedContent)) {
+          log.warn('Model mentioned tool call but none could be parsed', {
+            contentLength: strippedContent.length,
+          });
           yield {
             type: 'warning',
             message:
@@ -836,18 +864,30 @@ export class AgentService {
       return conversation;
     }
 
-    const textProposals = parseTextToolCalls(lastAssistant.content).filter((p) => isWriteTool(p.name));
+    const strippedContent = stripToolArtifactsFromContent(lastAssistant.content);
+    const textProposals = parseTextToolCalls(strippedContent).filter((p) => isWriteTool(p.name));
     if (textProposals.length === 0) {
+      return conversation;
+    }
+
+    const resolved = (conversation.pendingProposals ?? []).filter((p) => p.status !== 'pending');
+    const toRecover = textProposals.filter(
+      (parsed) =>
+        !resolved.some((p) => sameStagedCreateIntent(p, parsed.name, parsed.arguments)) &&
+        !pending.some((p) => sameStagedCreateIntent(p, parsed.name, parsed.arguments))
+    );
+
+    if (toRecover.length === 0) {
       return conversation;
     }
 
     log.info('Recovered text-fallback proposals from conversation history', {
       conversationId: conversation._id,
-      count: textProposals.length,
-      names: textProposals.map((p) => p.name),
+      count: toRecover.length,
+      names: toRecover.map((p) => p.name),
     });
 
-    const proposals = textProposals.map((p) => createProposal(p.name, p.arguments, 'text_fallback'));
+    const proposals = toRecover.map((p) => createProposal(p.name, p.arguments, 'text_fallback'));
     return (
       (await conversationService.savePauseState(userId, conversation._id, {
         messages: conversation.messages,

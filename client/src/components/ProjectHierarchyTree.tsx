@@ -154,7 +154,7 @@ function ProjectTreeNodeView({
             </span>
             {hasChildren && (
               <span className="task-list-meta">
-                {childCount} {childCount === 1 ? 'child' : 'children'}
+                {childCount} {childCount === 1 ? 'sub-project' : 'sub-projects'}
               </span>
             )}
           </button>

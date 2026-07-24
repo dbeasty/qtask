@@ -116,13 +116,13 @@ function normalizeMarkdownStatus(raw: string): string | undefined {
 
 /** Detect markdown task blocks like **Task:** title with optional **Status:** and bullet subtasks. */
 export function parseMarkdownTaskProposals(content: string): ParsedTextToolCall[] {
-  const taskMatch = content.match(/\*{0,2}Task:\*{0,2}\s*(.+)/im);
+  const taskMatch = content.match(/(?:^|\n)\s*\*{0,2}Task:\*{0,2}\s*(.+)/im);
   if (!taskMatch?.[1]?.trim()) return [];
 
   const title = taskMatch[1].trim();
   const args: Record<string, unknown> = { title };
 
-  const statusMatch = content.match(/\*{0,2}Status:\*{0,2}\s*(.+?)(?:\n|$)/im);
+  const statusMatch = content.match(/(?:^|\n)\s*\*{0,2}Status:\*{0,2}\s*(.+?)(?:\n|$)/im);
   if (statusMatch?.[1]) {
     const status = normalizeMarkdownStatus(statusMatch[1]);
     if (status) args.status = status;
@@ -131,7 +131,7 @@ export function parseMarkdownTaskProposals(content: string): ParsedTextToolCall[
   const subtasks: { title: string }[] = [];
   let afterTask = false;
   for (const line of content.split('\n')) {
-    if (/\*{0,2}Task:\*{0,2}/i.test(line)) {
+    if (/^\s*\*{0,2}Task:\*{0,2}/i.test(line)) {
       afterTask = true;
       continue;
     }
@@ -177,6 +177,148 @@ export function parseTextToolCalls(content: string): ParsedTextToolCall[] {
   }
 
   return dedupeProposals([...jsonResults, ...parseMarkdownTaskProposals(content)]);
+}
+
+/** Normalize a create_task title for fuzzy dedup (handles JSON stuffed into title). */
+export function normalizeCreateTaskTitle(title: unknown): string | null {
+  if (typeof title !== 'string') return null;
+  let value = title.trim();
+  if (!value) return null;
+
+  if (value.startsWith('{')) {
+    const inner = tryParseJsonObject(value);
+    if (inner) {
+      const parsed = extractToolFromObject(inner);
+      if (parsed?.name === 'create_task' && typeof parsed.arguments.title === 'string') {
+        value = parsed.arguments.title.trim();
+      } else if (typeof inner.title === 'string') {
+        value = inner.title.trim();
+      } else if (
+        inner.parameters &&
+        typeof inner.parameters === 'object' &&
+        !Array.isArray(inner.parameters) &&
+        typeof (inner.parameters as Record<string, unknown>).title === 'string'
+      ) {
+        value = ((inner.parameters as Record<string, unknown>).title as string).trim();
+      }
+    }
+  }
+
+  return value ? value.toLowerCase() : null;
+}
+
+/** Compare staged create_task / create_project intent (title or project name). */
+export function sameStagedCreateIntent(
+  proposal: { name: string; arguments: Record<string, unknown> },
+  name: string,
+  args: Record<string, unknown>
+): boolean {
+  if (proposal.name !== name) return false;
+
+  if (name === 'create_project') {
+    const a = typeof args.name === 'string' ? args.name.trim().toLowerCase() : '';
+    const b =
+      typeof proposal.arguments.name === 'string'
+        ? proposal.arguments.name.trim().toLowerCase()
+        : '';
+    return a !== '' && a === b;
+  }
+
+  if (name === 'create_task') {
+    const a = normalizeCreateTaskTitle(args.title);
+    const b = normalizeCreateTaskTitle(proposal.arguments.title);
+    return a !== null && a === b;
+  }
+
+  return false;
+}
+
+function findToolJsonRanges(content: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] !== '{') continue;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let j = i; j < content.length; j++) {
+      const char = content[j]!;
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\' && inString) {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (char === '{') depth++;
+      if (char === '}') {
+        depth--;
+        if (depth === 0) {
+          const slice = content.slice(i, j + 1);
+          const obj = tryParseJsonObject(slice);
+          if (obj && extractToolFromObject(obj)) {
+            ranges.push({ start: i, end: j + 1 });
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return ranges;
+}
+
+function stripMarkdownTaskBlocks(content: string): string {
+  if (!/(?:^|\n)\s*\*{0,2}Task:\*{0,2}/im.test(content)) return content;
+
+  const lines = content.split('\n');
+  const result: string[] = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    if (/^\s*\*{0,2}Task:\*{0,2}/i.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (/^\s*$/.test(line)) {
+        skipping = false;
+        continue;
+      }
+      if (/^\s*[-*]\s+/.test(line) || /\*{0,2}Status:\*{0,2}/i.test(line)) {
+        continue;
+      }
+      skipping = false;
+    }
+    result.push(line);
+  }
+
+  return result.join('\n');
+}
+
+/** Remove parseable tool JSON and markdown task blocks from assistant reply text. */
+export function stripToolArtifactsFromContent(content: string): string {
+  let result = content;
+  const ranges = findToolJsonRanges(content);
+
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const range = ranges[i]!;
+    result = result.slice(0, range.start) + result.slice(range.end);
+  }
+
+  result = stripMarkdownTaskBlocks(result);
+  result = result.replace(/\n{3,}/g, '\n\n').trim();
+  return result;
 }
 
 export function contentRequestsApproval(content: string): boolean {

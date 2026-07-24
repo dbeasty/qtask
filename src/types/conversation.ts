@@ -50,6 +50,7 @@ export interface Conversation extends ConversationSummary {
 
 export type AgentStreamEvent =
   | { type: 'token'; content: string }
+  | { type: 'status'; message: string }
   | { type: 'tool_call'; name: string; arguments: Record<string, unknown> }
   | { type: 'tool_result'; name: string; success: boolean; content: string }
   | {

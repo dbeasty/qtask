@@ -37,13 +37,13 @@ export function HelpPage({ onBack }: HelpPageProps) {
           <h3>Projects</h3>
           <p>
             Projects group related work and can nest under other projects. Create a root project or a
-            child under an existing one. Use <strong>Move</strong> to reparent (cycles are blocked).
-            Deleting a project reparents its children; tasks only in that project are removed, while
+            sub-project under an existing one. Use <strong>Move</strong> to reparent (cycles are blocked).
+            Deleting a project reparents its sub-projects; tasks only in that project are removed, while
             tasks also linked elsewhere stay and are unlinked from the deleted project.
           </p>
           <p>
-            Leaf project progress averages linked tasks. Parent progress rolls up from child projects;
-            set each child’s <strong>progress share</strong> to weight the rollup. Members and roles
+            Leaf project progress averages linked tasks. Parent progress rolls up from sub-projects;
+            set each sub-project’s <strong>progress share</strong> to weight the rollup. Members and roles
             are per project — nesting does not inherit access.
           </p>
         </section>

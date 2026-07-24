@@ -1172,6 +1172,28 @@ main {
   color: #fca5a5;
 }
 
+.tool-proposal-source-warn {
+  background: #3f2f1d;
+  color: #fcd34d;
+}
+
+.agent-working-indicator {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0.5rem;
+  animation: agent-working-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes agent-working-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 .tool-proposal-args {
   margin: 0 0 0.75rem;
   padding: 0.5rem 0.75rem;

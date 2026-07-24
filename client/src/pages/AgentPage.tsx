@@ -16,6 +16,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
 import { CurrentProjectBar } from '../components/CurrentProjectBar';
 import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
+import { displayMessageContent, proposalDisplayLabel } from '../utils/agentContent';
 import { suggestProjectFromMessages } from '../utils/project';
 
 interface AgentPageProps {
@@ -37,7 +38,23 @@ function visibleMessages(messages: UiMessage[]) {
 function proposalSourceLabel(source: UiProposal['source']) {
   if (source === 'text_fallback') return 'text fallback';
   if (source === 'manual') return 'manual';
-  return 'native';
+  return null;
+}
+
+function unwrapTaskTitle(title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed.startsWith('{')) return trimmed;
+  try {
+    const inner = JSON.parse(trimmed) as {
+      title?: string;
+      parameters?: { title?: string };
+    };
+    if (typeof inner.parameters?.title === 'string') return inner.parameters.title;
+    if (typeof inner.title === 'string') return inner.title;
+  } catch {
+    // keep original
+  }
+  return trimmed;
 }
 
 function isPersistedProposal(proposal: UiProposal) {
@@ -75,10 +92,37 @@ function hasPendingProposals(message: UiMessage): boolean {
 
 function proposalSummary(proposal: UiProposal): string {
   const args = proposal.arguments;
-  if (typeof args.title === 'string') return args.title;
+  if (typeof args.title === 'string') return unwrapTaskTitle(args.title);
   if (typeof args.name === 'string') return args.name;
   if (typeof args.taskId === 'string') return args.taskId;
   return proposal.name;
+}
+
+function proposalCardTitle(proposal: UiProposal): string {
+  const label = proposalDisplayLabel(proposal.name);
+  const summary = proposalSummary(proposal);
+  return `${label}: ${summary}`;
+}
+
+function clearStatusMessage(message: UiMessage): UiMessage {
+  if (!message.statusMessage) return message;
+  const { statusMessage: _removed, ...rest } = message;
+  return rest;
+}
+
+function toggleProposalExpanded(
+  setExpandedProposalKeys: React.Dispatch<React.SetStateAction<Set<string>>>,
+  key: string
+) {
+  setExpandedProposalKeys((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    return next;
+  });
 }
 
 function handleStreamEvent(
@@ -90,11 +134,24 @@ function handleStreamEvent(
 ): { toolsTouched: boolean } {
   let toolsTouched = false;
 
+  if (event.type === 'status') {
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.id === assistantId
+          ? { ...message, statusMessage: event.message }
+          : message
+      )
+    );
+  }
+
   if (event.type === 'token') {
     setMessages((prev) =>
       prev.map((message) =>
         message.id === assistantId
-          ? { ...message, content: message.content + event.content }
+          ? clearStatusMessage({
+              ...message,
+              content: message.content + event.content,
+            })
           : message
       )
     );
@@ -105,10 +162,10 @@ function handleStreamEvent(
     setMessages((prev) =>
       prev.map((message) =>
         message.id === assistantId
-          ? {
+          ? clearStatusMessage({
               ...message,
               toolCalls: [...(message.toolCalls ?? []), { name: event.name }],
-            }
+            })
           : message
       )
     );
@@ -186,12 +243,12 @@ function handleStreamEvent(
     setMessages((prev) =>
       prev.map((message) =>
         message.id === assistantId
-          ? {
+          ? clearStatusMessage({
               ...message,
               content: event.content || message.content,
               streaming: false,
               paused: event.paused ?? message.paused,
-            }
+            })
           : message
       )
     );
@@ -232,6 +289,7 @@ export function AgentPage({
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [expandedProposalKeys, setExpandedProposalKeys] = useState<Set<string>>(() => new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
@@ -824,11 +882,24 @@ export function AgentPage({
                 </p>
               ))}
 
+              {message.streaming &&
+                message.toolCalls &&
+                message.toolCalls.length > 0 &&
+                !message.content && (
+                  <p className="agent-working-indicator">
+                    Running {message.toolCalls[message.toolCalls.length - 1]?.name ?? 'tool'}…
+                  </p>
+                )}
+
               {message.proposals && message.proposals.length > 0 && (
                 <div className="tool-proposals">
                   {message.proposals.map((proposal) => {
                     const editKey = `${message.id}:${proposal.id}`;
                     const isEditing = editingKey === editKey;
+                    const isExpanded = expandedProposalKeys.has(editKey);
+                    const sourceLabel = proposalSourceLabel(proposal.source);
+                    const showDetailsByDefault =
+                      proposal.status === 'pending' && isEditing ? true : isExpanded;
 
                     return (
                       <div
@@ -836,12 +907,14 @@ export function AgentPage({
                         className={`tool-proposal-card ${proposal.status !== 'pending' ? 'resolved' : ''}`}
                       >
                         <div className="tool-proposal-header">
-                          <strong>{proposal.name}</strong>
-                          <span className="tool-proposal-source">
-                            {proposalSourceLabel(proposal.source)}
-                          </span>
+                          <strong>{proposalCardTitle(proposal)}</strong>
+                          {sourceLabel && (
+                            <span className="tool-proposal-source tool-proposal-source-warn">
+                              {sourceLabel}
+                            </span>
+                          )}
                           {(proposal.staged || proposal.stagedEntity) && proposal.status === 'pending' && (
-                            <span className="tool-proposal-source">staged — awaiting commit</span>
+                            <span className="tool-proposal-source">Awaiting commit</span>
                           )}
                           {proposal.status !== 'pending' && (
                             <span className={`tool-proposal-status ${proposal.status}`}>
@@ -881,9 +954,11 @@ export function AgentPage({
                           </>
                         ) : (
                           <>
-                            <pre className="tool-proposal-args">
-                              {JSON.stringify(proposal.arguments, null, 2)}
-                            </pre>
+                            {showDetailsByDefault && (
+                              <pre className="tool-proposal-args">
+                                {JSON.stringify(proposal.arguments, null, 2)}
+                              </pre>
+                            )}
                             <div className="tool-proposal-actions">
                               {proposal.status === 'pending' && isPersistedProposal(proposal) && (
                                 preferences.autoApproveProposals ? (
@@ -944,6 +1019,14 @@ export function AgentPage({
                                 type="button"
                                 className="secondary-button"
                                 disabled={approvingId !== null || submittingProposal}
+                                onClick={() => toggleProposalExpanded(setExpandedProposalKeys, editKey)}
+                              >
+                                {showDetailsByDefault ? 'Hide details' : 'Show details'}
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={approvingId !== null || submittingProposal}
                                 onClick={() => startEditingProposal(message.id, proposal)}
                               >
                                 Edit &amp; retry
@@ -971,7 +1054,20 @@ export function AgentPage({
                   </p>
                 )}
 
-              <p>{message.content || (message.streaming ? '…' : '')}</p>
+              {(() => {
+                const displayContent = displayMessageContent(message);
+                if (message.streaming && !displayContent) {
+                  return (
+                    <p className="agent-working-indicator">
+                      {message.statusMessage ?? 'Working…'}
+                    </p>
+                  );
+                }
+                if (displayContent) {
+                  return <p>{displayContent}</p>;
+                }
+                return null;
+              })()}
             </article>
           ))}
           <div ref={bottomRef} />
@@ -1067,7 +1163,7 @@ export function AgentPage({
             disabled={sending}
           />
           <button type="submit" className="primary-button" disabled={sending || !input.trim()}>
-            {sending ? 'Thinking…' : 'Send'}
+            {sending ? 'Working…' : 'Send'}
           </button>
         </form>
       </section>

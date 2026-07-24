@@ -79,13 +79,48 @@ export function laborLinesSyncedEqual(a: LaborLine[], b: LaborLine[]): boolean {
 }
 
 export function mergeLocalLaborLines(saved: LaborLine[], local: LaborLine[]): LaborLine[] {
-  const localByKey = new Map(local.map((line) => [line.clientKey ?? line._id ?? '', line]));
-  return saved.map((line) => {
-    const key = line.clientKey ?? line._id ?? '';
-    const localLine = localByKey.get(key);
-    if (!localLine) return ensureClientKey(line);
-    return ensureClientKey({ ...line, ...localLine, _id: line._id ?? localLine._id });
+  const usedSavedIds = new Set<string>();
+
+  const merged = local.map((line) => {
+    const withKey = ensureClientKey(line);
+
+    if (isPersistedId(withKey._id)) {
+      const savedLine = saved.find((item) => item._id === withKey._id);
+      if (savedLine) {
+        usedSavedIds.add(savedLine._id!);
+        return ensureClientKey({
+          ...withKey,
+          _id: savedLine._id,
+          description: withKey.description,
+          hours: withKey.hours,
+        });
+      }
+      return withKey;
+    }
+
+    if ((Number(withKey.hours) || 0) === 0) {
+      return withKey;
+    }
+
+    const match = saved.find(
+      (item) =>
+        item._id &&
+        !usedSavedIds.has(item._id) &&
+        (item.description ?? '') === (withKey.description ?? '') &&
+        Number(item.hours) === Number(withKey.hours)
+    );
+    if (match?._id) {
+      usedSavedIds.add(match._id);
+      return ensureClientKey({ ...withKey, _id: match._id });
+    }
+
+    return withKey;
   });
+
+  const unmatched = saved.filter((item) => item._id && !usedSavedIds.has(item._id));
+  return unmatched.length > 0
+    ? [...merged, ...unmatched.map((item) => ensureClientKey(item))]
+    : merged;
 }
 
 export function laborLinesFromTask(
