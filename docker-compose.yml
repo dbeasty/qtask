@@ -27,7 +27,7 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-https://qtask.dev}
       TRUST_PROXY: ${TRUST_PROXY:-true}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:2b}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       SERVE_CLIENT: "true"
@@ -59,7 +59,7 @@ services:
       ADMIN_DELETE_CONFIRM_EMAIL: ${ADMIN_DELETE_CONFIRM_EMAIL:-false}
       MONGODB_URI: ${MONGODB_URI}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:2b}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       LLM_METRICS_RETENTION_DAYS: ${LLM_METRICS_RETENTION_DAYS:-30}
       OLLAMA_DOCKER_STATS_URL: ${OLLAMA_DOCKER_STATS_URL:-http://docker-proxy:2375/v1.44}

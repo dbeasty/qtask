@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { loadAgentContext } from '../agent/loadContext.js';
+import { estimateRequestedCreateCount, hasProposedAllRequestedCreates } from '../agent/multiCreateHeuristic.js';
 import {
   contentMentionsToolCall,
+  finalizeAssistantContent,
   parseTextToolCalls,
   sameStagedCreateIntent,
   stripToolArtifactsFromContent,
@@ -249,6 +251,215 @@ async function savePausePreservingResolved(
   });
 }
 
+interface TextFallbackOutcome {
+  hadValidationError: boolean;
+  stagedCreateRan: boolean;
+  requiresPause: boolean;
+  proposalsAdded: number;
+}
+
+function getLastUserMessage(messages: StoredMessage[]): StoredMessage | undefined {
+  return [...messages].reverse().find((message) => message.role === 'user');
+}
+
+function isCoveredByNativeToolCalls(
+  parsed: { name: string; arguments: Record<string, unknown> },
+  toolCalls: OllamaToolCall[]
+): boolean {
+  for (const call of toolCalls) {
+    if (call.function.name !== parsed.name) continue;
+    const args = normalizeToolArgs(call.function.name, call.function.arguments ?? {});
+    if (parsed.name === 'create_task' || parsed.name === 'create_project') {
+      if (sameStagedCreateIntent({ name: parsed.name, arguments: args }, parsed.name, parsed.arguments)) {
+        return true;
+      }
+    } else if (JSON.stringify(args) === JSON.stringify(parsed.arguments)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function* processTextFallbackProposals(
+  userId: string,
+  conversationId: string,
+  workingMessages: StoredMessage[],
+  rawContent: string,
+  excludeNativeToolCalls: OllamaToolCall[] = []
+): AsyncGenerator<AgentStreamEvent, TextFallbackOutcome> {
+  let textProposals = parseTextToolCalls(rawContent).filter((parsed) => isWriteTool(parsed.name));
+  if (excludeNativeToolCalls.length > 0) {
+    textProposals = textProposals.filter(
+      (parsed) => !isCoveredByNativeToolCalls(parsed, excludeNativeToolCalls)
+    );
+  }
+
+  const outcome: TextFallbackOutcome = {
+    hadValidationError: false,
+    stagedCreateRan: false,
+    requiresPause: false,
+    proposalsAdded: 0,
+  };
+
+  if (textProposals.length === 0) {
+    return outcome;
+  }
+
+  log.info('Text-fallback tool proposals detected', {
+    count: textProposals.length,
+    names: textProposals.map((parsed) => parsed.name),
+  });
+
+  const current = await conversationService.getConversation(userId, conversationId);
+  const proposals: PendingProposal[] = [...(current?.pendingProposals ?? [])];
+
+  for (const parsed of textProposals) {
+    const validation = validateToolProposal(parsed.name, parsed.arguments);
+    if (!validation.success) {
+      outcome.hadValidationError = true;
+      const errorText = `${validation.error}. Fix the arguments and call the tool again.`;
+      log.warn('Text-fallback tool proposal validation failed', {
+        name: parsed.name,
+        error: validation.error,
+      });
+      yield {
+        type: 'tool_result',
+        name: parsed.name,
+        success: false,
+        content: errorText,
+      };
+      workingMessages.push({
+        role: 'tool',
+        content: errorText,
+        toolName: parsed.name,
+      });
+      if (needsUpdateTaskIdRecovery(parsed.name, validation.error)) {
+        const findMsg = yield* runUpdateTaskIdRecovery(userId, workingMessages, parsed.arguments);
+        workingMessages.push(findMsg);
+      }
+      continue;
+    }
+
+    if (isStagedCreateTool(parsed.name)) {
+      if (hasDuplicateStagedCreate(proposals, parsed.name, validation.data)) {
+        log.info('Text-fallback duplicate skipped', {
+          name: parsed.name,
+          title: validation.data.title,
+        });
+        yield {
+          type: 'warning',
+          message:
+            'A duplicate task proposal was ignored. If a task is missing, try approving what is shown or rephrase.',
+        };
+        continue;
+      }
+
+      yield { type: 'tool_call', name: parsed.name, arguments: validation.data };
+      const staged = await stageCreateTool(
+        userId,
+        conversationId,
+        parsed.name,
+        validation.data,
+        'text_fallback',
+        proposals
+      );
+      yield {
+        type: 'tool_result',
+        name: parsed.name,
+        success: staged.result.success,
+        content: staged.result.text,
+      };
+      workingMessages.push({
+        role: 'tool',
+        content: staged.result.success ? stagedToolContent(staged.result.text) : staged.result.text,
+        toolName: parsed.name,
+      });
+      if (staged.proposal && staged.isNew) {
+        proposals.push(staged.proposal);
+        outcome.proposalsAdded += 1;
+        yield {
+          type: 'tool_proposal',
+          id: staged.proposal.id,
+          name: staged.proposal.name,
+          arguments: staged.proposal.arguments,
+          source: staged.proposal.source,
+          staged: true,
+        };
+      }
+      outcome.stagedCreateRan = outcome.stagedCreateRan || staged.result.success;
+      await savePausePreservingResolved(userId, conversationId, {
+        messages: workingMessages,
+        pendingProposals: proposals,
+        pausedBatch: null,
+      });
+      continue;
+    }
+
+    const proposal = createProposal(parsed.name, validation.data, 'text_fallback');
+    proposals.push(proposal);
+    outcome.proposalsAdded += 1;
+    outcome.requiresPause = true;
+    yield {
+      type: 'tool_proposal',
+      id: proposal.id,
+      name: proposal.name,
+      arguments: proposal.arguments,
+      source: proposal.source,
+    };
+  }
+
+  if (outcome.requiresPause) {
+    await savePausePreservingResolved(userId, conversationId, {
+      messages: workingMessages,
+      pendingProposals: proposals,
+      pausedBatch: null,
+    });
+  }
+
+  return outcome;
+}
+
+async function* maybeNudgeForIncompleteMultiCreate(
+  userId: string,
+  conversationId: string,
+  workingMessages: StoredMessage[],
+  pending: PendingProposal[],
+  iteration: number,
+  nudgeAlreadySent: { value: boolean }
+): AsyncGenerator<AgentStreamEvent, 'continue' | 'pause'> {
+  const lastUser = getLastUserMessage(workingMessages);
+  const expected = estimateRequestedCreateCount(lastUser?.content ?? '');
+  const pendingCreates = pending.filter(
+    (proposal) => proposal.name === 'create_task' && proposal.status === 'pending'
+  );
+
+  if (
+    !nudgeAlreadySent.value &&
+    expected > pendingCreates.length &&
+    pendingCreates.length > 0 &&
+    iteration < MAX_ITERATIONS - 1
+  ) {
+    nudgeAlreadySent.value = true;
+    yield {
+      type: 'warning',
+      message: `Only ${pendingCreates.length} of ${expected} requested tasks was proposed — trying to add the rest.`,
+    };
+    workingMessages.push({
+      role: 'tool',
+      content: `The user requested ${expected} tasks but only ${pendingCreates.length} were proposed. Invoke create_task via the tool API for each remaining task.`,
+      toolName: 'create_task',
+    });
+    await savePausePreservingResolved(userId, conversationId, {
+      messages: workingMessages,
+      pendingProposals: pending,
+      pausedBatch: null,
+    });
+    return 'continue';
+  }
+
+  return 'pause';
+}
+
 export async function* streamOllamaAgent(
   messages: OllamaChatMessage[],
   iteration: number,
@@ -488,6 +699,7 @@ export class AgentService {
     startIteration = 0
   ): AsyncGenerator<AgentStreamEvent> {
     let finalAssistantContent = '';
+    const multiCreateNudgeSent = { value: false };
 
     for (let iteration = startIteration; iteration < MAX_ITERATIONS; iteration++) {
       let content = '';
@@ -511,137 +723,36 @@ export class AgentService {
 
       if (toolCalls.length === 0) {
         const strippedContent = stripToolArtifactsFromContent(content);
-        finalAssistantContent = strippedContent;
-        workingMessages.push({ role: 'assistant', content: strippedContent });
+        const fallbackOutcome = yield* processTextFallbackProposals(
+          userId,
+          conversationId,
+          workingMessages,
+          content
+        );
 
-        const textProposals = parseTextToolCalls(strippedContent).filter((p) => isWriteTool(p.name));
-        if (textProposals.length > 0) {
-          log.info('Text-fallback tool proposals detected', {
-            count: textProposals.length,
-            names: textProposals.map((p) => p.name),
-          });
+        finalAssistantContent = finalizeAssistantContent(
+          content,
+          fallbackOutcome.proposalsAdded > 0
+        );
+        workingMessages.push({ role: 'assistant', content: finalAssistantContent });
 
+        if (fallbackOutcome.requiresPause) {
           const current = await conversationService.getConversation(userId, conversationId);
-          const proposals: PendingProposal[] = [...(current?.pendingProposals ?? [])];
-          let hadValidationError = false;
-          let stagedCreateRan = false;
-          let requiresPause = false;
+          const proposals = current?.pendingProposals ?? [];
+          yield {
+            type: 'paused',
+            conversationId,
+            pendingCount: proposals.filter((proposal) => proposal.status === 'pending').length,
+          };
+          yield { type: 'done', conversationId, content: finalAssistantContent, paused: true };
+          return;
+        }
 
-          for (const parsed of textProposals) {
-            const validation = validateToolProposal(parsed.name, parsed.arguments);
-            if (!validation.success) {
-              hadValidationError = true;
-              const errorText = `${validation.error}. Fix the arguments and call the tool again.`;
-              log.warn('Text-fallback tool proposal validation failed', {
-                name: parsed.name,
-                error: validation.error,
-              });
-              yield {
-                type: 'tool_result',
-                name: parsed.name,
-                success: false,
-                content: errorText,
-              };
-              workingMessages.push({
-                role: 'tool',
-                content: errorText,
-                toolName: parsed.name,
-              });
-              if (needsUpdateTaskIdRecovery(parsed.name, validation.error)) {
-                const findMsg = yield* runUpdateTaskIdRecovery(
-                  userId,
-                  workingMessages,
-                  parsed.arguments
-                );
-                workingMessages.push(findMsg);
-              }
-              continue;
-            }
-
-            if (isStagedCreateTool(parsed.name)) {
-              if (hasDuplicateStagedCreate(proposals, parsed.name, validation.data)) {
-                log.info('Text-fallback duplicate skipped', {
-                  name: parsed.name,
-                  title: validation.data.title,
-                });
-                continue;
-              }
-
-              yield { type: 'tool_call', name: parsed.name, arguments: validation.data };
-              const staged = await stageCreateTool(
-                userId,
-                conversationId,
-                parsed.name,
-                validation.data,
-                'text_fallback',
-                proposals
-              );
-              yield {
-                type: 'tool_result',
-                name: parsed.name,
-                success: staged.result.success,
-                content: staged.result.text,
-              };
-              workingMessages.push({
-                role: 'tool',
-                content: staged.result.success
-                  ? stagedToolContent(staged.result.text)
-                  : staged.result.text,
-                toolName: parsed.name,
-              });
-              if (staged.proposal && staged.isNew) {
-                proposals.push(staged.proposal);
-                yield {
-                  type: 'tool_proposal',
-                  id: staged.proposal.id,
-                  name: staged.proposal.name,
-                  arguments: staged.proposal.arguments,
-                  source: staged.proposal.source,
-                  staged: true,
-                };
-              }
-              stagedCreateRan = stagedCreateRan || staged.result.success;
-              await savePausePreservingResolved(userId, conversationId, {
-                messages: workingMessages,
-                pendingProposals: proposals,
-                pausedBatch: null,
-              });
-              continue;
-            }
-
-            const proposal = createProposal(parsed.name, validation.data, 'text_fallback');
-            proposals.push(proposal);
-            requiresPause = true;
-            yield {
-              type: 'tool_proposal',
-              id: proposal.id,
-              name: proposal.name,
-              arguments: proposal.arguments,
-              source: proposal.source,
-            };
-          }
-
-          if (requiresPause) {
-            await savePausePreservingResolved(userId, conversationId, {
-              messages: workingMessages,
-              pendingProposals: proposals,
-              pausedBatch: null,
-            });
-            yield {
-              type: 'paused',
-              conversationId,
-              pendingCount: proposals.filter((proposal) => proposal.status === 'pending').length,
-            };
-            yield { type: 'done', conversationId, content: finalAssistantContent, paused: true };
-            return;
-          }
-
-          if (hadValidationError) {
-            continue;
-          }
-          if (stagedCreateRan) {
-            continue;
-          }
+        if (fallbackOutcome.hadValidationError) {
+          continue;
+        }
+        if (fallbackOutcome.stagedCreateRan) {
+          continue;
         }
 
         if (contentMentionsToolCall(strippedContent)) {
@@ -663,6 +774,35 @@ export class AgentService {
           (proposal) => proposal.status === 'pending'
         );
         if (pending.length > 0) {
+          const lastUserContent = getLastUserMessage(workingMessages)?.content ?? '';
+          if (hasProposedAllRequestedCreates(lastUserContent, pending)) {
+            await savePausePreservingResolved(userId, conversationId, {
+              messages: workingMessages,
+              pendingProposals: pendingConversation?.pendingProposals ?? pending,
+              pausedBatch: null,
+            });
+            yield { type: 'paused', conversationId, pendingCount: pending.length };
+            yield {
+              type: 'done',
+              conversationId,
+              content: finalAssistantContent,
+              paused: true,
+            };
+            return;
+          }
+
+          const nudgeAction = yield* maybeNudgeForIncompleteMultiCreate(
+            userId,
+            conversationId,
+            workingMessages,
+            pendingConversation?.pendingProposals ?? pending,
+            iteration,
+            multiCreateNudgeSent
+          );
+          if (nudgeAction === 'continue') {
+            continue;
+          }
+
           await savePausePreservingResolved(userId, conversationId, {
             messages: workingMessages,
             pendingProposals: pendingConversation?.pendingProposals ?? pending,
@@ -701,12 +841,101 @@ export class AgentService {
         return;
       }
 
+      const nativeFallbackOutcome = yield* processTextFallbackProposals(
+        userId,
+        conversationId,
+        workingMessages,
+        content || '',
+        toolCalls
+      );
+
+      if (nativeFallbackOutcome.proposalsAdded > 0) {
+        const assistantIndex = workingMessages.findLastIndex((message) => message.role === 'assistant');
+        if (assistantIndex >= 0) {
+          workingMessages[assistantIndex] = {
+            ...workingMessages[assistantIndex]!,
+            content: finalizeAssistantContent(content || '', nativeFallbackOutcome.proposalsAdded > 0),
+          };
+        }
+      }
+
+      if (nativeFallbackOutcome.requiresPause) {
+        yield { type: 'done', conversationId, content: content || '', paused: true };
+        return;
+      }
+      if (nativeFallbackOutcome.hadValidationError) {
+        continue;
+      }
+      if (nativeFallbackOutcome.stagedCreateRan) {
+        continue;
+      }
+
+      const pendingAfterNative = await conversationService.getConversation(userId, conversationId);
+      const pendingNative = (pendingAfterNative?.pendingProposals ?? []).filter(
+        (proposal) => proposal.status === 'pending'
+      );
+      if (pendingNative.length > 0) {
+        const lastUserContent = getLastUserMessage(workingMessages)?.content ?? '';
+        if (
+          hasProposedAllRequestedCreates(
+            lastUserContent,
+            pendingAfterNative?.pendingProposals ?? pendingNative
+          )
+        ) {
+          await savePausePreservingResolved(userId, conversationId, {
+            messages: workingMessages,
+            pendingProposals: pendingAfterNative?.pendingProposals ?? pendingNative,
+            pausedBatch: null,
+          });
+          yield { type: 'paused', conversationId, pendingCount: pendingNative.length };
+          yield {
+            type: 'done',
+            conversationId,
+            content: finalizeAssistantContent(content || '', nativeFallbackOutcome.proposalsAdded > 0),
+            paused: true,
+          };
+          return;
+        }
+
+        const nudgeAction = yield* maybeNudgeForIncompleteMultiCreate(
+          userId,
+          conversationId,
+          workingMessages,
+          pendingAfterNative?.pendingProposals ?? pendingNative,
+          iteration,
+          multiCreateNudgeSent
+        );
+        if (nudgeAction === 'continue') {
+          continue;
+        }
+      }
+
       if (iteration === MAX_ITERATIONS - 1) {
         finalAssistantContent =
           'I reached the maximum number of tool calls for this request. Please try a simpler follow-up.';
         yield { type: 'token', content: finalAssistantContent };
         workingMessages.push({ role: 'assistant', content: finalAssistantContent });
       }
+    }
+
+    const finalConversation = await conversationService.getConversation(userId, conversationId);
+    const remainingPending = (finalConversation?.pendingProposals ?? []).filter(
+      (proposal) => proposal.status === 'pending'
+    );
+    if (remainingPending.length > 0) {
+      await savePausePreservingResolved(userId, conversationId, {
+        messages: workingMessages,
+        pendingProposals: finalConversation?.pendingProposals ?? remainingPending,
+        pausedBatch: null,
+      });
+      yield { type: 'paused', conversationId, pendingCount: remainingPending.length };
+      yield {
+        type: 'done',
+        conversationId,
+        content: finalAssistantContent,
+        paused: true,
+      };
+      return;
     }
 
     await conversationService.clearPauseState(userId, conversationId, workingMessages);

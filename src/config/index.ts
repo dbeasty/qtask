@@ -93,7 +93,7 @@ export const config = {
   },
   ollama: {
     baseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
-    model: process.env.OLLAMA_MODEL ?? 'llama3.1',
+    model: process.env.OLLAMA_MODEL ?? 'qwen3.5:2b',
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'nomic-embed-text',
     keepAlive: parseOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE, '-1'),
     embeddingKeepAlive: parseOllamaKeepAlive(process.env.OLLAMA_EMBEDDING_KEEP_ALIVE, '0'),

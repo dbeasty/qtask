@@ -11,9 +11,11 @@ Production site: **https://qtask.dev** · Contributions welcome at [github.com/d
 - [Ollama](https://ollama.com/) with tool-capable models:
 
 ```bash
-ollama pull llama3.1
+ollama pull qwen3.5:2b
 ollama pull nomic-embed-text
 ```
+
+If upgrading an existing install, set `OLLAMA_MODEL=qwen3.5:2b` in `.env` and pull the model above.
 
 ## Quick start
 

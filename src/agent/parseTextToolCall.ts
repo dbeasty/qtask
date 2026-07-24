@@ -335,3 +335,23 @@ export function contentMentionsToolCall(content: string): boolean {
   if (mentionRegex.test(content)) return true;
   return new RegExp(`"name"\\s*:\\s*"(${toolNamePattern})"`).test(content);
 }
+
+const BOILERPLATE_PATTERNS = [
+  /^here is the corrected task:?\s*$/i,
+  /^here are the corrected tasks:?\s*$/i,
+  /^corrected task:?\s*$/i,
+];
+
+export function isBoilerplateAssistantContent(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return true;
+  return BOILERPLATE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+export function finalizeAssistantContent(content: string, hadNewProposals: boolean): string {
+  const stripped = stripToolArtifactsFromContent(content);
+  if (isBoilerplateAssistantContent(stripped)) {
+    return hadNewProposals ? 'Tasks are ready for your approval.' : stripped;
+  }
+  return stripped;
+}

@@ -113,10 +113,25 @@ export function stripToolArtifactsFromContent(content: string): string {
   return result;
 }
 
+const BOILERPLATE_PATTERNS = [
+  /^here is the corrected task:?\s*$/i,
+  /^here are the corrected tasks:?\s*$/i,
+  /^corrected task:?\s*$/i,
+];
+
+export function isBoilerplateAssistantContent(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return true;
+  return BOILERPLATE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 export function displayMessageContent(message: UiMessage): string {
   let content = message.content;
   if ((message.proposals?.length ?? 0) > 0) {
     content = stripToolArtifactsFromContent(content);
+    if (isBoilerplateAssistantContent(content)) {
+      return '';
+    }
   }
   return content.trim();
 }

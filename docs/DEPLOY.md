@@ -38,7 +38,7 @@ The official production deployment is at **https://qtask.dev**. Source code and 
 - **[Ollama](https://ollama.com/)** with tool-capable models:
 
 ```bash
-ollama pull llama3.1
+ollama pull qwen3.5:2b
 ollama pull nomic-embed-text
 ```
 
@@ -109,7 +109,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `TRUST_PROXY` | `false` | Set `true` behind reverse proxy |
 | `SERVE_CLIENT` | `true` | Serve `client/dist` from API in production |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL (Jetson LAN IP in production; see §4.1.1) |
-| `OLLAMA_MODEL` | `llama3.1` | Agent / tool-calling model (`llama3.2:3b` recommended on Jetson 8GB) |
+| `OLLAMA_MODEL` | `qwen3.5:2b` | Agent / tool-calling model (recommended on Jetson Orin Nano 8GB and local dev) |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Agent model keep-alive passed to Ollama (`-1` = keep agent model loaded) |
 | `OLLAMA_EMBEDDING_KEEP_ALIVE` | `0` | Embedding keep-alive (`0` = unload after request; on-demand indexing) |
@@ -330,7 +330,7 @@ Install Ollama on the Jetson host (not in Docker), then pull models:
 
 ```bash
 # Install from https://ollama.com (ARM64 / Jetson-compatible release)
-ollama pull llama3.2:3b
+ollama pull qwen3.5:2b
 ollama pull nomic-embed-text
 ```
 
@@ -338,7 +338,7 @@ Ensure Ollama listens on the **service VLAN** IP only (not `0.0.0.0` on all inte
 
 ```bash
 OLLAMA_BASE_URL=http://192.168.13.14:11434
-OLLAMA_MODEL=llama3.2:3b
+OLLAMA_MODEL=qwen3.5:2b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 OLLAMA_DOCKER_STATS_URL=
 # DCGM_METRICS_URL=   # leave unset on Jetson
@@ -374,7 +374,7 @@ On the **app host**, set (and **rebuild/restart QTask** after API changes — em
 
 ```bash
 OLLAMA_BASE_URL=http://192.168.13.14:11434
-OLLAMA_MODEL=llama3.2:3b
+OLLAMA_MODEL=qwen3.5:2b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 OLLAMA_KEEP_ALIVE=-1
 OLLAMA_EMBEDDING_KEEP_ALIVE=0
@@ -509,7 +509,7 @@ On first publish, edit `/opt/qtask/.env` (JWT, admin passwords, domain, mail), t
 
 ```bash
 OLLAMA_BASE_URL=http://192.168.13.14:11434
-OLLAMA_MODEL=llama3.2:3b
+OLLAMA_MODEL=qwen3.5:2b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 OLLAMA_KEEP_ALIVE=-1
 OLLAMA_EMBEDDING_KEEP_ALIVE=0

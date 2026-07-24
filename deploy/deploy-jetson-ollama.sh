@@ -29,7 +29,7 @@ for arg in "$@"; do
   esac
 done
 
-CHAT_MODEL="${QTASK_JETSON_CHAT_MODEL:-llama3.2:3b}"
+CHAT_MODEL="${QTASK_JETSON_CHAT_MODEL:-qwen3.5:2b}"
 EMBED_MODEL="${QTASK_JETSON_EMBED_MODEL:-nomic-embed-text}"
 
 echo "==> Installing to ${INSTALL_DIR}"
