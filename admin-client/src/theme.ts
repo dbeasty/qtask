@@ -25,5 +25,5 @@ export function setCachedTheme(theme: ThemePreference): void {
 }
 
 export function resolveTheme(preference?: ThemePreference | null): ThemePreference {
-  return preference === 'light' ? 'light' : 'dark';
+  return preference === 'dark' ? 'dark' : 'light';
 }

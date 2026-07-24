@@ -1,4 +1,3 @@
-:root,
 [data-theme='dark'] {
   color-scheme: dark;
 
@@ -84,6 +83,7 @@
   --color-badge-bad-bg: rgba(248, 113, 113, 0.08);
 }
 
+:root,
 [data-theme='light'] {
   color-scheme: light;
 

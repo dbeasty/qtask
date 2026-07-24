@@ -37,7 +37,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   skipConfirmations: false,
   trackExpenses: true,
   completedDemoTour: false,
-  theme: 'dark',
+  theme: 'light',
 };
 
 export function getUserPreferences(user: AuthUser | null | undefined): UserPreferences {
@@ -46,7 +46,7 @@ export function getUserPreferences(user: AuthUser | null | undefined): UserPrefe
     skipConfirmations: user?.preferences?.skipConfirmations === true,
     trackExpenses: user?.preferences?.trackExpenses !== false,
     completedDemoTour: user?.preferences?.completedDemoTour === true,
-    theme: user?.preferences?.theme === 'light' ? 'light' : 'dark',
+    theme: user?.preferences?.theme === 'dark' ? 'dark' : 'light',
   };
 }
 

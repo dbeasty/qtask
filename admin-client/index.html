@@ -9,9 +9,8 @@
       (function () {
         try {
           var theme = localStorage.getItem('qtask_admin_theme');
-          if (theme === 'light' || theme === 'dark') {
-            document.documentElement.dataset.theme = theme;
-          }
+          document.documentElement.dataset.theme =
+            theme === 'light' || theme === 'dark' ? theme : 'light';
         } catch (e) {}
       })();
     </script>

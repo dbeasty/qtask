@@ -41,7 +41,7 @@ function serializePreferences(preferences?: {
     preferences?.trackExpenses !== undefined && preferences?.trackExpenses !== null
       ? preferences.trackExpenses === true
       : true;
-  const theme = preferences?.theme === 'light' ? 'light' : 'dark';
+  const theme = preferences?.theme === 'dark' ? 'dark' : 'light';
   return {
     autoApproveProposals: preferences?.autoApproveProposals === true,
     skipConfirmations: preferences?.skipConfirmations === true,
@@ -283,7 +283,7 @@ export class AuthService {
           skipConfirmations: false,
           trackExpenses: true,
           completedDemoTour: false,
-          theme: 'dark',
+          theme: 'light',
         };
       }
       if (input.preferences.autoApproveProposals !== undefined) {

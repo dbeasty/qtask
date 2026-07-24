@@ -48,7 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const token = getStoredToken();
     if (!token) {
-      applyTheme(getCachedTheme() ?? 'dark');
+      applyTheme(getCachedTheme() ?? 'light');
       setLoading(false);
       return;
     }
@@ -65,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) {
-      applyTheme(getCachedTheme() ?? 'dark');
+      applyTheme(getCachedTheme() ?? 'light');
       return;
     }
     applyTheme(resolveTheme(getUserPreferences(user).theme));

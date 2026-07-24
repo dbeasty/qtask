@@ -12,7 +12,7 @@ type View = 'users' | 'ollama';
 export function App() {
   const { admin, loading, logout } = useAuth();
   const [view, setView] = useState<View>('users');
-  const [theme, setTheme] = useState<ThemePreference>(() => getCachedTheme() ?? 'dark');
+  const [theme, setTheme] = useState<ThemePreference>(() => getCachedTheme() ?? 'light');
 
   useEffect(() => {
     applyTheme(theme);
