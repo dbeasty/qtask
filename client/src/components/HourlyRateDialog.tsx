@@ -7,6 +7,7 @@ interface HourlyRateDialogProps {
   projectRate?: number;
   taskRate?: number;
   canEditProject: boolean;
+  showTaskOverride?: boolean;
   saving?: boolean;
   onClose: () => void;
   onSaveUserRate: (rate: number | null) => Promise<void>;
@@ -31,6 +32,7 @@ export function HourlyRateDialog({
   projectRate,
   taskRate,
   canEditProject,
+  showTaskOverride = true,
   saving = false,
   onClose,
   onSaveUserRate,
@@ -42,6 +44,10 @@ export function HourlyRateDialog({
   const [taskInput, setTaskInput] = useState(formatRateInput(taskRate));
   const [error, setError] = useState<string | null>(null);
 
+  const effectiveLabel = showTaskOverride
+    ? '(task → project → user)'
+    : '(project → user)';
+
   const handleSave = async () => {
     setError(null);
     try {
@@ -49,7 +55,9 @@ export function HourlyRateDialog({
       if (canEditProject) {
         await onSaveProjectRate(parseRateInput(projectInput));
       }
-      await onSaveTaskRate(parseRateInput(taskInput));
+      if (showTaskOverride) {
+        await onSaveTaskRate(parseRateInput(taskInput));
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
@@ -67,7 +75,7 @@ export function HourlyRateDialog({
       >
         <h2 id="hourly-rate-dialog-title">Hourly rate</h2>
         <p className="hourly-rate-effective">
-          Using <strong>${effectiveRate.toFixed(2)}/hr</strong> (task → project → user)
+          Using <strong>${effectiveRate.toFixed(2)}/hr</strong> {effectiveLabel}
         </p>
 
         <label className="task-form-field">
@@ -96,18 +104,20 @@ export function HourlyRateDialog({
           />
         </label>
 
-        <label className="task-form-field">
-          <span>Task override</span>
-          <input
-            type="number"
-            min={0}
-            step={0.01}
-            value={taskInput}
-            disabled={saving}
-            placeholder="optional"
-            onChange={(event) => setTaskInput(event.target.value)}
-          />
-        </label>
+        {showTaskOverride ? (
+          <label className="task-form-field">
+            <span>Task override</span>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={taskInput}
+              disabled={saving}
+              placeholder="optional"
+              onChange={(event) => setTaskInput(event.target.value)}
+            />
+          </label>
+        ) : null}
 
         {error && <p className="error-banner">{error}</p>}
 

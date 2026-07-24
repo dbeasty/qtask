@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './auth/AuthContext';
-import { ActiveProjectMenu } from './components/ActiveProjectMenu';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { UserMenu } from './components/UserMenu';
 import { AboutPage } from './pages/AboutPage';
@@ -18,7 +17,6 @@ import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { checkHealth, listProjects, listTasks } from './api/client';
-import type { Project } from './types';
 import {
   getStoredActiveProjectId,
   setStoredActiveProjectId,
@@ -41,19 +39,16 @@ export function App() {
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
   const [projectsVersion, setProjectsVersion] = useState(0);
+  const [shellRefreshKey, setShellRefreshKey] = useState(0);
   const [suggestedProjectName, setSuggestedProjectName] = useState('');
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(() =>
     getStoredActiveProjectId()
   );
-  const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
   const [pendingTaskSelection, setPendingTaskSelection] = useState<Selection | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [headerProjects, setHeaderProjects] = useState<Project[]>([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [activeProjectMenuOpen, setActiveProjectMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const userMenuTriggerRef = useRef<HTMLButtonElement>(null);
-  const activeProjectMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const previousViewRef = useRef<View>('projects');
   const viewRef = useRef(view);
@@ -119,10 +114,8 @@ export function App() {
     if (!user) return;
     listProjects()
       .then(({ projects }) => {
-        setHeaderProjects(projects);
         if (projects.length === 0) {
           setActiveProjectId(null);
-          setActiveProjectName(null);
           return;
         }
         const matched = activeProjectId
@@ -132,7 +125,6 @@ export function App() {
         if (next._id !== activeProjectId) {
           setActiveProjectId(next._id);
         }
-        setActiveProjectName(next.name);
       })
       .catch(() => {
         // project list is optional for shell chrome
@@ -149,6 +141,13 @@ export function App() {
   const handleProjectsChanged = useCallback(() => {
     setProjectsVersion((version) => version + 1);
   }, []);
+
+  const handleShellRefresh = useCallback(() => {
+    refreshHealth();
+    setTasksVersion((version) => version + 1);
+    setProjectsVersion((version) => version + 1);
+    setShellRefreshKey((version) => version + 1);
+  }, [refreshHealth]);
 
   useEffect(() => {
     if (!user) return;
@@ -221,6 +220,34 @@ export function App() {
               aria-label={apiStatusLabel}
               onClick={() => refreshHealth()}
             />
+          </div>
+        </div>
+
+        <div className="header-row header-row-search">
+          <div className="header-search-group">
+            <button
+              type="button"
+              className="header-refresh-button"
+              title="Refresh data and API status"
+              aria-label="Refresh data and API status"
+              onClick={handleShellRefresh}
+            >
+              <svg
+                className="header-refresh-icon"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                <path d="M21 3v6h-6" />
+              </svg>
+            </button>
             <input
               ref={searchInputRef}
               type="search"
@@ -244,8 +271,7 @@ export function App() {
               autoComplete="off"
             />
           </div>
-          <div className="header-actions">
-            <div className="header-user">
+          <div className="header-user">
             <button
               ref={userMenuTriggerRef}
               type="button"
@@ -272,49 +298,11 @@ export function App() {
                 onClose={() => setUserMenuOpen(false)}
               />
             )}
-            </div>
           </div>
         </div>
 
         <div className="header-row header-row-bottom">
-          <p className="header-tagline muted">
-            <span className="header-tagline-text">AI-native task management</span>
-            {activeProjectName ? (
-              <>
-                <span className="header-tagline-separator" aria-hidden="true">
-                  {' '}
-                  ·{' '}
-                </span>
-                <button
-                  ref={activeProjectMenuTriggerRef}
-                  type="button"
-                  className="header-active-project"
-                  aria-expanded={activeProjectMenuOpen}
-                  aria-haspopup="menu"
-                  onClick={() => setActiveProjectMenuOpen((open) => !open)}
-                >
-                  <span className="header-active-project-name">{activeProjectName}</span>
-                  <span className="header-active-project-chevron" aria-hidden="true">
-                    ▾
-                  </span>
-                </button>
-                {activeProjectMenuOpen && (
-                  <ActiveProjectMenu
-                    anchorRef={activeProjectMenuTriggerRef}
-                    projects={headerProjects}
-                    activeProjectId={activeProjectId}
-                    onSelectProject={(projectId) => {
-                      const project = headerProjects.find((p) => p._id === projectId);
-                      setActiveProjectId(projectId);
-                      if (project) setActiveProjectName(project.name);
-                    }}
-                    onOpenProjectView={() => setView('projects')}
-                    onClose={() => setActiveProjectMenuOpen(false)}
-                  />
-                )}
-              </>
-            ) : null}
-          </p>
+          <p className="header-tagline muted">AI-native task management</p>
           <nav className="header-views-nav" aria-label="Views">
             <span className="header-views-label">Views</span>
             <button
@@ -367,14 +355,14 @@ export function App() {
             onTasksChanged={handleTasksChanged}
             onProjectSuggested={setSuggestedProjectName}
             onNeedProject={() => setView('projects')}
+            externalRefreshKey={shellRefreshKey}
           />
         ) : view === 'search' ? (
           <SearchPage
             query={searchQuery}
+            refreshKey={shellRefreshKey}
             onOpenProject={(projectId) => {
-              const project = headerProjects.find((item) => item._id === projectId);
               setActiveProjectId(projectId);
-              if (project) setActiveProjectName(project.name);
               setView('projects');
             }}
             onOpenTask={(taskId) => {

@@ -56,9 +56,13 @@ def _glob_gpu_load_paths() -> list[str]:
         add(path)
     for path in sorted(glob.glob("/sys/devices/*gpu*/load")):
         add(path)
-    for path in sorted(glob.glob("/sys/devices/**/load", recursive=True)):
-        if _is_gpu_utilization_load_path(path):
-            add(path)
+    platform_root = "/sys/devices/platform"
+    if os.path.isdir(platform_root):
+        for platform_dir in sorted(glob.glob(os.path.join(platform_root, "*"))):
+            for pattern in ("*gpu*/load", "*.gpu/load"):
+                for path in sorted(glob.glob(os.path.join(platform_dir, pattern))):
+                    if _is_gpu_utilization_load_path(path):
+                        add(path)
     return paths
 
 

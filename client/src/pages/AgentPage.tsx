@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   approveProposal,
   deleteConversation,
@@ -14,6 +14,7 @@ import { useAuth } from '../auth/AuthContext';
 import { getUserPreferences } from '../auth/storage';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
+import { CurrentProjectBar } from '../components/CurrentProjectBar';
 import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
 import { suggestProjectFromMessages } from '../utils/project';
 
@@ -22,6 +23,7 @@ interface AgentPageProps {
   onProjectSuggested?: (name: string) => void;
   activeProjectId: string | null;
   onNeedProject?: () => void;
+  externalRefreshKey?: number;
 }
 
 type PendingConfirm =
@@ -206,6 +208,7 @@ export function AgentPage({
   onProjectSuggested,
   activeProjectId,
   onNeedProject,
+  externalRefreshKey = 0,
 }: AgentPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
@@ -233,6 +236,9 @@ export function AgentPage({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const autoApproveInFlightRef = useRef(false);
+  const lastExternalRefreshKey = useRef(externalRefreshKey);
+  const conversationIdRef = useRef<string | undefined>(undefined);
+  conversationIdRef.current = conversationId;
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -252,6 +258,26 @@ export function AgentPage({
     setConversationId(undefined);
     setMessages([]);
   }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    if (externalRefreshKey === lastExternalRefreshKey.current) return;
+    lastExternalRefreshKey.current = externalRefreshKey;
+
+    listConversations(activeProjectId)
+      .then(({ conversations: items }) => setConversations(items))
+      .catch((err: Error) => setError(err.message));
+    listProjects()
+      .then(({ projects: items }) => setProjects(items))
+      .catch(() => {
+        // optional for project suggestion
+      });
+
+    const openId = conversationIdRef.current;
+    if (openId) {
+      void syncConversationFromServer(openId).catch((err: Error) => setError(err.message));
+    }
+  }, [externalRefreshKey, activeProjectId]);
 
   useEffect(() => {
     const suggested = suggestProjectFromMessages(messages, projects);
@@ -648,6 +674,10 @@ export function AgentPage({
   }
 
   const pendingProposals = getPendingProposals(messages);
+  const activeProject = useMemo(
+    () => projects.find((project) => project._id === activeProjectId) ?? null,
+    [projects, activeProjectId]
+  );
   const conversationActionsBusy =
     sending ||
     approvingId !== null ||
@@ -657,7 +687,15 @@ export function AgentPage({
     duplicatingConversationId !== null;
 
   return (
-    <div className="agent-layout">
+    <section className="tasks-page">
+      {activeProjectId ? (
+        <CurrentProjectBar
+          activeProject={activeProject}
+          projectCount={projects.length}
+          onOpenProjects={() => onNeedProject?.()}
+        />
+      ) : null}
+      <div className="agent-layout">
       {!activeProjectId ? (
         <div className="tasks-empty-state" style={{ gridColumn: '1 / -1' }}>
           <p className="muted">Select a project for the agent to work on.</p>
@@ -1052,6 +1090,7 @@ export function AgentPage({
       )}
         </>
       )}
-    </div>
+      </div>
+    </section>
   );
 }

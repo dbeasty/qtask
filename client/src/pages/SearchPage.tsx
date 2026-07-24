@@ -4,6 +4,7 @@ import type { SearchHit, SearchResults } from '../types';
 
 interface SearchPageProps {
   query: string;
+  refreshKey?: number;
   onOpenProject: (projectId: string) => void;
   onOpenTask: (taskId: string) => void;
 }
@@ -41,7 +42,7 @@ function ResultRow({
   );
 }
 
-export function SearchPage({ query, onOpenProject, onOpenTask }: SearchPageProps) {
+export function SearchPage({ query, refreshKey = 0, onOpenProject, onOpenTask }: SearchPageProps) {
   const [results, setResults] = useState<SearchResults>({ projects: [], tasks: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +81,7 @@ export function SearchPage({ query, onOpenProject, onOpenTask }: SearchPageProps
       void runSearch(query);
     }, 300);
     return () => window.clearTimeout(handle);
-  }, [query, runSearch]);
+  }, [query, refreshKey, runSearch]);
 
   const hasQuery = query.trim().length > 0;
   const hasResults = results.projects.length > 0 || results.tasks.length > 0;

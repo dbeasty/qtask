@@ -51,8 +51,10 @@ export function HelpPage({ onBack }: HelpPageProps) {
         <section className="help-section">
           <h3>Active project</h3>
           <p>
-            The project name in the header is your active project. Agent and Tasks are scoped to it.
-            Click it to switch projects or open the Projects view.
+            On the Tasks view, click <strong>Project · …</strong> to open the Projects view. On
+            Projects, the <strong>Current project</strong> label shows what is active — select a
+            project in the tree to switch. Rename, members, and delete are in the project details
+            panel. Agent and Tasks are scoped to the active project.
           </p>
         </section>
 

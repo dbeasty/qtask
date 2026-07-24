@@ -13,6 +13,8 @@ import {
 import { useAuth } from '../auth/AuthContext';
 import { getUserPreferences } from '../auth/storage';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { CurrentProjectLabel } from '../components/CurrentProjectBar';
+import { HourlyRateDialog } from '../components/HourlyRateDialog';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectHierarchyTree } from '../components/ProjectHierarchyTree';
 import { TaskSplitInput } from '../components/TaskSplitInput';
@@ -51,7 +53,7 @@ export function ProjectsPage({
   onOpenTask,
   externalRefreshKey = 0,
 }: ProjectsPageProps) {
-  const { user } = useAuth();
+  const { user, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,9 +70,10 @@ export function ProjectsPage({
   const [detailName, setDetailName] = useState('');
   const [detailDescription, setDetailDescription] = useState('');
   const [detailProgressShare, setDetailProgressShare] = useState('');
-  const [detailHourlyRate, setDetailHourlyRate] = useState('');
   const [trackingTree, setTrackingTree] = useState<ExpenseTreeNode[]>([]);
   const [trackingOpen, setTrackingOpen] = useState(false);
+  const [rateDialogOpen, setRateDialogOpen] = useState(false);
+  const [rateSaving, setRateSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -144,16 +147,13 @@ export function ProjectsPage({
     setDetailName(activeProject?.name ?? '');
     setDetailDescription(activeProject?.description ?? '');
     setDetailProgressShare(progressShareToFormValue(activeProject?.progressShare));
-    setDetailHourlyRate(
-      activeProject?.hourlyRate !== undefined ? String(activeProject.hourlyRate) : ''
-    );
     lastSavedRef.current = {
       name: activeProject?.name ?? '',
       description: activeProject?.description ?? '',
     };
     setSaveStatus('idle');
     setSaveError(null);
-  }, [activeProject?._id, activeProject?.progressShare, activeProject?.hourlyRate, clearDebounce]);
+  }, [activeProject?._id, activeProject?.progressShare, clearDebounce]);
 
   useEffect(() => {
     if (!activeProject) {
@@ -295,28 +295,8 @@ export function ProjectsPage({
     scheduleAutoSave(detailName, value);
   };
 
-  const handleRateChange = async (raw: string) => {
-    setDetailHourlyRate(raw);
-
-    if (!activeProject?.canEdit) return;
-
-    const trimmed = raw.trim();
-    const nextValue = trimmed === '' ? null : Math.max(0, Number(trimmed));
-    if (trimmed !== '' && !Number.isFinite(nextValue)) return;
-
-    setSaving(true);
-    setActionError(null);
-    try {
-      const { project } = await updateProject(activeProject._id, {
-        hourlyRate: nextValue,
-      });
-      replaceProject(project);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to update project rate');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const projectEffectiveHourlyRate =
+    activeProject?.hourlyRate ?? user?.hourlyRate ?? 0;
 
   const handleProgressShareChange = async (value: string) => {
     setDetailProgressShare(value);
@@ -437,7 +417,8 @@ export function ProjectsPage({
       {!loading && (
         <>
           <div className="project-toolbar-wrap">
-            <div className="context-bar-row">
+            <div className="context-bar-row context-bar-row-stacked">
+              <CurrentProjectLabel activeProject={activeProject} />
               <button
                 type="button"
                 className={`project-toolbar-collapsed context-bar-tasks-toggle${listExpanded ? ' expanded' : ''}`}
@@ -447,26 +428,11 @@ export function ProjectsPage({
                 <span
                   className={`project-toolbar-chevron${listExpanded ? ' expanded' : ''}`}
                   aria-hidden="true"
-                />
+                >
+                  ›
+                </span>
                 <span className="project-toolbar-collapsed-label">Projects</span>
               </button>
-              <div className="project-toolbar-actions">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCreatingRoot(true);
-                    setCreatingChildOf(null);
-                    setNewName('');
-                    setNewDescription('');
-                  }}
-                  disabled={saving}
-                >
-                  New project
-                </button>
-                <button type="button" onClick={() => void refresh()} disabled={loading || saving}>
-                  Refresh
-                </button>
-              </div>
             </div>
           </div>
 
@@ -636,20 +602,6 @@ export function ProjectsPage({
                     </div>
                   )}
 
-                  <label className="task-form-field">
-                    <span>Hourly rate</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={0.01}
-                      value={detailHourlyRate}
-                      onChange={(event) => setDetailHourlyRate(event.target.value)}
-                      onBlur={() => void handleRateChange(detailHourlyRate)}
-                      disabled={saving || !activeProject.canEdit}
-                      placeholder="optional"
-                    />
-                  </label>
-
                   <details
                     className="task-form-tracking-section"
                     open={trackingOpen}
@@ -665,6 +617,19 @@ export function ProjectsPage({
                       Tracking
                     </summary>
                     <div className="task-form-tracking-body">
+                      <div className="task-tracking-add-row">
+                        <button
+                          type="button"
+                          className="task-tracking-rate"
+                          onClick={() => setRateDialogOpen(true)}
+                          disabled={saving}
+                        >
+                          {projectEffectiveHourlyRate > 0
+                            ? `$${formatMoney(projectEffectiveHourlyRate)}/hr`
+                            : 'Set rate'}
+                        </button>
+                      </div>
+
                       {activeProject.trackingRollup &&
                       activeProject.trackingRollup.totalCost > 0 ? (
                         <div className="task-cost-summary">
@@ -759,6 +724,40 @@ export function ProjectsPage({
           busy={saving}
           onCancel={() => setPendingDeleteId(null)}
           onConfirm={() => void handleDelete()}
+        />
+      )}
+
+      {rateDialogOpen && activeProject && (
+        <HourlyRateDialog
+          effectiveRate={projectEffectiveHourlyRate}
+          userRate={user?.hourlyRate}
+          projectRate={activeProject.hourlyRate}
+          canEditProject={activeProject.canEdit}
+          showTaskOverride={false}
+          saving={rateSaving}
+          onClose={() => setRateDialogOpen(false)}
+          onSaveUserRate={async (rate) => {
+            setRateSaving(true);
+            try {
+              await updateProfile({ hourlyRate: rate });
+            } finally {
+              setRateSaving(false);
+            }
+          }}
+          onSaveProjectRate={async (rate) => {
+            setRateSaving(true);
+            setActionError(null);
+            try {
+              const { project } = await updateProject(activeProject._id, { hourlyRate: rate });
+              replaceProject(project);
+            } catch (err) {
+              setActionError(err instanceof Error ? err.message : 'Failed to update project rate');
+              throw err;
+            } finally {
+              setRateSaving(false);
+            }
+          }}
+          onSaveTaskRate={async () => {}}
         />
       )}
     </section>

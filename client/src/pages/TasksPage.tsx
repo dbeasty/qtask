@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  addProjectCollaborator,
   addSubtask,
   attachTaskAsSubtask,
   createProject,
   createTask,
-  deleteProject,
   deleteSubtask,
   deleteTask,
   duplicateTask,
@@ -14,12 +12,10 @@ import {
   moveSubtask,
   moveTaskToProject,
   promoteSubtask,
-  removeProjectCollaborator,
   reorderProjectTask,
   shareTaskToProject,
   unlinkTaskFromProject,
   updateProject,
-  updateProjectCollaborator,
   updateSubtask,
   updateTask,
 } from '../api/client';
@@ -36,11 +32,10 @@ import {
 import { materialsForApi } from '../components/TaskMaterialsEditor';
 import { laborLinesForApi, laborLinesFromTask } from '../components/TaskLaborEditor';
 import { stepsForApi, stepsFromTask } from '../components/TaskStepsEditor';
-import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectToolbar } from '../components/ProjectToolbar';
 import { TaskListPanel } from '../components/TaskListPanel';
 import { type Selection } from '../components/TaskHierarchyTree';
-import type { CollaboratorRole, MaterialLine, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
+import type { MaterialLine, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
 import { buildExpenseTree, computeTaskCostRollup } from '../utils/costRollup';
 import {
   getDefaultProject,
@@ -69,9 +64,12 @@ interface TasksPageProps {
   onPendingSelectionApplied?: () => void;
 }
 
-type PendingConfirm =
-  | { kind: 'delete-item'; label: string; keepChildren: boolean; hasChildren: boolean }
-  | { kind: 'delete-project'; message: string };
+type PendingConfirm = {
+  kind: 'delete-item';
+  label: string;
+  keepChildren: boolean;
+  hasChildren: boolean;
+};
 
 interface DetailItem {
   title: string;
@@ -272,7 +270,6 @@ export function TasksPage({
   const [creatingTaskForProjectId, setCreatingTaskForProjectId] = useState<string | null>(null);
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [taskListExpanded, setTaskListExpanded] = useState(true);
-  const [membersOpen, setMembersOpen] = useState(false);
   const [projectDialogTaskId, setProjectDialogTaskId] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -534,11 +531,6 @@ export function TasksPage({
     }
   };
 
-  const handleRenameProject = async (projectId: string, name: string) => {
-    const { project } = await updateProject(projectId, { name });
-    setProjects((current) => current.map((item) => (item._id === projectId ? project : item)));
-  };
-
   const selectedTask = useMemo(
     () => (selection ? tasks.find((task) => task._id === selection.taskId) ?? null : null),
     [selection, tasks]
@@ -798,45 +790,6 @@ export function TasksPage({
     [projectDialogTaskId, tasks]
   );
 
-  const performDeleteProject = async () => {
-    if (!resolvedActiveProjectId || !activeProject) return;
-    if (!activeProject.canManageMembers) return;
-
-    setSaving(true);
-    setActionError(null);
-    try {
-      const { nextProjectId } = await deleteProject(resolvedActiveProjectId);
-      const [taskResponse, projectResponse] = await Promise.all([listTasks(), listProjects()]);
-      setTasks(taskResponse.tasks);
-      setProjects(projectResponse.projects);
-      onActiveProjectChange(nextProjectId);
-      setSelection(null);
-      setCreatingTaskForProjectId(null);
-      resetHierarchyModes();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to delete project');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDeleteProject = async () => {
-    if (!resolvedActiveProjectId || !activeProject) return;
-    if (!activeProject.canManageMembers) return;
-
-    if (preferences.skipConfirmations) {
-      await performDeleteProject();
-      return;
-    }
-
-    const taskCount = activeProjectTasks.length;
-    const message =
-      taskCount > 0
-        ? `Delete project "${activeProject.name}" and all ${taskCount} tasks? This cannot be undone.`
-        : `Delete project "${activeProject.name}"? This cannot be undone.`;
-    setPendingConfirm({ kind: 'delete-project', message });
-  };
-
   async function handleConfirmDialog(dontAskAgain: boolean) {
     if (!pendingConfirm) return;
     setConfirmBusy(true);
@@ -844,11 +797,7 @@ export function TasksPage({
       if (dontAskAgain && !preferences.skipConfirmations) {
         await updatePreferences({ skipConfirmations: true });
       }
-      if (pendingConfirm.kind === 'delete-item') {
-        await performDelete(pendingConfirm.keepChildren);
-      } else {
-        await performDeleteProject();
-      }
+      await performDelete(pendingConfirm.keepChildren);
       setPendingConfirm(null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Could not save preference');
@@ -857,79 +806,10 @@ export function TasksPage({
     }
   }
 
-  const replaceProject = (project: Project) => {
-    setProjects((current) => current.map((item) => (item._id === project._id ? project : item)));
-  };
-
-  const handleAddCollaborator = async (email: string, role: CollaboratorRole) => {
-    if (!activeProject) return;
-    setSaving(true);
-    try {
-      const { project } = await addProjectCollaborator(activeProject._id, { email, role });
-      replaceProject(project);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleUpdateCollaboratorRole = async (collaboratorUserId: string, role: CollaboratorRole) => {
-    if (!activeProject) return;
-    setSaving(true);
-    try {
-      const { project } = await updateProjectCollaborator(activeProject._id, collaboratorUserId, {
-        role,
-      });
-      replaceProject(project);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleRemoveCollaborator = async (collaboratorUserId: string) => {
-    if (!activeProject) return;
-    setSaving(true);
-    try {
-      const result = await removeProjectCollaborator(activeProject._id, collaboratorUserId);
-      if (result.left || !result.project) {
-        setMembersOpen(false);
-        const [taskResponse, projectResponse] = await Promise.all([listTasks(), listProjects()]);
-        setTasks(taskResponse.tasks);
-        setProjects(projectResponse.projects);
-        onActiveProjectChange(projectResponse.projects[0]?._id ?? null);
-        setSelection(null);
-      } else {
-        replaceProject(result.project);
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleSelect = (next: Selection) => {
     resetHierarchyModes();
     setCreatingTaskForProjectId(null);
     setSelection(next);
-  };
-
-  const handleSelectProject = (projectId: string) => {
-    onActiveProjectChange(projectId);
-    resetHierarchyModes();
-    setCreatingTaskForProjectId(null);
-
-    const group = projectGroups.find((item) => item.projectId === projectId);
-    if (!group || group.tasks.length === 0) {
-      setSelection(null);
-      return;
-    }
-
-    if (selection) {
-      const selected = tasks.find((task) => task._id === selection.taskId);
-      if (selected && taskBelongsToProject(selected, projectId)) {
-        return;
-      }
-    }
-
-    setSelection({ kind: 'task', taskId: group.tasks[0]!._id });
   };
 
   const handleStartAddTask = (projectId: string) => {
@@ -993,34 +873,14 @@ export function TasksPage({
       {projects.length > 0 && activeProjectId && !loading && (
         <>
           <ProjectToolbar
-            projects={projects}
-            activeProjectId={resolvedActiveProjectId}
             activeProject={activeProject}
+            projectCount={projects.length}
             taskCount={activeProjectTasks.length}
-            saving={saving}
-            loading={loading}
             taskListExpanded={taskListExpanded}
             selectedTaskTitle={detail?.title}
             onTaskListExpandedChange={setTaskListExpanded}
-            onSelectProject={handleSelectProject}
-            onRename={handleRenameProject}
-            onDeleteProject={handleDeleteProject}
-            onManageMembers={() => setMembersOpen(true)}
-            onRefresh={refresh}
             onOpenProjects={() => onNeedProject?.()}
           />
-
-          {membersOpen && activeProject && user && (
-            <ProjectMembersDialog
-              project={activeProject}
-              currentUserId={user.id}
-              saving={saving}
-              onClose={() => setMembersOpen(false)}
-              onAdd={handleAddCollaborator}
-              onUpdateRole={handleUpdateCollaboratorRole}
-              onRemove={handleRemoveCollaborator}
-            />
-          )}
 
           <div className={`tasks-layout${taskListExpanded ? '' : ' tasks-layout-task-list-collapsed'}`}>
             {taskListExpanded && activeProjectGroup && (
@@ -1200,15 +1060,13 @@ export function TasksPage({
 
       {pendingConfirm && (
         <ConfirmDialog
-          title={pendingConfirm.kind === 'delete-project' ? 'Delete project' : 'Delete'}
+          title="Delete"
           message={
-            pendingConfirm.kind === 'delete-project'
-              ? pendingConfirm.message
-              : pendingConfirm.keepChildren
-                ? `Delete this ${pendingConfirm.label}? Its subtasks will be kept.`
-                : pendingConfirm.hasChildren
-                  ? `Delete this ${pendingConfirm.label} and its subtasks? This cannot be undone.`
-                  : `Delete this ${pendingConfirm.label}? This cannot be undone.`
+            pendingConfirm.keepChildren
+              ? `Delete this ${pendingConfirm.label}? Its subtasks will be kept.`
+              : pendingConfirm.hasChildren
+                ? `Delete this ${pendingConfirm.label} and its subtasks? This cannot be undone.`
+                : `Delete this ${pendingConfirm.label}? This cannot be undone.`
           }
           confirmLabel="Delete"
           busy={confirmBusy || saving}
