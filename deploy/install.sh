@@ -41,6 +41,7 @@ run_privileged rsync -a --delete \
   --exclude='.env.local' \
   --exclude='.ssh/' \
   --exclude='qtask-*/' \
+  --exclude='run/' \
   "${APP_ROOT}/" "${INSTALL_DIR}/"
 
 cd "${INSTALL_DIR}"
