@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './auth/AuthContext';
+import { getUserPreferences } from './auth/storage';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
+import { DemoTourPrompt, useDemoTour } from './components/DemoTour';
 import { UserMenu } from './components/UserMenu';
 import { AboutPage } from './pages/AboutPage';
 import { AgentPage } from './pages/AgentPage';
@@ -48,12 +50,48 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [demoPrompt, setDemoPrompt] = useState<string | null>(null);
+  const [demoPromptGeneration, setDemoPromptGeneration] = useState(0);
+  const [showTourPrompt, setShowTourPrompt] = useState(false);
+  const tourPromptCheckedRef = useRef(false);
   const userMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const previousViewRef = useRef<View>('projects');
   const viewRef = useRef(view);
   viewRef.current = view;
   const defaultViewSetRef = useRef(false);
+
+  const preferences = getUserPreferences(user);
+
+  const handleTourComplete = useCallback(async () => {
+    setShowTourPrompt(false);
+    setDemoPrompt(null);
+    await updatePreferences({ completedDemoTour: true });
+  }, [updatePreferences]);
+
+  const { startTour } = useDemoTour({
+    setView,
+    onSetDemoPrompt: (prompt) => {
+      setDemoPrompt(prompt);
+      if (prompt) {
+        setDemoPromptGeneration((value) => value + 1);
+      }
+    },
+    onComplete: () => {
+      void handleTourComplete();
+    },
+    autoApproveProposals: preferences.autoApproveProposals,
+  });
+
+  const handleStartTour = useCallback(() => {
+    setShowTourPrompt(false);
+    void startTour();
+  }, [startTour]);
+
+  const handleDismissTourPrompt = useCallback(() => {
+    setShowTourPrompt(false);
+    void updatePreferences({ completedDemoTour: true });
+  }, [updatePreferences]);
 
   const setActiveProjectId = useCallback((projectId: string | null) => {
     setActiveProjectIdState(projectId);
@@ -108,6 +146,19 @@ export function App() {
       .catch(() => {
         defaultViewSetRef.current = true;
       });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      tourPromptCheckedRef.current = false;
+      setShowTourPrompt(false);
+      return;
+    }
+    if (!defaultViewSetRef.current || tourPromptCheckedRef.current) return;
+    tourPromptCheckedRef.current = true;
+    if (!getUserPreferences(user).completedDemoTour) {
+      setShowTourPrompt(true);
+    }
   }, [user]);
 
   useEffect(() => {
@@ -252,6 +303,7 @@ export function App() {
               ref={searchInputRef}
               type="search"
               className="header-search-input"
+              data-demo-step="header-search"
               value={searchQuery}
               onChange={(event) => {
                 const value = event.target.value;
@@ -276,6 +328,7 @@ export function App() {
               ref={userMenuTriggerRef}
               type="button"
               className="user-menu-trigger"
+              data-demo-step="user-menu"
               aria-expanded={userMenuOpen}
               aria-haspopup="menu"
               onClick={() => setUserMenuOpen((open) => !open)}
@@ -291,6 +344,7 @@ export function App() {
                 anchorRef={userMenuTriggerRef}
                 onChangePassword={() => setChangePasswordOpen(true)}
                 onOpenHelp={() => setView('help')}
+                onStartTour={handleStartTour}
                 onOpenAbout={() => setView('about')}
                 onUpdateDisplayName={(displayName) => updateProfile({ displayName })}
                 onUpdatePreferences={updatePreferences}
@@ -303,7 +357,7 @@ export function App() {
 
         <div className="header-row header-row-bottom">
           <p className="header-tagline muted">AI-native task management</p>
-          <nav className="header-views-nav" aria-label="Views">
+          <nav className="header-views-nav" aria-label="Views" data-demo-step="header-views">
             <span className="header-views-label">Views</span>
             <button
               type="button"
@@ -356,6 +410,9 @@ export function App() {
             onProjectSuggested={setSuggestedProjectName}
             onNeedProject={() => setView('projects')}
             externalRefreshKey={shellRefreshKey}
+            demoPrompt={demoPrompt}
+            onDemoPromptConsumed={() => setDemoPrompt(null)}
+            demoPromptGeneration={demoPromptGeneration}
           />
         ) : view === 'search' ? (
           <SearchPage
@@ -371,7 +428,7 @@ export function App() {
             }}
           />
         ) : view === 'help' ? (
-          <HelpPage onBack={() => setView('projects')} />
+          <HelpPage onBack={() => setView('projects')} onStartTour={handleStartTour} />
         ) : view === 'about' ? (
           <AboutPage apiVersion={apiVersion} onBack={() => setView('projects')} />
         ) : (
@@ -388,6 +445,9 @@ export function App() {
       </main>
 
       {changePasswordOpen && <ChangePasswordDialog onClose={() => setChangePasswordOpen(false)} />}
+      {showTourPrompt ? (
+        <DemoTourPrompt onStart={handleStartTour} onDismiss={handleDismissTourPrompt} />
+      ) : null}
     </div>
   );
 }

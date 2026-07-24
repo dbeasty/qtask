@@ -33,15 +33,15 @@ registration_enabled="$(echo "${auth_config}" | grep -o '"registrationEnabled":[
 echo ""
 echo "4. Auth API (register)"
 if [[ "${registration_enabled}" == "false" ]]; then
-  skip "registration disabled (SMTP not configured or misconfigured)"
+  skip "registration disabled (mail not configured)"
+  skip "login-before-verify check (no test account created)"
+elif [[ "${SMOKE_TEST_REGISTER:-}" != "1" ]] || [[ -z "${TEST_EMAIL}" ]]; then
+  skip "registration test (set SMOKE_TEST_REGISTER=1 and TEST_EMAIL=you@yourdomain.com)"
   skip "login-before-verify check (no test account created)"
 else
-  if [[ -z "${TEST_EMAIL}" ]]; then
-    TEST_EMAIL="qtask-smoke-$(date +%s)@example.com"
-  fi
   register_body="$(curl -fsS -X POST "${BASE_URL}/api/auth/register" \
     -H 'Content-Type: application/json' \
-    -d "{\"email\":\"${TEST_EMAIL}\",\"password\":\"smoke-test-pass\",\"acceptLegal\":true}")"
+    -d "{\"email\":\"${TEST_EMAIL}\",\"password\":\"smoke-test-pass123\",\"acceptLegal\":true}")"
   echo "   ${register_body}"
   echo "${register_body}" | grep -qi 'verification' || fail "register response unexpected"
   pass "register (${TEST_EMAIL})"
@@ -51,7 +51,7 @@ else
   login_status="$(curl -sS -o /tmp/qtask-smoke-login.json -w "%{http_code}" \
     -X POST "${BASE_URL}/api/auth/login" \
     -H 'Content-Type: application/json' \
-    -d "{\"email\":\"${TEST_EMAIL}\",\"password\":\"smoke-test-pass\"}")"
+    -d "{\"email\":\"${TEST_EMAIL}\",\"password\":\"smoke-test-pass123\"}")"
   [[ "${login_status}" == "403" ]] || fail "login before verify returned ${login_status} (expected 403)"
   pass "login blocked until verified"
 fi
@@ -59,9 +59,9 @@ fi
 echo ""
 echo "All smoke checks passed."
 echo ""
-if [[ "${registration_enabled}" == "true" ]]; then
+if [[ "${SMOKE_TEST_REGISTER:-}" == "1" ]] && [[ -n "${TEST_EMAIL}" ]] && [[ "${registration_enabled}" == "true" ]]; then
   echo "Next: verify the account to complete end-to-end testing."
-  echo "  - Check your inbox if SMTP is configured"
+  echo "  - Check your inbox for the verification email"
   echo "  - Or read the verification link from logs:"
   echo "      sudo journalctl -u qtask -n 30 --no-pager | grep -i verify"
   echo ""

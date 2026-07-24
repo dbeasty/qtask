@@ -444,6 +444,7 @@ export function ProjectsPage({
                     <button
                       type="button"
                       className="primary-button"
+                      data-demo-step="add-project"
                       disabled={saving}
                       onClick={() => {
                         if (creatingRoot) {
@@ -528,6 +529,7 @@ export function ProjectsPage({
                     </button>
                     <button
                       type="button"
+                      className="secondary-button"
                       disabled={saving}
                       onClick={() => {
                         setCreatingRoot(false);
@@ -682,11 +684,21 @@ export function ProjectsPage({
                       : ' · Root project'}
                   </p>
                   <div className="task-form-actions">
-                    <button type="button" disabled={saving} onClick={() => setMembersOpen(true)}>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={saving}
+                      onClick={() => setMembersOpen(true)}
+                    >
                       Members
                     </button>
                     {onOpenTasks && (
-                      <button type="button" disabled={saving} onClick={onOpenTasks}>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={saving}
+                        onClick={onOpenTasks}
+                      >
                         Open tasks
                       </button>
                     )}

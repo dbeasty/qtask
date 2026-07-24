@@ -717,6 +717,91 @@ button {
   color: #b8c4d6;
 }
 
+.help-steps-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #b8c4d6;
+  line-height: 1.55;
+}
+
+.help-steps-list li + li {
+  margin-top: 0.35rem;
+}
+
+.demo-tour-prompt-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(8, 12, 20, 0.72);
+}
+
+.demo-tour-prompt {
+  width: min(100%, 26rem);
+  padding: 1.25rem 1.35rem;
+  border: 1px solid #2a3447;
+  border-radius: 12px;
+  background: #121826;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+.demo-tour-prompt h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.demo-tour-prompt p {
+  margin: 0 0 1rem;
+  line-height: 1.55;
+  color: #b8c4d6;
+}
+
+.demo-tour-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.driver-popover {
+  background: #121826 !important;
+  color: #e8eef7 !important;
+  border: 1px solid #2a3447 !important;
+}
+
+.driver-popover-title {
+  font-size: 1rem !important;
+}
+
+.driver-popover-description {
+  color: #b8c4d6 !important;
+  line-height: 1.5 !important;
+}
+
+.driver-popover-footer button {
+  border-radius: 6px !important;
+  text-shadow: none !important;
+}
+
+.driver-popover-next-btn,
+.driver-popover-done-btn {
+  background: #3b82f6 !important;
+  color: #fff !important;
+  border: none !important;
+}
+
+.driver-popover-prev-btn {
+  background: transparent !important;
+  color: #b8c4d6 !important;
+  border: 1px solid #2a3447 !important;
+}
+
+.driver-popover-progress-text {
+  color: #8b98ad !important;
+}
+
 .help-section p:last-child {
   margin-bottom: 0;
 }

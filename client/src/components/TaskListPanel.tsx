@@ -64,6 +64,7 @@ export function TaskListPanel({
           <button
             type="button"
             className="primary-button"
+            data-demo-step="add-task"
             onClick={onAddTaskClick}
             disabled={saving || addDisabled}
           >

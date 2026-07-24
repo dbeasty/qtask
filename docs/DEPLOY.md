@@ -180,7 +180,7 @@ CORS_ORIGIN=https://qtask.dev
 ```
 
 For local development, the same keys can live in `.env.local` instead.
-4. Restart the service and confirm `/health` reports `checks.email: "ok"`.
+4. Restart the service and confirm `/health` reports `checks.email: "configured"`.
 
 #### SMTP (alternative)
 
@@ -693,6 +693,8 @@ Run these on the server (or against your public URL via nginx) to confirm the de
 
 #### Automated smoke test
 
+Default (post-deploy — health + web UI only):
+
 ```bash
 /opt/qtask/deploy/smoke-test.sh
 # or from an extracted tarball before install:
@@ -700,12 +702,18 @@ Run these on the server (or against your public URL via nginx) to confirm the de
 
 # against your public URL (through nginx):
 BASE_URL=https://qtask.dev /opt/qtask/deploy/smoke-test.sh
-
-# use your real email to receive the verification message:
-TEST_EMAIL=you@example.com /opt/qtask/deploy/smoke-test.sh
 ```
 
-The script checks health, web UI, registration, and that login is blocked until email verification.
+The default run checks health and the web UI. Registration is **opt-in** — do not use `@example.com`; production mail providers (Resend) reject undeliverable addresses and would fail the test even when the deploy is healthy.
+
+Optional full auth path (requires a real inbox that can receive mail):
+
+```bash
+SMOKE_TEST_REGISTER=1 TEST_EMAIL=you@yourdomain.com /opt/qtask/deploy/smoke-test.sh
+BASE_URL=https://qtask.dev SMOKE_TEST_REGISTER=1 TEST_EMAIL=you@yourdomain.com /opt/qtask/deploy/smoke-test.sh
+```
+
+When enabled, the script also registers a test account and confirms login is blocked until email verification.
 
 #### Manual validation (step by step)
 

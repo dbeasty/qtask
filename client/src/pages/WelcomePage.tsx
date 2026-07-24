@@ -1,5 +1,7 @@
 import { GITHUB_REPO_URL, SITE_URL } from '../constants/brand';
 
+const USER_GUIDE_URL = `${GITHUB_REPO_URL}/blob/main/docs/USER_GUIDE.md`;
+
 export function WelcomePage() {
   return (
     <div className="auth-page">
@@ -42,6 +44,10 @@ export function WelcomePage() {
             Official site: <a href={SITE_URL}>{SITE_URL}</a>
           </p>
           <p className="welcome-footer-links">
+            <a href={USER_GUIDE_URL} target="_blank" rel="noopener noreferrer">
+              How to use QTask
+            </a>
+            <span aria-hidden="true"> · </span>
             <a href="/terms">Terms &amp; Disclaimer</a>
             <span aria-hidden="true"> · </span>
             <a href="/privacy">Privacy Policy</a>

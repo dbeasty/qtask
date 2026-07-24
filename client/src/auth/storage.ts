@@ -16,6 +16,7 @@ export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
   trackExpenses: boolean;
+  completedDemoTour: boolean;
 }
 
 export interface AuthUser {
@@ -32,6 +33,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   autoApproveProposals: false,
   skipConfirmations: false,
   trackExpenses: true,
+  completedDemoTour: false,
 };
 
 export function getUserPreferences(user: AuthUser | null | undefined): UserPreferences {
@@ -39,6 +41,7 @@ export function getUserPreferences(user: AuthUser | null | undefined): UserPrefe
     autoApproveProposals: user?.preferences?.autoApproveProposals === true,
     skipConfirmations: user?.preferences?.skipConfirmations === true,
     trackExpenses: user?.preferences?.trackExpenses !== false,
+    completedDemoTour: user?.preferences?.completedDemoTour === true,
   };
 }
 

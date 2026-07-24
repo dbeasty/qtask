@@ -48,6 +48,7 @@ const updateProfileSchema = z.object({
       autoApproveProposals: z.boolean().optional(),
       skipConfirmations: z.boolean().optional(),
       trackExpenses: z.boolean().optional(),
+      completedDemoTour: z.boolean().optional(),
       enableHourlyTracking: z.boolean().optional(),
     })
     .optional(),

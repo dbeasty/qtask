@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { UserModel } from '../models/index.js';
+import { ProjectModel, UserModel } from '../models/index.js';
 import { signToken } from '../auth/jwt.js';
 import { createOneTimeToken, hashToken } from '../auth/oneTimeToken.js';
 import { HttpError } from '../utils/httpError.js';
@@ -23,12 +23,14 @@ export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
   trackExpenses: boolean;
+  completedDemoTour: boolean;
 }
 
 function serializePreferences(preferences?: {
   autoApproveProposals?: boolean | null;
   skipConfirmations?: boolean | null;
   trackExpenses?: boolean | null;
+  completedDemoTour?: boolean | null;
   enableHourlyTracking?: boolean | null;
 } | null): UserPreferences {
   const trackExpenses =
@@ -39,6 +41,7 @@ function serializePreferences(preferences?: {
     autoApproveProposals: preferences?.autoApproveProposals === true,
     skipConfirmations: preferences?.skipConfirmations === true,
     trackExpenses,
+    completedDemoTour: preferences?.completedDemoTour === true,
   };
 }
 
@@ -49,12 +52,13 @@ function serializeUser(user: {
   emailVerified?: boolean | null;
   mustChangePassword?: boolean | null;
   hourlyRate?: number | null;
-  preferences?: {
-    autoApproveProposals?: boolean | null;
-    skipConfirmations?: boolean | null;
-    trackExpenses?: boolean | null;
-    enableHourlyTracking?: boolean | null;
-  } | null;
+    preferences?: {
+      autoApproveProposals?: boolean | null;
+      skipConfirmations?: boolean | null;
+      trackExpenses?: boolean | null;
+      completedDemoTour?: boolean | null;
+      enableHourlyTracking?: boolean | null;
+    } | null;
 }) {
   return {
     id: String(user._id),
@@ -100,7 +104,14 @@ export class AuthService {
 
     const userId = String(user._id);
     await projectService.ensureDefaultProject(userId);
-    await emailService.sendVerificationEmail(email, verification.token);
+
+    try {
+      await emailService.sendVerificationEmail(email, verification.token);
+    } catch {
+      await ProjectModel.deleteMany({ userId });
+      await UserModel.deleteOne({ _id: user._id });
+      throw new HttpError(503, 'Unable to send verification email. Please try again later.');
+    }
 
     return { message: 'Check your email to verify your account before signing in.' };
   }
@@ -161,7 +172,11 @@ export class AuthService {
       user.emailVerificationTokenHash = verification.tokenHash;
       user.emailVerificationExpires = verification.expiresAt;
       await user.save();
-      await emailService.sendVerificationEmail(email, verification.token);
+      try {
+        await emailService.sendVerificationEmail(email, verification.token);
+      } catch {
+        // Same generic response — do not leak deliverability details.
+      }
     }
 
     return { message: 'If an unverified account exists for that email, a verification link has been sent.' };
@@ -176,7 +191,11 @@ export class AuthService {
       user.passwordResetTokenHash = reset.tokenHash;
       user.passwordResetExpires = reset.expiresAt;
       await user.save();
-      await emailService.sendPasswordResetEmail(email, reset.token);
+      try {
+        await emailService.sendPasswordResetEmail(email, reset.token);
+      } catch {
+        // Same generic response — do not leak deliverability details.
+      }
     }
 
     return { message: 'If an account exists for that email, a password reset link has been sent.' };
@@ -230,6 +249,7 @@ export class AuthService {
         autoApproveProposals?: boolean;
         skipConfirmations?: boolean;
         trackExpenses?: boolean;
+        completedDemoTour?: boolean;
         enableHourlyTracking?: boolean;
       };
     }
@@ -254,6 +274,7 @@ export class AuthService {
           autoApproveProposals: false,
           skipConfirmations: false,
           trackExpenses: true,
+          completedDemoTour: false,
         };
       }
       if (input.preferences.autoApproveProposals !== undefined) {
@@ -266,6 +287,9 @@ export class AuthService {
         user.preferences.trackExpenses = input.preferences.trackExpenses;
       } else if (input.preferences.enableHourlyTracking !== undefined) {
         user.preferences.trackExpenses = input.preferences.enableHourlyTracking;
+      }
+      if (input.preferences.completedDemoTour !== undefined) {
+        user.preferences.completedDemoTour = input.preferences.completedDemoTour;
       }
       user.markModified('preferences');
     }

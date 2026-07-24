@@ -7,6 +7,7 @@ interface UserMenuProps {
   anchorRef: RefObject<HTMLButtonElement | null>;
   onChangePassword: () => void;
   onOpenHelp: () => void;
+  onStartTour?: () => void;
   onOpenAbout: () => void;
   onUpdateDisplayName: (displayName: string | null) => Promise<void>;
   onUpdatePreferences: (preferences: Partial<UserPreferences>) => Promise<void>;
@@ -19,6 +20,7 @@ export function UserMenu({
   anchorRef,
   onChangePassword,
   onOpenHelp,
+  onStartTour,
   onOpenAbout,
   onUpdateDisplayName,
   onUpdatePreferences,
@@ -223,6 +225,20 @@ export function UserMenu({
       >
         Help
       </button>
+
+      {onStartTour ? (
+        <button
+          type="button"
+          className="user-menu-item"
+          role="menuitem"
+          onClick={() => {
+            onStartTour();
+            onClose();
+          }}
+        >
+          Take a tour
+        </button>
+      ) : null}
 
       <button
         type="button"

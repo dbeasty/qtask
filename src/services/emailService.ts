@@ -110,8 +110,8 @@ export function isRegistrationEnabled(): boolean {
   return emailReady && process.env.REGISTRATION_ENABLED !== 'false';
 }
 
-export function getEmailStatus(): 'ok' | 'disabled' {
-  return emailReady ? 'ok' : 'disabled';
+export function getEmailStatus(): 'configured' | 'disabled' {
+  return emailReady ? 'configured' : 'disabled';
 }
 
 async function sendViaResend(to: string, subject: string, text: string): Promise<void> {
@@ -149,6 +149,10 @@ async function sendViaSmtp(to: string, subject: string, text: string): Promise<v
 }
 
 async function sendEmail(to: string, subject: string, text: string): Promise<void> {
+  if (process.env.NODE_ENV === 'test' && process.env.TEST_EMAIL_SEND_FAIL === 'true') {
+    throw new Error('Simulated email send failure');
+  }
+
   try {
     if (config.mail.provider === 'resend') {
       await sendViaResend(to, subject, text);

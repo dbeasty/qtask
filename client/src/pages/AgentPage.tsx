@@ -25,6 +25,9 @@ interface AgentPageProps {
   activeProjectId: string | null;
   onNeedProject?: () => void;
   externalRefreshKey?: number;
+  demoPrompt?: string | null;
+  demoPromptGeneration?: number;
+  onDemoPromptConsumed?: () => void;
 }
 
 type PendingConfirm =
@@ -102,6 +105,62 @@ function proposalCardTitle(proposal: UiProposal): string {
   const label = proposalDisplayLabel(proposal.name);
   const summary = proposalSummary(proposal);
   return `${label}: ${summary}`;
+}
+
+type ApprovalPhase = 'committing' | 'continuing' | 'running_tool';
+
+interface ApprovalProgress {
+  proposalId: string;
+  phase: ApprovalPhase;
+  toolName?: string;
+  statusMessage?: string;
+}
+
+function normalizeApprovalStatusMessage(message: string): string {
+  if (message === 'Working…') return 'Reviewing tool results…';
+  return message;
+}
+
+function approvalProgressLabel(
+  proposal: UiProposal,
+  progress: ApprovalProgress | null
+): string | null {
+  if (!progress || progress.proposalId !== proposal.id) return null;
+  if (progress.phase === 'running_tool' && progress.toolName) {
+    return `Running ${proposalDisplayLabel(progress.toolName)}…`;
+  }
+  if (progress.phase === 'continuing') {
+    return progress.statusMessage ?? 'Reviewing tool results…';
+  }
+  if (progress.phase === 'committing') {
+    return proposal.staged || proposal.stagedEntity ? 'Committing…' : 'Running…';
+  }
+  return null;
+}
+
+function approvalActionLabel(
+  proposal: UiProposal,
+  approvingId: string | null,
+  progress: ApprovalProgress | null
+): string {
+  if (approvingId !== proposal.id) {
+    return proposal.staged || proposal.stagedEntity ? 'Commit' : 'Approve';
+  }
+  return (
+    approvalProgressLabel(proposal, progress) ??
+    (proposal.staged || proposal.stagedEntity ? 'Committing…' : 'Running…')
+  );
+}
+
+function autoApproveProgressLabel(progress: ApprovalProgress | null): string {
+  if (!progress) return 'Auto-approving…';
+  if (progress.phase === 'running_tool' && progress.toolName) {
+    return `Running ${proposalDisplayLabel(progress.toolName)}…`;
+  }
+  if (progress.phase === 'continuing') {
+    return progress.statusMessage ?? 'Reviewing tool results…';
+  }
+  return 'Auto-approving…';
 }
 
 function clearStatusMessage(message: UiMessage): UiMessage {
@@ -266,6 +325,9 @@ export function AgentPage({
   activeProjectId,
   onNeedProject,
   externalRefreshKey = 0,
+  demoPrompt,
+  demoPromptGeneration = 0,
+  onDemoPromptConsumed,
 }: AgentPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
@@ -276,6 +338,7 @@ export function AgentPage({
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [approvalProgress, setApprovalProgress] = useState<ApprovalProgress | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
@@ -297,6 +360,13 @@ export function AgentPage({
   const lastExternalRefreshKey = useRef(externalRefreshKey);
   const conversationIdRef = useRef<string | undefined>(undefined);
   conversationIdRef.current = conversationId;
+
+  useEffect(() => {
+    if (!demoPrompt?.trim()) return;
+    setInput(demoPrompt);
+    onDemoPromptConsumed?.();
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [demoPrompt, demoPromptGeneration, onDemoPromptConsumed]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -557,6 +627,7 @@ export function AgentPage({
     }
 
     setApprovingId(proposal.id);
+    setApprovalProgress({ proposalId: proposal.id, phase: 'committing' });
     setError(null);
 
     const assistantId = messageId;
@@ -568,6 +639,43 @@ export function AgentPage({
 
         if (event.type === 'tool_result' && event.success) {
           toolsTouched = true;
+          if (action === 'approve') {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      proposals: (message.proposals ?? []).map((p) =>
+                        p.id === proposal.id ? { ...p, status: 'approved' as const } : p
+                      ),
+                    }
+                  : message
+              )
+            );
+          }
+        }
+
+        if (event.type === 'status') {
+          setApprovalProgress((prev) => {
+            if (!prev || prev.proposalId !== proposal.id) return prev;
+            const statusMessage = normalizeApprovalStatusMessage(event.message);
+            return {
+              ...prev,
+              phase: prev.phase === 'committing' ? 'continuing' : prev.phase,
+              statusMessage,
+            };
+          });
+        }
+
+        if (event.type === 'tool_call') {
+          setApprovalProgress((prev) => {
+            if (!prev || prev.proposalId !== proposal.id) return prev;
+            return {
+              ...prev,
+              phase: 'running_tool',
+              toolName: event.name,
+            };
+          });
         }
 
         if (event.type === 'done') {
@@ -601,6 +709,7 @@ export function AgentPage({
       setError(err instanceof Error ? err.message : 'Approval failed');
     } finally {
       setApprovingId(null);
+      setApprovalProgress(null);
       autoApproveInFlightRef.current = false;
     }
   }
@@ -829,7 +938,7 @@ export function AgentPage({
         </ul>
       </aside>
 
-      <section className="agent-panel">
+      <section className="agent-panel" data-demo-step="agent-panel">
         <div className="message-list">
           {visibleMessages(messages).length === 0 && (
             <div className="empty-state">
@@ -964,7 +1073,13 @@ export function AgentPage({
                                 preferences.autoApproveProposals ? (
                                   <>
                                     <p className="auto-approve-hint">
-                                      {approvingId === proposal.id ? 'Auto-approving…' : 'Auto-approve enabled'}
+                                      {approvingId === proposal.id
+                                        ? autoApproveProgressLabel(
+                                            approvalProgress?.proposalId === proposal.id
+                                              ? approvalProgress
+                                              : null
+                                          )
+                                        : 'Auto-approve enabled'}
                                     </p>
                                     <button
                                       type="button"
@@ -987,13 +1102,7 @@ export function AgentPage({
                                         })
                                       }
                                     >
-                                      {approvingId === proposal.id
-                                        ? proposal.staged || proposal.stagedEntity
-                                          ? 'Committing…'
-                                          : 'Running…'
-                                        : proposal.staged || proposal.stagedEntity
-                                          ? 'Commit'
-                                          : 'Approve'}
+                                      {approvalActionLabel(proposal, approvingId, approvalProgress)}
                                     </button>
                                     <button
                                       type="button"
@@ -1056,10 +1165,25 @@ export function AgentPage({
 
               {(() => {
                 const displayContent = displayMessageContent(message);
-                if (message.streaming && !displayContent) {
+                const activeApprovalProgress =
+                  approvingId && message.proposals?.some((p) => p.id === approvingId)
+                    ? approvalProgress?.proposalId === approvingId
+                      ? approvalProgress
+                      : null
+                    : null;
+                const approvalFollowUpActive =
+                  activeApprovalProgress?.phase === 'continuing' ||
+                  activeApprovalProgress?.phase === 'running_tool';
+
+                if ((message.streaming || approvalFollowUpActive) && !displayContent) {
                   return (
                     <p className="agent-working-indicator">
-                      {message.statusMessage ?? 'Working…'}
+                      {message.statusMessage ??
+                        activeApprovalProgress?.statusMessage ??
+                        (activeApprovalProgress?.phase === 'running_tool' &&
+                        activeApprovalProgress.toolName
+                          ? `Running ${proposalDisplayLabel(activeApprovalProgress.toolName)}…`
+                          : 'Reviewing tool results…')}
                     </p>
                   );
                 }
@@ -1076,7 +1200,7 @@ export function AgentPage({
         {error && <p className="error-banner">{error}</p>}
 
         {pendingProposals.length > 0 && (
-          <div className="approval-bar">
+          <div className="approval-bar" data-demo-step="approval-bar">
             <div className="approval-bar-summary">
               <strong>Pending approval</strong>
               {pendingProposals.map(({ proposal }) => (
@@ -1091,7 +1215,11 @@ export function AgentPage({
                   {preferences.autoApproveProposals ? (
                     <>
                       <p className="auto-approve-hint">
-                        {approvingId === proposal.id ? 'Auto-approving…' : 'Auto-approve enabled'}
+                        {approvingId === proposal.id
+                          ? autoApproveProgressLabel(
+                              approvalProgress?.proposalId === proposal.id ? approvalProgress : null
+                            )
+                          : 'Auto-approve enabled'}
                       </p>
                       <button
                         type="button"
@@ -1114,13 +1242,7 @@ export function AgentPage({
                           })
                         }
                       >
-                        {approvingId === proposal.id
-                          ? proposal.staged || proposal.stagedEntity
-                            ? 'Committing…'
-                            : 'Running…'
-                          : proposal.staged || proposal.stagedEntity
-                            ? 'Commit'
-                            : 'Approve'}
+                        {approvalActionLabel(proposal, approvingId, approvalProgress)}
                       </button>
                       <button
                         type="button"
@@ -1147,7 +1269,7 @@ export function AgentPage({
           </div>
         )}
 
-        <form className="agent-input" onSubmit={handleSend}>
+        <form className="agent-input" onSubmit={handleSend} data-demo-step="agent-input">
           <textarea
             ref={inputRef}
             value={input}

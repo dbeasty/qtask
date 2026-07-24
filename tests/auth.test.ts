@@ -69,6 +69,7 @@ describe('auth', () => {
       autoApproveProposals: false,
       skipConfirmations: false,
       trackExpenses: true,
+      completedDemoTour: false,
     });
   });
 
@@ -187,6 +188,7 @@ describe('auth', () => {
       autoApproveProposals: true,
       skipConfirmations: false,
       trackExpenses: true,
+      completedDemoTour: false,
     });
 
     const merged = await request(app)
@@ -199,6 +201,7 @@ describe('auth', () => {
       autoApproveProposals: true,
       skipConfirmations: true,
       trackExpenses: false,
+      completedDemoTour: false,
     });
 
     const me = await request(app)
@@ -210,6 +213,7 @@ describe('auth', () => {
       autoApproveProposals: true,
       skipConfirmations: true,
       trackExpenses: false,
+      completedDemoTour: false,
     });
 
     const disabled = await request(app)
@@ -228,6 +232,7 @@ describe('auth', () => {
       autoApproveProposals: false,
       skipConfirmations: false,
       trackExpenses: true,
+      completedDemoTour: false,
     });
   });
 
@@ -353,7 +358,7 @@ describe('health', () => {
     const res = await request(app).get('/health').expect(200);
     assert.equal(res.body.status, 'ok');
     assert.equal(res.body.checks.mongodb, 'ok');
-    assert.equal(res.body.checks.email, 'ok');
+    assert.equal(res.body.checks.email, 'configured');
     assert.ok(res.body.version);
   });
 });

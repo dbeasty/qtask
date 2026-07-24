@@ -6,6 +6,7 @@ const userPreferencesSchema = new Schema(
     autoApproveProposals: { type: Boolean, default: false },
     skipConfirmations: { type: Boolean, default: false },
     trackExpenses: { type: Boolean, default: true },
+    completedDemoTour: { type: Boolean, default: false },
     /** @deprecated Legacy field; migrated to trackExpenses on read */
     enableHourlyTracking: { type: Boolean },
   },

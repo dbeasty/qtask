@@ -50,6 +50,7 @@ export function CurrentProjectLabel({
       <button
         type="button"
         className="project-toolbar-collapsed context-bar-project-link"
+        data-demo-step="current-project"
         onClick={onOpenProjects}
       >
         <CurrentProjectContent activeProject={activeProject} projectCount={projectCount} />
@@ -58,7 +59,7 @@ export function CurrentProjectLabel({
   }
 
   return (
-    <p className="context-bar-current-project muted">
+    <p className="context-bar-current-project muted" data-demo-step="current-project">
       <CurrentProjectContent activeProject={activeProject} projectCount={projectCount} />
     </p>
   );

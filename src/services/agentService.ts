@@ -1390,6 +1390,7 @@ export class AgentService {
         pendingProposals: updated.pendingProposals ?? [],
         pausedBatch: null,
       });
+      yield { type: 'status', message: 'Reviewing tool results…' };
       yield* this.runAgentLoop(userId, conversationId, workingMessages);
       return;
     }
@@ -1421,6 +1422,7 @@ export class AgentService {
       return;
     }
 
+    yield { type: 'status', message: 'Reviewing tool results…' };
     yield* this.runAgentLoop(userId, conversationId, workingMessages);
   }
 }
