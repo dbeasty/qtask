@@ -64,6 +64,10 @@ for f in "${LIB_FILES[@]}"; do
 done
 sudo cp -R "${SCRIPT_DIR}/jetson-gpu-stats/." "${INSTALL_DIR}/deploy/jetson-gpu-stats/"
 
+if [[ -f "${APP_ROOT}/VERSION" ]]; then
+  sudo cp "${APP_ROOT}/VERSION" "${INSTALL_DIR}/VERSION"
+fi
+
 if ! id qtask &>/dev/null; then
   echo "Creating system user qtask (home ${INSTALL_DIR})..."
   sudo useradd --system --home "${INSTALL_DIR}" --shell /bin/bash qtask

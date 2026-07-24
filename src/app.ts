@@ -16,6 +16,7 @@ import { startEmbeddingWorker } from './services/embeddingQueue.js';
 import { config } from './config/index.js';
 import { initEmail, getEmailStatus } from './services/emailService.js';
 import { APP_VERSION } from './version.js';
+import { fetchAiStackVersion } from './services/aiStackVersion.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -99,7 +100,8 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     }
 
     checks.email = getEmailStatus();
-    res.json({ status: 'ok', service: 'qtask', version: APP_VERSION, checks });
+    const aiVersion = await fetchAiStackVersion();
+    res.json({ status: 'ok', service: 'qtask', version: APP_VERSION, aiVersion, checks });
   });
 
   app.use('/api/auth', authLimiter, authRouter);

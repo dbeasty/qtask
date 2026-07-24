@@ -24,6 +24,7 @@ import {
   setStoredActiveProjectId,
 } from './utils/projectTree';
 import { getDefaultProject, taskBelongsToProject } from './utils/project';
+import '../../shared/theme-tokens.css';
 import './styles.css';
 
 type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about';
@@ -39,6 +40,7 @@ export function App() {
   const [view, setView] = useState<View>('projects');
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [apiVersion, setApiVersion] = useState<string | null>(null);
+  const [aiVersion, setAiVersion] = useState<string | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
   const [projectsVersion, setProjectsVersion] = useState(0);
   const [shellRefreshKey, setShellRefreshKey] = useState(0);
@@ -104,6 +106,7 @@ export function App() {
       .then((result) => {
         setHealthy(true);
         if (result.version) setApiVersion(result.version);
+        setAiVersion(result.aiVersion ?? null);
       })
       .catch(() => setHealthy(false));
   }, []);
@@ -430,7 +433,7 @@ export function App() {
         ) : view === 'help' ? (
           <HelpPage onBack={() => setView('projects')} onStartTour={handleStartTour} />
         ) : view === 'about' ? (
-          <AboutPage apiVersion={apiVersion} onBack={() => setView('projects')} />
+          <AboutPage apiVersion={apiVersion} aiVersion={aiVersion} onBack={() => setView('projects')} />
         ) : (
           <TasksPage
             activeProjectId={activeProjectId}

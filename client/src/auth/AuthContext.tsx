@@ -12,6 +12,7 @@ import {
   clearStoredToken,
   fetchMe,
   getStoredToken,
+  getUserPreferences,
   login as loginRequest,
   register as registerRequest,
   setStoredToken,
@@ -21,6 +22,7 @@ import {
   type ChangePasswordResult,
   type UserPreferences,
 } from './storage';
+import { applyTheme, getCachedTheme, resolveTheme } from '../theme';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -46,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const token = getStoredToken();
     if (!token) {
+      applyTheme(getCachedTheme() ?? 'dark');
       setLoading(false);
       return;
     }
@@ -54,16 +57,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((me) => {
         setUser(me);
         setMustChangePassword(me.mustChangePassword === true);
+        applyTheme(resolveTheme(getUserPreferences(me).theme));
       })
       .catch(() => clearStoredToken())
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      applyTheme(getCachedTheme() ?? 'dark');
+      return;
+    }
+    applyTheme(resolveTheme(getUserPreferences(user).theme));
+  }, [user]);
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await loginRequest(email, password);
     setStoredToken(result.token);
     setMustChangePassword(result.mustChangePassword === true);
     setUser(result.user);
+    applyTheme(resolveTheme(getUserPreferences(result.user).theme));
   }, []);
 
   const register = useCallback(async (email: string, password: string, displayName?: string, acceptLegal?: boolean) => {
@@ -82,8 +95,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updatePreferences = useCallback(async (preferences: Partial<UserPreferences>) => {
+    if (preferences.theme) {
+      applyTheme(preferences.theme);
+    }
     const result = await updatePreferencesRequest(preferences);
     setUser(result.user);
+    applyTheme(resolveTheme(getUserPreferences(result.user).theme));
   }, []);
 
   const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {

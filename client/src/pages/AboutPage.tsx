@@ -4,16 +4,23 @@ import { GITHUB_REPO_URL, SITE_URL } from '../constants/brand';
 
 interface AboutPageProps {
   apiVersion?: string | null;
+  aiVersion?: string | null;
   onBack?: () => void;
 }
 
-export function AboutPage({ apiVersion: apiVersionProp, onBack }: AboutPageProps) {
+export function AboutPage({
+  apiVersion: apiVersionProp,
+  aiVersion: aiVersionProp,
+  onBack,
+}: AboutPageProps) {
   const [apiVersion, setApiVersion] = useState<string | null>(apiVersionProp ?? null);
+  const [aiVersion, setAiVersion] = useState<string | null>(aiVersionProp ?? null);
   const [apiStatus, setApiStatus] = useState<string | null>(null);
 
   useEffect(() => {
-    if (apiVersionProp) {
+    if (apiVersionProp !== undefined) {
       setApiVersion(apiVersionProp);
+      setAiVersion(aiVersionProp ?? null);
       return;
     }
 
@@ -21,11 +28,20 @@ export function AboutPage({ apiVersion: apiVersionProp, onBack }: AboutPageProps
       .then((result) => {
         setApiStatus(result.status);
         if (result.version) setApiVersion(result.version);
+        setAiVersion(result.aiVersion ?? null);
       })
       .catch(() => {
         setApiStatus('offline');
       });
-  }, [apiVersionProp]);
+  }, [apiVersionProp, aiVersionProp]);
+
+  const aiVersionLabel =
+    aiVersion ??
+    (apiStatus === 'offline'
+      ? 'Unavailable'
+      : apiVersion != null
+        ? 'Unavailable'
+        : 'Checking…');
 
   return (
     <div className="about-page">
@@ -59,10 +75,15 @@ export function AboutPage({ apiVersion: apiVersionProp, onBack }: AboutPageProps
                 {apiVersion ?? (apiStatus === 'offline' ? 'Unavailable' : 'Checking…')}
               </dd>
             </div>
+            <div className="about-version-row">
+              <dt>AI server</dt>
+              <dd>{aiVersionLabel}</dd>
+            </div>
           </dl>
           <p className="muted about-version-note">
-            The API version reflects the release deployed on the server. After publishing, confirm
-            both versions match what you expect.
+            The API version reflects the release deployed on the server. The AI server version
+            reflects the Jetson Ollama stack and may differ if the Jetson was not redeployed with
+            the app. After publishing, confirm all versions match what you expect.
           </p>
         </section>
 

@@ -12,11 +12,14 @@ export function clearStoredToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+export type ThemePreference = 'dark' | 'light';
+
 export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
   trackExpenses: boolean;
   completedDemoTour: boolean;
+  theme: ThemePreference;
 }
 
 export interface AuthUser {
@@ -34,6 +37,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   skipConfirmations: false,
   trackExpenses: true,
   completedDemoTour: false,
+  theme: 'dark',
 };
 
 export function getUserPreferences(user: AuthUser | null | undefined): UserPreferences {
@@ -42,6 +46,7 @@ export function getUserPreferences(user: AuthUser | null | undefined): UserPrefe
     skipConfirmations: user?.preferences?.skipConfirmations === true,
     trackExpenses: user?.preferences?.trackExpenses !== false,
     completedDemoTour: user?.preferences?.completedDemoTour === true,
+    theme: user?.preferences?.theme === 'light' ? 'light' : 'dark',
   };
 }
 

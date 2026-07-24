@@ -386,6 +386,8 @@ JETSON_GPU_STATS_URL=http://192.168.13.14:9401/gpu
 
 The Jetson stack includes a lightweight **`jetson-gpu-stats`** sidecar (`deploy/jetson-gpu-stats/`) that reads GPU load, temperature, and system RAM from sysfs **only when polled**. The admin UI calls `GET /api/admin/ollama/gpu` while the Ollama tab is open (configurable refresh, default 1s). No GPU polling runs on other admin tabs or when the admin UI is closed.
 
+Each Jetson release tarball includes a **`VERSION`** file (same semver as `qtask-ollama-<version>-jetson.tar.gz`), installed to `/opt/qtask-ollama/VERSION`. The sidecar serves it at `GET http://<jetson-service-ip>:9401/version`. When the app host sets `JETSON_GPU_STATS_URL`, `GET /health` on the API includes `aiVersion` for the web client About page. Redeploy the Jetson stack (`npm run publish:jetson`) after app releases so the About page AI server row stays current.
+
 After deploy, verify the agent model stays loaded and embeddings are on demand:
 
 ```bash

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { getUserPreferences, type AuthUser, type UserPreferences } from '../auth/storage';
+import { getUserPreferences, type AuthUser, type ThemePreference, type UserPreferences } from '../auth/storage';
+import { applyTheme } from '../theme';
 
 interface UserMenuProps {
   user: AuthUser;
@@ -111,6 +112,21 @@ export function UserMenu({
     }
   }
 
+  async function handleThemeChange(theme: ThemePreference) {
+    if (theme === preferences.theme) return;
+    applyTheme(theme);
+    setPrefSaving(true);
+    setError(null);
+    try {
+      await onUpdatePreferences({ theme });
+    } catch (err) {
+      applyTheme(preferences.theme);
+      setError(err instanceof Error ? err.message : 'Could not update preferences');
+    } finally {
+      setPrefSaving(false);
+    }
+  }
+
   return createPortal(
     <div
       ref={menuRef}
@@ -199,6 +215,28 @@ export function UserMenu({
         />
         <span>Track expenses</span>
       </label>
+
+      <div className="user-menu-theme">
+        <span className="user-menu-theme-label">Theme</span>
+        <div className="user-menu-theme-options" role="group" aria-label="Theme">
+          <button
+            type="button"
+            className={preferences.theme === 'dark' ? 'user-menu-theme-option active' : 'user-menu-theme-option'}
+            disabled={prefSaving || saving}
+            onClick={() => void handleThemeChange('dark')}
+          >
+            Dark
+          </button>
+          <button
+            type="button"
+            className={preferences.theme === 'light' ? 'user-menu-theme-option active' : 'user-menu-theme-option'}
+            disabled={prefSaving || saving}
+            onClick={() => void handleThemeChange('light')}
+          >
+            Light
+          </button>
+        </div>
+      </div>
 
       <div className="user-menu-divider" role="separator" />
 

@@ -19,11 +19,14 @@ function isEmailVerified(user: { emailVerified?: boolean | null }): boolean {
   return user.emailVerified !== false;
 }
 
+export type ThemePreference = 'dark' | 'light';
+
 export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
   trackExpenses: boolean;
   completedDemoTour: boolean;
+  theme: ThemePreference;
 }
 
 function serializePreferences(preferences?: {
@@ -31,17 +34,20 @@ function serializePreferences(preferences?: {
   skipConfirmations?: boolean | null;
   trackExpenses?: boolean | null;
   completedDemoTour?: boolean | null;
+  theme?: ThemePreference | null;
   enableHourlyTracking?: boolean | null;
 } | null): UserPreferences {
   const trackExpenses =
     preferences?.trackExpenses !== undefined && preferences?.trackExpenses !== null
       ? preferences.trackExpenses === true
       : true;
+  const theme = preferences?.theme === 'light' ? 'light' : 'dark';
   return {
     autoApproveProposals: preferences?.autoApproveProposals === true,
     skipConfirmations: preferences?.skipConfirmations === true,
     trackExpenses,
     completedDemoTour: preferences?.completedDemoTour === true,
+    theme,
   };
 }
 
@@ -57,6 +63,7 @@ function serializeUser(user: {
       skipConfirmations?: boolean | null;
       trackExpenses?: boolean | null;
       completedDemoTour?: boolean | null;
+      theme?: ThemePreference | null;
       enableHourlyTracking?: boolean | null;
     } | null;
 }) {
@@ -250,6 +257,7 @@ export class AuthService {
         skipConfirmations?: boolean;
         trackExpenses?: boolean;
         completedDemoTour?: boolean;
+        theme?: ThemePreference;
         enableHourlyTracking?: boolean;
       };
     }
@@ -275,6 +283,7 @@ export class AuthService {
           skipConfirmations: false,
           trackExpenses: true,
           completedDemoTour: false,
+          theme: 'dark',
         };
       }
       if (input.preferences.autoApproveProposals !== undefined) {
@@ -290,6 +299,9 @@ export class AuthService {
       }
       if (input.preferences.completedDemoTour !== undefined) {
         user.preferences.completedDemoTour = input.preferences.completedDemoTour;
+      }
+      if (input.preferences.theme !== undefined) {
+        user.preferences.theme = input.preferences.theme;
       }
       user.markModified('preferences');
     }

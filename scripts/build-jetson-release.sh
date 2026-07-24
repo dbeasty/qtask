@@ -26,6 +26,7 @@ echo "Building Jetson Ollama release ${VERSION}..."
 
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}/deploy/lib"
+echo "${VERSION}" > "${STAGING}/VERSION"
 
 for f in "${JETSON_FILES[@]}"; do
   cp "deploy/${f}" "${STAGING}/deploy/"

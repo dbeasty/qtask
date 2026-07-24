@@ -11,6 +11,18 @@ from read_gpu import read_gpu_stats
 
 HOST = os.environ.get("JETSON_GPU_STATS_HOST", "0.0.0.0")
 PORT = int(os.environ.get("JETSON_GPU_STATS_PORT", "9401"))
+VERSION_FILE = os.environ.get("QTASK_VERSION_FILE", "/qtask/VERSION")
+
+
+def read_stack_version() -> dict:
+    try:
+        with open(VERSION_FILE, encoding="utf-8") as handle:
+            version = handle.read().strip()
+        if not version:
+            return {"component": "qtask-ollama", "version": None, "error": "empty"}
+        return {"component": "qtask-ollama", "version": version}
+    except OSError as exc:
+        return {"component": "qtask-ollama", "version": None, "error": str(exc)}
 
 
 class GpuStatsHandler(BaseHTTPRequestHandler):
@@ -34,6 +46,12 @@ class GpuStatsHandler(BaseHTTPRequestHandler):
 
         if self.path in ("/gpu", "/gpu/"):
             self._send_json(200, read_gpu_stats())
+            return
+
+        if self.path in ("/version", "/version/"):
+            payload = read_stack_version()
+            status = 200 if payload.get("version") else 404
+            self._send_json(status, payload)
             return
 
         self._send_json(404, {"error": "not found"})

@@ -80,12 +80,22 @@ async function consumeSseStream(
   }
 }
 
-export async function checkHealth(): Promise<{ status: string; service: string; version?: string }> {
+export async function checkHealth(): Promise<{
+  status: string;
+  service: string;
+  version?: string;
+  aiVersion?: string | null;
+}> {
   const response = await fetch('/health');
   if (!response.ok) {
     throw new Error('Health check failed');
   }
-  return response.json() as Promise<{ status: string; service: string }>;
+  return response.json() as Promise<{
+    status: string;
+    service: string;
+    version?: string;
+    aiVersion?: string | null;
+  }>;
 }
 
 export async function listTasks(): Promise<{ tasks: import('../types').Task[] }> {

@@ -49,6 +49,7 @@ const updateProfileSchema = z.object({
       skipConfirmations: z.boolean().optional(),
       trackExpenses: z.boolean().optional(),
       completedDemoTour: z.boolean().optional(),
+      theme: z.enum(['dark', 'light']).optional(),
       enableHourlyTracking: z.boolean().optional(),
     })
     .optional(),

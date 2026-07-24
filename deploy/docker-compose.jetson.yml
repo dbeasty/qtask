@@ -49,6 +49,7 @@ services:
     volumes:
       - /sys:/sys:ro
       - /proc:/proc:ro
+      - ${QTASK_OLLAMA_ROOT:-/opt/qtask-ollama}/VERSION:/qtask/VERSION:ro
     ports:
       - "${JETSON_BIND_ADDRESS:?Set JETSON_BIND_ADDRESS in .env}:9401:9401"
     networks:

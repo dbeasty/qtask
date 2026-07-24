@@ -7,6 +7,7 @@ const userPreferencesSchema = new Schema(
     skipConfirmations: { type: Boolean, default: false },
     trackExpenses: { type: Boolean, default: true },
     completedDemoTour: { type: Boolean, default: false },
+    theme: { type: String, enum: ['dark', 'light'], default: 'dark' },
     /** @deprecated Legacy field; migrated to trackExpenses on read */
     enableHourlyTracking: { type: Boolean },
   },
