@@ -155,7 +155,5 @@ describe('projectForSwitchPrompt', () => {
     const stub = projectForSwitchPrompt('p-new', 'Garden', projects);
     assert.equal(stub._id, 'p-new');
     assert.equal(stub.name, 'Garden');
-    assert.ok(stub.createdAt);
-    assert.ok(stub.updatedAt);
   });
 });

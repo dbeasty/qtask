@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { config } from '../config/index.js';
 import { inviteService } from '../services/inviteService.js';
 import { projectService } from '../services/projectService.js';
 import { taskService } from '../services/taskService.js';
@@ -82,6 +83,7 @@ export interface ToolExecutionContext {
   conversationId?: string;
   proposalId?: string;
   staged?: boolean;
+  source?: 'agent';
 }
 
 function stagingContext(context?: ToolExecutionContext): StagingContext | undefined {
@@ -277,9 +279,13 @@ export const toolDefinitions: ToolDefinition[] = [
       dueAfter: z.string().optional(),
       limit: z.number().int().min(1).max(100).optional(),
     },
-    async execute(userId, input) {
+    async execute(userId, input, context) {
       const { limit, ...filters } = input;
-      const tasks = await taskService.findTasks(userId, filters, (limit as number) ?? 20);
+      const hybridSearch =
+        context?.source === 'agent' ? config.features.agentHybridSearch : true;
+      const tasks = await taskService.findTasks(userId, filters, (limit as number) ?? 20, {
+        hybridSearch,
+      });
       const slimTasks = tasks.map((task) => slimTaskForTool(task as Record<string, unknown>));
       return ok(JSON.stringify({ count: slimTasks.length, tasks: slimTasks }, null, 2));
     },

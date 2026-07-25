@@ -17,7 +17,7 @@ import { AgentEntityLink } from '../components/AgentEntityLink';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
 import { CurrentProjectBar } from '../components/CurrentProjectBar';
-import type { AgentStreamEvent, ConversationSummary, Project, UiMessage, UiProposal } from '../types';
+import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
 import { displayMessageContent, proposalDisplayLabel, type DisplayMessageContentOptions } from '../utils/agentContent';
 import {
   aggregateDedupedEntityLinks,
@@ -42,7 +42,7 @@ import {
   resolveCommandPaletteKeyDown,
   type AgentCommandPaletteItem,
 } from '../utils/agentCommandPalette';
-import { findProjectByName, parseActiveProjectSwitchCommand, projectForSwitchPrompt, projectNameFromProposal, shouldOfferSwitchAfterCreateProject } from '../utils/agentProjectSwitch';
+import { findProjectByName, parseActiveProjectSwitchCommand, projectForSwitchPrompt, projectNameFromProposal, shouldOfferSwitchAfterCreateProject, type ProjectSwitchTarget } from '../utils/agentProjectSwitch';
 
 interface AgentPageProps {
   onTasksChanged: () => void;
@@ -69,7 +69,7 @@ type PendingConfirm =
   | { kind: 'reset'; conversation: ConversationSummary }
   | {
       kind: 'switchProject';
-      targetProject: Project;
+      targetProject: ProjectSwitchTarget;
       currentProjectName?: string;
       hasPendingProposals?: boolean;
       reason?: 'afterCreate';

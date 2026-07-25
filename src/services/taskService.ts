@@ -435,9 +435,14 @@ export class TaskService {
     );
   }
 
-  async findTasks(userId: string, filters: TaskSearchFilters, limit = 20) {
+  async findTasks(
+    userId: string,
+    filters: TaskSearchFilters,
+    limit = 20,
+    options?: { hybridSearch?: boolean }
+  ) {
     if (filters.query) {
-      const results = await searchService.searchTasksWithFilters(userId, filters, limit);
+      const results = await searchService.searchTasksWithFilters(userId, filters, limit, options);
       return results;
     }
     const results = await this.listTasks(userId, filters);

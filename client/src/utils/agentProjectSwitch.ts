@@ -1,5 +1,7 @@
 import type { Project, UiProposal } from '../types';
 
+export type ProjectSwitchTarget = Pick<Project, '_id' | 'name'>;
+
 function unwrapQuotedName(name: string): string {
   if (
     (name.startsWith('"') && name.endsWith('"')) ||
@@ -77,15 +79,9 @@ export function projectForSwitchPrompt(
   id: string,
   name: string,
   projects: Project[]
-): Project {
+): ProjectSwitchTarget {
   const existing = projects.find((project) => project._id === id);
   if (existing) return existing;
 
-  const now = new Date().toISOString();
-  return {
-    _id: id,
-    name,
-    createdAt: now,
-    updatedAt: now,
-  };
+  return { _id: id, name };
 }

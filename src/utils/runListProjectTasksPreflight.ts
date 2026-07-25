@@ -31,7 +31,7 @@ export async function* runListProjectTasksPreflight(
 
   yield { type: 'tool_call', name, arguments: args };
 
-  const result = await executeTool(name, args, userId);
+  const result = await executeTool(name, args, userId, { source: 'agent' });
   yield toolResultEvent(name, result.success, result.text, projectId);
 
   workingMessages.push({

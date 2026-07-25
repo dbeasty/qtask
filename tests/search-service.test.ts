@@ -120,4 +120,50 @@ describe('searchService', () => {
 
     globalThis.fetch = originalFetch;
   });
+
+  it('searchTasksWithFilters with hybridSearch false skips embeddings', async () => {
+    let embeddingCalls = 0;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.includes('/api/embeddings')) {
+        embeddingCalls += 1;
+        throw new Error('embeddings should not be called');
+      }
+      return originalFetch(input);
+    };
+
+    const { ProjectModel, TaskModel } = await import('../src/models/index.js');
+    const { searchService } = await import('../src/services/searchService.js');
+
+    const userId = 'text-only-user';
+    const project = await ProjectModel.create({
+      userId,
+      name: 'Sales',
+      collaborators: [],
+      parentId: null,
+      sortOrder: 0,
+    });
+
+    await TaskModel.create({
+      userId,
+      title: 'Advertise on craigslist',
+      description: 'Post listing',
+      tags: [],
+      projectIds: [String(project._id)],
+      projectId: String(project._id),
+      status: 'todo',
+    });
+
+    const results = await searchService.searchTasksWithFilters(
+      userId,
+      { query: 'craigslist', projectId: String(project._id) },
+      5,
+      { hybridSearch: false }
+    );
+
+    assert.equal(embeddingCalls, 0);
+    assert.ok(results.some((task) => String(task.title).includes('craigslist')));
+
+    globalThis.fetch = originalFetch;
+  });
 });

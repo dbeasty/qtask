@@ -112,8 +112,9 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_MODEL` | `qwen3.5:2b` | Agent / tool-calling model (recommended on Jetson Orin Nano 8GB and local dev) |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Agent model keep-alive passed to Ollama (`-1` = keep agent model loaded) |
-| `OLLAMA_EMBEDDING_KEEP_ALIVE` | `0` | Embedding keep-alive (`0` = unload after request; on-demand indexing) |
+| `OLLAMA_EMBEDDING_KEEP_ALIVE` | `-1` | Embedding keep-alive (`-1` = keep loaded; set `0` to unload after each request) |
 | `OLLAMA_EMBEDDING_NUM_GPU` | `0` | GPU layers for embeddings (`0` = CPU; keeps agent model on GPU) |
+| `AGENT_HYBRID_SEARCH` | `true` | When `false`, agent `find_tasks` skips Ollama embeddings (text/regex only). User search API unchanged. |
 | `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.44`) |
 | `OLLAMA_DOCKER_CONTAINER` | `qtask-ollama` | Container name for Docker stats |
 | `JETSON_GPU_STATS_URL` | — | Jetson GPU sidecar (e.g. `http://<ip>:9401/gpu`); on-demand sysfs reader |
@@ -283,13 +284,12 @@ Typical layout:
 | Host | Access / SSH | Service VLAN | Install path |
 |------|--------------|--------------|--------------|
 | **App server** | `qtask@192.168.13.13` (or your access IP) | `192.168.13.13` | `/opt/qtask` |
-| **Jetson** | `qtask@192.168.1.14` | `192.168.13.14` | `/opt/qtask-ollama` |
+| **Jetson** | `qtask@192.168.13.14` | `192.168.13.14` | `/opt/qtask-ollama` |
 
 | Interface | Example IP | Use |
 |-----------|------------|-----|
 | App service VLAN | `192.168.13.13` | QTask API, MongoDB, admin |
-| Jetson access / SSH | `192.168.1.14` | SSH as **`qtask`** — do **not** expose Ollama here |
-| Jetson service VLAN | `192.168.13.14` | `JETSON_BIND_ADDRESS`, `OLLAMA_BASE_URL` — QTask traffic only |
+| Jetson service VLAN | `192.168.13.14` | SSH as **`qtask`**, `JETSON_BIND_ADDRESS`, `OLLAMA_BASE_URL` |
 
 | Port on service VLAN | Purpose | Internet? |
 |----------------------|---------|-----------|
@@ -300,7 +300,7 @@ Do not port-forward 11434 or 2375 on your router. If the service subnet is parti
 
 ##### Docker on an existing JetPack install
 
-These steps assume Jetson Linux / JetPack is already installed (no OS flash). SSH to the Jetson as **`qtask`** (`qtask@192.168.1.14`). Docker is often preinstalled; if not:
+These steps assume Jetson Linux / JetPack is already installed (no OS flash). SSH to the Jetson as **`qtask`** (`qtask@192.168.13.14`). Docker is often preinstalled; if not:
 
 ```bash
 sudo apt-get update
@@ -361,7 +361,7 @@ Install to `/opt/qtask-ollama` as system user **`qtask`**. Ports bind to `JETSON
 
 ```bash
 npm run publish:jetson
-# or: JETSON_SSH=qtask@192.168.1.14 npm run publish:jetson
+# or: JETSON_SSH=qtask@192.168.13.14 npm run publish:jetson
 ```
 
 **What publish updates**
@@ -379,8 +379,9 @@ OLLAMA_BASE_URL=http://192.168.13.14:11434
 OLLAMA_MODEL=qwen3.5:2b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 OLLAMA_KEEP_ALIVE=-1
-OLLAMA_EMBEDDING_KEEP_ALIVE=0
+OLLAMA_EMBEDDING_KEEP_ALIVE=-1
 OLLAMA_EMBEDDING_NUM_GPU=0
+# AGENT_HYBRID_SEARCH=true
 OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
 JETSON_GPU_STATS_URL=http://192.168.13.14:9401/gpu
@@ -390,13 +391,17 @@ The Jetson stack includes a lightweight **`jetson-gpu-stats`** sidecar (`deploy/
 
 Each Jetson release tarball includes a **`VERSION`** file (same semver as `qtask-ollama-<version>-jetson.tar.gz`), installed to `/opt/qtask-ollama/VERSION`. The sidecar serves it at `GET http://<jetson-service-ip>:9401/version`. When the app host sets `JETSON_GPU_STATS_URL`, `GET /health` on the API includes `aiVersion` for the web client About page. Redeploy the Jetson stack (`npm run publish:jetson`) after app releases so the About page AI server row stays current.
 
-After deploy, verify the agent model stays loaded and embeddings are on demand:
+After deploy, verify both models stay loaded and embeddings respond quickly:
 
 ```bash
-# Jetson — only the agent model should remain after idle embed work
+# Jetson — agent + embedding models should remain after idle
 docker exec qtask-ollama ollama ps
 
 # App — create/update a task; embedding should run immediately (no 2s poll wait)
+# From app host — embedding should complete in seconds when models are warm
+time curl -s http://192.168.13.14:11434/api/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"nomic-embed-text","prompt":"warmup","keep_alive":-1,"options":{"num_gpu":0}}'
 ```
 
 Use **`v1.44`** for `OLLAMA_DOCKER_STATS_URL` (not `v1.41`) — current Docker daemons reject older API versions.
@@ -428,7 +433,7 @@ Redeploy without re-pulling models (on Jetson, after a new tar is extracted):
 
 `start-ollama-jetson.sh` removes legacy containers named `qtask-ollama` / `qtask-ollama-docker-proxy` (from older compose project names) and migrates model data from volume `deploy_qtask_ollama_data` to `qtask_ollama_data` when needed.
 
-Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=1` so only the **agent** model stays loaded on Jetson; `deploy-jetson-ollama.sh` warms the agent model only. Embeddings run on demand from the app with `OLLAMA_EMBEDDING_KEEP_ALIVE=0` and `OLLAMA_EMBEDDING_NUM_GPU=0` (CPU, unload after each request). Task indexing is **event-driven** (no 2s poll) — jobs run when tasks are created/updated.
+Compose sets `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=2` so **agent and embedding** models stay loaded on Jetson; `deploy-jetson-ollama.sh` warms both after start. The app uses `OLLAMA_EMBEDDING_KEEP_ALIVE=-1` and `OLLAMA_EMBEDDING_NUM_GPU=0` (embedding on CPU, kept loaded). Set `AGENT_HYBRID_SEARCH=false` on the app host to disable semantic search in agent `find_tasks` only (user search API unchanged). Task indexing is **event-driven** (no 2s poll) — jobs run when tasks are created/updated.
 
 **Firewall** (on Jetson — allow only app server `192.168.13.13`):
 
@@ -449,9 +454,6 @@ curl -s http://192.168.13.14:11434/api/tags
 curl -s http://192.168.13.14:2375/v1.44/_ping   # expect: OK
 curl -s http://192.168.13.14:9401/health          # expect: {"ok":true}
 curl -s http://192.168.13.14:9401/gpu           # GPU util/temp/RAM JSON
-
-# Should NOT answer on access VLAN if bind is correct:
-curl -s --connect-timeout 2 http://192.168.1.14:11434/api/tags || echo "ok — not exposed on access VLAN"
 ```
 
 In the admin UI, Ollama status should show the Jetson models. With Path B, container CPU/RAM resources should be available. GPU util/temp/RAM appear when `JETSON_GPU_STATS_URL` is set on the app host and you open the **Ollama** admin tab.
@@ -516,8 +518,9 @@ OLLAMA_BASE_URL=http://192.168.13.14:11434
 OLLAMA_MODEL=qwen3.5:2b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 OLLAMA_KEEP_ALIVE=-1
-OLLAMA_EMBEDDING_KEEP_ALIVE=0
+OLLAMA_EMBEDDING_KEEP_ALIVE=-1
 OLLAMA_EMBEDDING_NUM_GPU=0
+# AGENT_HYBRID_SEARCH=true
 OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
 ```

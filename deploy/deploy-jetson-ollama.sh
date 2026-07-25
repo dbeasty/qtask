@@ -81,7 +81,7 @@ if [[ "${SKIP_MODELS}" != true ]]; then
   docker exec qtask-ollama ollama pull "${EMBED_MODEL}"
 fi
 
-echo "==> Warming agent model (embedding loads on demand via app, CPU)"
+echo "==> Warming agent + embedding models"
 warm_agent_model() {
   curl -sf --max-time 300 \
     -H "Content-Type: application/json" \
@@ -89,8 +89,16 @@ warm_agent_model() {
     -d "{\"model\":\"${CHAT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false,\"keep_alive\":-1}" >/dev/null
 }
 
+warm_embedding_model() {
+  curl -sf --max-time 300 \
+    -H "Content-Type: application/json" \
+    "http://${JETSON_BIND_ADDRESS}:11434/api/embeddings" \
+    -d "{\"model\":\"${EMBED_MODEL}\",\"prompt\":\"warmup\",\"keep_alive\":-1,\"options\":{\"num_gpu\":0}}" >/dev/null
+}
+
 warm_agent_model
 warm_agent_model
+warm_embedding_model
 
 echo "==> Loaded models"
 docker exec qtask-ollama ollama ps || true

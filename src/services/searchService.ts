@@ -155,14 +155,21 @@ async function hybridSearch<T extends { _id: unknown; embedding?: number[] }>(
     findText: (query: Record<string, unknown>, search: string) => Promise<T[]>;
     findCandidates: (query: Record<string, unknown>) => Promise<T[]>;
     matchesRegex: (item: T, regex: RegExp) => boolean;
-  }
+  },
+  options?: { hybridSearch?: boolean }
 ): Promise<Array<{ item: T; score: number }>> {
   const textMatches = await model.findText(baseQuery, queryText);
-  const candidates = await model.findCandidates({
-    ...baseQuery,
-    embedding: { $exists: true, $ne: [] },
-  });
-  const semanticMatches = await semanticScoreCandidates(userId, queryText, candidates);
+  const enableSemantic = options?.hybridSearch !== false;
+  const semanticMatches = enableSemantic
+    ? await semanticScoreCandidates(
+        userId,
+        queryText,
+        await model.findCandidates({
+          ...baseQuery,
+          embedding: { $exists: true, $ne: [] },
+        })
+      )
+    : [];
   const merged = mergeHybridSearchScores(textMatches, semanticMatches, (item) => String(item._id));
 
   if (merged.length > 0) return merged;
@@ -204,7 +211,8 @@ async function searchTasksInternal(
   userId: string,
   queryText: string,
   filters: TaskSearchFilters,
-  limit: number
+  limit: number,
+  options?: { hybridSearch?: boolean }
 ): Promise<SearchHit[]> {
   if (filters.projectId) {
     await (await projects()).assertProjectAccess(userId, filters.projectId, 'viewer');
@@ -223,7 +231,7 @@ async function searchTasksInternal(
         .lean() as Promise<LeanTask[]>,
     findCandidates: async (query) => TaskModel.find(query).lean() as Promise<LeanTask[]>,
     matchesRegex: taskMatchesRegex,
-  });
+  }, options);
 
   const topMatches = merged.slice(0, limit).map(({ item }) => item);
   const projectNameMap = await resolveProjectNameMap(topMatches);
@@ -264,7 +272,8 @@ class SearchService {
   async searchTasksWithFilters(
     userId: string,
     filters: TaskSearchFilters,
-    limit?: number
+    limit?: number,
+    options?: { hybridSearch?: boolean }
   ): Promise<Array<Record<string, unknown>>> {
     const queryText = filters.query?.trim();
     if (!queryText) {
@@ -275,7 +284,8 @@ class SearchService {
       userId,
       queryText,
       filters,
-      limit ?? Number.MAX_SAFE_INTEGER
+      limit ?? Number.MAX_SAFE_INTEGER,
+      options
     );
     if (hits.length === 0) return [];
 

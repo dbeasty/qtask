@@ -218,7 +218,7 @@ export async function* runCreateTaskPreflight(
     limit: 5,
     projectId: activeProjectId,
   };
-  const findResult = await executeTool('find_tasks', findArgs, userId);
+  const findResult = await executeTool('find_tasks', findArgs, userId, { source: 'agent' });
   const similar = filterSimilarTasks(findResult.text, title, activeProjectId);
   if (similar.length > 0) {
     const similarResultText = tasksFindResult(similar);

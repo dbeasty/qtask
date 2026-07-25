@@ -142,7 +142,7 @@ async function* runUpdateTaskIdRecovery(
   });
 
   yield { type: 'tool_call', name: 'find_tasks', arguments: findArgs };
-  const result = await executeTool('find_tasks', findArgs, userId);
+  const result = await executeTool('find_tasks', findArgs, userId, { source: 'agent' });
   const content = wrapFindTasksRecoveryResult(result.text);
   yield toolResultEvent('find_tasks', result.success, content, result.text);
 
@@ -1098,7 +1098,7 @@ export class AgentService {
       }
 
       yield { type: 'tool_call', name, arguments: args };
-      const result = await executeTool(name, args, userId);
+      const result = await executeTool(name, args, userId, { source: 'agent' });
       const scopeForFilter = highlightedProjectId;
       const entityLinkSource = await entityLinkSourceForToolResult(
         userId,
@@ -1487,7 +1487,7 @@ export class AgentService {
         }
       } else {
         yield { type: 'tool_call', name: proposal.name, arguments: validation.data };
-        const result = await executeTool(proposal.name, validation.data, userId);
+        const result = await executeTool(proposal.name, validation.data, userId, { source: 'agent' });
         yield toolResultEvent(proposal.name, result.success, result.text);
         extraMessages.push({
           role: 'tool',

@@ -96,8 +96,12 @@ export const config = {
     model: process.env.OLLAMA_MODEL ?? 'qwen3.5:2b',
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'nomic-embed-text',
     keepAlive: parseOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE, '-1'),
-    embeddingKeepAlive: parseOllamaKeepAlive(process.env.OLLAMA_EMBEDDING_KEEP_ALIVE, '0'),
+    embeddingKeepAlive: parseOllamaKeepAlive(process.env.OLLAMA_EMBEDDING_KEEP_ALIVE, '-1'),
     embeddingNumGpu: parseInt(process.env.OLLAMA_EMBEDDING_NUM_GPU ?? '0', 10),
+  },
+  features: {
+    /** When false, agent find_tasks skips Ollama embeddings (text/regex search only). */
+    agentHybridSearch: process.env.AGENT_HYBRID_SEARCH !== 'false',
   },
   admin: {
     host: process.env.ADMIN_HOST ?? '127.0.0.1',
