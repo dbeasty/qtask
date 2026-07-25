@@ -125,7 +125,7 @@ export function NotificationBell({ onInvitesChanged }: NotificationBellProps) {
   const badgeCount = unreadCount + invites.length;
 
   return (
-    <div className="notification-bell" ref={panelRef}>
+    <div className="notification-bell" ref={panelRef} data-demo-step="notification-bell">
       <button
         type="button"
         className="notification-bell-button"

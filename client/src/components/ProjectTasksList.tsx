@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
-import type { Project, Subtask, Task } from '../types';
+import type { Project, Subtask, Task, TaskStatus } from '../types';
 import { taskBelongsToProject } from '../utils/project';
 import { buildProjectTree, type ProjectTreeNode } from '../utils/projectTree';
 import { buildSubtaskPath, nodeKey } from '../utils/taskTree';
+import { TaskProgressIndicator } from './TaskProgressIndicator';
 
 interface ProjectTasksListProps {
   projectId: string;
@@ -32,6 +33,20 @@ function sortTasks(items: Task[]): Task[] {
 
 function projectTasksForProject(tasks: Task[], projectId: string): Task[] {
   return sortTasks(tasks.filter((task) => taskBelongsToProject(task, projectId)));
+}
+
+function ProjectTaskProgress({
+  status,
+  percentComplete,
+}: {
+  status: TaskStatus;
+  percentComplete: number;
+}) {
+  return (
+    <span className="task-done-toggle task-done-toggle--static" aria-hidden="true">
+      <TaskProgressIndicator status={status} percentComplete={percentComplete} />
+    </span>
+  );
 }
 
 interface ProjectTasksContentProps {
@@ -87,6 +102,7 @@ function SubtaskRows({
               ) : (
                 <span className="task-tree-chevron-spacer" aria-hidden="true" />
               )}
+              <ProjectTaskProgress status={subtask.status} percentComplete={subtask.percentComplete} />
               <button
                 type="button"
                 className="project-task-title"
@@ -152,6 +168,7 @@ function ProjectTasksContent({
               ) : (
                 <span className="task-tree-chevron-spacer" aria-hidden="true" />
               )}
+              <ProjectTaskProgress status={task.status} percentComplete={task.percentComplete} />
               <button
                 type="button"
                 className="project-task-title"
@@ -229,6 +246,7 @@ export function ProjectTasksList({
   onOpenTask,
   onAddTask,
 }: ProjectTasksListProps) {
+  const [sectionOpen, setSectionOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   const projectNode = useMemo(() => {
@@ -249,25 +267,39 @@ export function ProjectTasksList({
   };
 
   return (
-    <div className="project-tasks-editor">
-      <button
-        type="button"
-        className="primary-button task-steps-add"
-        onClick={() => onAddTask(projectId)}
-        disabled={!canEdit}
-      >
-        + Add Task
-      </button>
-      <ul className="task-steps-list project-tasks-list">
-        <ProjectTasksContent
-          projectId={projectId}
-          projectNode={projectNode}
-          tasks={tasks}
-          onOpenTask={onOpenTask}
-          expanded={expanded}
-          onToggleExpand={toggleExpand}
-        />
-      </ul>
-    </div>
+    <details
+      className="task-form-tracking-section"
+      open={sectionOpen}
+      onToggle={(event) => setSectionOpen(event.currentTarget.open)}
+    >
+      <summary className="task-form-tracking-summary">
+        <span className={`project-toolbar-chevron${sectionOpen ? ' expanded' : ''}`} aria-hidden="true">
+          ›
+        </span>
+        Tasks
+      </summary>
+      <div className="task-form-tracking-body">
+        <div className="project-tasks-editor">
+          <button
+            type="button"
+            className="primary-button task-steps-add"
+            onClick={() => onAddTask(projectId)}
+            disabled={!canEdit}
+          >
+            + Add Task
+          </button>
+          <ul className="task-steps-list project-tasks-list">
+            <ProjectTasksContent
+              projectId={projectId}
+              projectNode={projectNode}
+              tasks={tasks}
+              onOpenTask={onOpenTask}
+              expanded={expanded}
+              onToggleExpand={toggleExpand}
+            />
+          </ul>
+        </div>
+      </div>
+    </details>
   );
 }

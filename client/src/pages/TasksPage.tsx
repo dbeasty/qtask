@@ -704,6 +704,16 @@ export function TasksPage({
     [projects, resolvedActiveProjectId]
   );
 
+  const canDeleteTask = useCallback(
+    (task: Task) => {
+      if (!activeProject || !user) return false;
+      if (activeProject.role === 'owner') return true;
+      if (activeProject.canDeleteOwnTasks && task.userId === user.id) return true;
+      return false;
+    },
+    [activeProject, user]
+  );
+
   const projectRates = useMemo(
     () => ({
       hourlyRate: activeProject?.hourlyRate,
@@ -920,6 +930,7 @@ export function TasksPage({
                 onAttachTask={handleAttachTask}
                 canManageProjects={Boolean(activeProject?.canEdit)}
                 onOpenProjectDialog={setProjectDialogTaskId}
+                canDeleteTask={canDeleteTask}
               />
             )}
 

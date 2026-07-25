@@ -2,7 +2,7 @@ import type { TaskStatus } from './task.js';
 
 export type ProjectStatus = TaskStatus;
 
-export const COLLABORATOR_ROLES = ['editor', 'executor', 'viewer'] as const;
+export const COLLABORATOR_ROLES = ['editor', 'executor', 'viewer', 'manager'] as const;
 export type CollaboratorRole = (typeof COLLABORATOR_ROLES)[number];
 
 export const PROJECT_ROLES = ['owner', ...COLLABORATOR_ROLES] as const;
@@ -12,7 +12,8 @@ const ROLE_RANK: Record<ProjectRole, number> = {
   viewer: 1,
   executor: 2,
   editor: 3,
-  owner: 4,
+  manager: 4,
+  owner: 5,
 };
 
 export function isCollaboratorRole(role: string): role is CollaboratorRole {
@@ -33,6 +34,28 @@ export function canUpdateStatus(role: ProjectRole): boolean {
 
 export function canManageMembers(role: ProjectRole): boolean {
   return role === 'owner';
+}
+
+export function canManageStructure(role: ProjectRole): boolean {
+  return roleAtLeast(role, 'manager');
+}
+
+export function canDeleteProject(role: ProjectRole): boolean {
+  return role === 'owner';
+}
+
+export function canDeleteOwnTasks(role: ProjectRole): boolean {
+  return role === 'editor';
+}
+
+export function canDeleteTask(
+  role: ProjectRole,
+  taskCreatorId: string,
+  userId: string
+): boolean {
+  if (role === 'owner') return true;
+  if (role === 'editor' && taskCreatorId === userId) return true;
+  return false;
 }
 
 export interface ProjectCollaborator {
@@ -63,6 +86,7 @@ export interface SerializedProject {
   ownerDisplayName?: string;
   name: string;
   description?: string;
+  notes?: string;
   parentId?: string | null;
   sortOrder: number;
   status: ProjectStatus;
@@ -74,6 +98,9 @@ export interface SerializedProject {
   canEdit: boolean;
   canUpdateStatus: boolean;
   canManageMembers: boolean;
+  canManageStructure: boolean;
+  canDeleteProjects: boolean;
+  canDeleteOwnTasks: boolean;
   collaborators: SerializedCollaborator[];
   createdAt: string;
   updatedAt: string;

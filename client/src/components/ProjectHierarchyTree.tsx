@@ -4,6 +4,7 @@ import type { ProjectTreeNode } from '../utils/projectTree';
 import { getProjectDescendantIds } from '../utils/projectTree';
 import { ProjectMoveMenu } from './ProjectMoveMenu';
 import { TaskProgressIndicator } from './TaskProgressIndicator';
+import { ProjectRoleIndicator, projectTreeRoleClass } from './ProjectRoleIndicator';
 
 interface ProjectHierarchyTreeProps {
   projects: Project[];
@@ -106,18 +107,19 @@ function ProjectTreeNodeView({
   const hasChildren = children.length > 0;
   const isExpanded =
     expanded.has(project._id) || children.some((child) => child.project._id === selectionId);
-  const canManage = project.canManageMembers;
+  const canManageStructure = project.canManageStructure;
+  const canDeleteProject = project.canDeleteProjects;
   const menuOpen = openMoveMenuId === project._id;
   const childCount = children.length;
 
   const nestTargets = useMemo(() => {
-    if (!canManage) return [];
+    if (!canManageStructure) return [];
     const blocked = getProjectDescendantIds(projects, project._id);
     blocked.add(project._id);
     return projects
-      .filter((item) => item.canManageMembers && !blocked.has(item._id))
+      .filter((item) => item.canManageStructure && !blocked.has(item._id))
       .map((item) => ({ id: item._id, label: item.name }));
-  }, [projects, project._id, canManage]);
+  }, [projects, project._id, canManageStructure]);
 
   return (
     <li className="task-tree-item">
@@ -146,10 +148,11 @@ function ProjectTreeNodeView({
           </span>
           <button
             type="button"
-            className={`task-tree-label task-list-item${isActive ? ' active' : ''}`}
+            className={`task-tree-label task-list-item${isActive ? ' active' : ''} ${projectTreeRoleClass(project.role)}`}
             onClick={() => onSelect(project._id)}
           >
             <span className="task-tree-label-header">
+              <ProjectRoleIndicator role={project.role} />
               <span className="task-list-title">{project.name}</span>
             </span>
             {hasChildren && (
@@ -159,7 +162,7 @@ function ProjectTreeNodeView({
             )}
           </button>
         </div>
-        {isActive && canManage && (
+        {isActive && canManageStructure && (
           <div className="task-tree-move-wrap">
             <button
               type="button"
@@ -184,6 +187,7 @@ function ProjectTreeNodeView({
                 onMoveToRoot={() => onMove(project._id, null)}
                 onNestUnder={(targetId) => onMove(project._id, targetId)}
                 onDelete={() => onDelete(project._id)}
+                showDelete={canDeleteProject}
                 onClose={() => onToggleMoveMenu(null)}
               />
             )}

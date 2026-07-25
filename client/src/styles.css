@@ -450,6 +450,100 @@ button {
   color: var(--color-success, #2e7d32);
 }
 
+.project-members-contact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.project-members-contact {
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 0.5rem;
+  background: var(--color-bg-input);
+  cursor: pointer;
+}
+
+.project-members-contact.selected {
+  border-color: var(--color-primary);
+  background: var(--color-bg-selected);
+}
+
+.project-members-contact:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.project-members-meta-inline {
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.project-members-empty-contacts {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.project-members-email-toggle {
+  align-self: flex-start;
+  font-size: 0.85rem;
+}
+
+.user-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.user-identity-primary {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-identity--sm .user-identity-primary {
+  font-size: 0.95rem;
+}
+
+.user-identity-secondary {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-role-indicator {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--color-role-manager, #c99700);
+  flex-shrink: 0;
+}
+
+.project-tree-item--manager {
+  border-left: 3px solid var(--color-role-manager, #c99700);
+}
+
+.project-tree-label-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.project-detail-role {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .notification-bell {
   position: relative;
 }
@@ -2752,6 +2846,10 @@ button.expense-tree-meta:hover {
   max-height: 12rem;
   min-height: 2.5rem;
   resize: none;
+}
+
+.task-form-notes-textarea {
+  max-height: 24rem;
 }
 
 .task-form-actions {

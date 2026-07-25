@@ -81,8 +81,13 @@ export function buildTaskEmbeddingText(task: {
   return parts.join('\n');
 }
 
-export function buildProjectEmbeddingText(project: { name: string; description?: string }): string {
+export function buildProjectEmbeddingText(project: {
+  name: string;
+  description?: string;
+  notes?: string;
+}): string {
   const parts = [project.name];
   if (project.description) parts.push(project.description);
+  if (project.notes) parts.push(project.notes);
   return parts.join('\n');
 }

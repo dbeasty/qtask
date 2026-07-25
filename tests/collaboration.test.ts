@@ -58,7 +58,7 @@ async function inviteCollaborator(
   ownerToken: string,
   invitee: { token: string; email: string },
   projectId: string,
-  role: 'editor' | 'executor' | 'viewer' = 'editor'
+  role: 'editor' | 'executor' | 'viewer' | 'manager' = 'editor'
 ) {
   const inviteRes = await request(app)
     .post(`/api/projects/${projectId}/collaborators`)
@@ -436,5 +436,144 @@ describe('project collaboration', () => {
       .set('Authorization', `Bearer ${bob.token}`)
       .expect(200);
     assert.equal(childTasks.body.tasks.length, 1);
+  });
+
+  it('lets a manager create sub-projects and edit structure but not delete or manage members', async () => {
+    const alice = await registerAndVerify('manager-alice@example.com');
+    const bob = await registerAndVerify('manager-bob@example.com');
+
+    const projectRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Manager Parent' })
+      .expect(201);
+    const parentId = projectRes.body.project._id as string;
+
+    await inviteCollaborator(alice.token, bob, parentId, 'manager');
+
+    const childRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ name: 'Manager Child', parentId })
+      .expect(201);
+    const childId = childRes.body.project._id as string;
+    assert.equal(childRes.body.project.userId, alice.userId);
+
+    const renamed = await request(app)
+      .patch(`/api/projects/${parentId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ name: 'Renamed by Manager' })
+      .expect(200);
+    assert.equal(renamed.body.project.name, 'Renamed by Manager');
+
+    const taskRes = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ title: 'Manager task', projectId: childId })
+      .expect(201);
+    const taskId = taskRes.body.task._id as string;
+
+    await request(app)
+      .delete(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(403);
+
+    await request(app)
+      .delete(`/api/projects/${childId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(403);
+
+    await request(app)
+      .post(`/api/projects/${parentId}/collaborators`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ email: 'extra@example.com', role: 'viewer' })
+      .expect(403);
+
+    const bobProject = await request(app)
+      .get(`/api/projects/${parentId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
+    assert.equal(bobProject.body.project.role, 'manager');
+    assert.equal(bobProject.body.project.canManageStructure, true);
+    assert.equal(bobProject.body.project.canManageMembers, false);
+    assert.equal(bobProject.body.project.canDeleteProjects, false);
+  });
+
+  it('lets editors delete only tasks they created', async () => {
+    const alice = await registerAndVerify('delete-alice@example.com');
+    const bob = await registerAndVerify('delete-bob@example.com');
+
+    const projectRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Delete Rules' })
+      .expect(201);
+    const projectId = projectRes.body.project._id as string;
+
+    const aliceTaskRes = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ title: 'Alice task', projectId })
+      .expect(201);
+    const aliceTaskId = aliceTaskRes.body.task._id as string;
+
+    await inviteCollaborator(alice.token, bob, projectId, 'editor');
+
+    const bobTaskRes = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ title: 'Bob task', projectId })
+      .expect(201);
+    const bobTaskId = bobTaskRes.body.task._id as string;
+
+    await request(app)
+      .delete(`/api/tasks/${bobTaskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(204);
+
+    await request(app)
+      .delete(`/api/tasks/${aliceTaskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(403);
+  });
+
+  it('lists share contacts from accepted invites and owned project collaborators', async () => {
+    const alice = await registerAndVerify('contacts-alice@example.com');
+    const bob = await registerAndVerify('contacts-bob@example.com');
+    const carol = await registerAndVerify('contacts-carol@example.com');
+
+    const projectA = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Contacts A' })
+      .expect(201);
+    const projectAId = projectA.body.project._id as string;
+
+    const projectB = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Contacts B' })
+      .expect(201);
+    const projectBId = projectB.body.project._id as string;
+
+    await inviteCollaborator(alice.token, bob, projectAId, 'editor');
+    await inviteCollaborator(alice.token, carol, projectBId, 'viewer');
+
+    const contactsRes = await request(app)
+      .get('/api/projects/share-contacts')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+
+    const emails = contactsRes.body.contacts.map((c: { email: string }) => c.email);
+    assert.ok(emails.includes(bob.email));
+    assert.ok(emails.includes(carol.email));
+
+    const filtered = await request(app)
+      .get(`/api/projects/share-contacts?excludeProjectId=${projectAId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+    const filteredEmails = filtered.body.contacts.map((c: { email: string }) => c.email);
+    assert.equal(filteredEmails.includes(bob.email), false);
+    assert.ok(filteredEmails.includes(carol.email));
   });
 });

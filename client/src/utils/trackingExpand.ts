@@ -4,6 +4,10 @@ export function shouldExpandDescriptionOnLoad(description: string): boolean {
   return description.trim().length > 0;
 }
 
+export function shouldExpandNotesOnLoad(notes: string): boolean {
+  return notes.trim().length > 0;
+}
+
 export function shouldExpandTrackingSection(input: {
   status?: string;
   priorityNotMedium?: boolean;

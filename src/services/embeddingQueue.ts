@@ -124,6 +124,7 @@ async function processNextJob(): Promise<void> {
         const text = buildProjectEmbeddingText({
           name: project.name,
           description: project.description ?? undefined,
+          notes: project.notes ?? undefined,
         });
         const embedding = await generateEmbedding(text, {
           userId: project.userId,

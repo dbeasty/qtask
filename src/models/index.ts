@@ -232,7 +232,7 @@ const projectCollaboratorSchema = new Schema(
     userId: { type: String, required: true },
     role: {
       type: String,
-      enum: ['editor', 'executor', 'viewer'],
+      enum: ['editor', 'executor', 'viewer', 'manager'],
       required: true,
     },
   },
@@ -244,6 +244,7 @@ const projectSchema = new Schema(
     userId: { type: String, required: true, index: true },
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
+    notes: { type: String, trim: true },
     parentId: { type: String, default: null, index: true },
     sortOrder: { type: Number, default: 0 },
     status: {
@@ -263,7 +264,7 @@ const projectSchema = new Schema(
   { timestamps: true }
 );
 
-projectSchema.index({ name: 'text', description: 'text' });
+projectSchema.index({ name: 'text', description: 'text', notes: 'text' });
 projectSchema.index({ 'collaborators.userId': 1 });
 projectSchema.index({ parentId: 1, sortOrder: 1 });
 
@@ -378,7 +379,7 @@ const inviteSchema = new Schema(
     inviteeUserId: { type: String, index: true },
     role: {
       type: String,
-      enum: ['editor', 'executor', 'viewer'],
+      enum: ['editor', 'executor', 'viewer', 'manager'],
       required: true,
     },
     status: {

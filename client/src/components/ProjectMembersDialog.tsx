@@ -3,23 +3,40 @@ import {
   cancelProjectInvite,
   getProjectShareSummary,
   listProjectInvites,
+  listShareContacts,
 } from '../api/client';
-import type { CollaboratorRole, Project, ProjectInvite, ProjectShareSummary } from '../types';
+import type {
+  CollaboratorRole,
+  Project,
+  ProjectInvite,
+  ProjectShareSummary,
+  ShareContact,
+  UserSummary,
+} from '../types';
+import { UserIdentity } from './UserIdentity';
 
 interface ProjectMembersDialogProps {
   project: Project;
   currentUserId: string;
   saving: boolean;
   onClose: () => void;
-  onAdd: (email: string, role: CollaboratorRole) => Promise<void>;
+  onAdd: (input: { email?: string; userId?: string }, role: CollaboratorRole) => Promise<void>;
   onUpdateRole: (collaboratorUserId: string, role: CollaboratorRole) => Promise<void>;
   onRemove: (collaboratorUserId: string) => Promise<void>;
 }
 
-const ROLE_OPTIONS: CollaboratorRole[] = ['editor', 'executor', 'viewer'];
+const ROLE_OPTIONS: CollaboratorRole[] = ['manager', 'editor', 'executor', 'viewer'];
 const ADD_EMAIL_HINT_ID = 'project-members-add-email-hint';
 const ADD_EMAIL_HELPER =
   'Send an invite to an existing qtask user. They must accept before gaining access.';
+
+function inviteUserSummary(invite: ProjectInvite): UserSummary {
+  return {
+    userId: invite.inviteeUserId ?? invite.inviteeEmail,
+    email: invite.inviteeEmail,
+    displayName: invite.inviteeDisplayName,
+  };
+}
 
 export function ProjectMembersDialog({
   project,
@@ -32,21 +49,38 @@ export function ProjectMembersDialog({
 }: ProjectMembersDialogProps) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<CollaboratorRole>('editor');
+  const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
+  const [showEmailInvite, setShowEmailInvite] = useState(false);
+  const [shareContacts, setShareContacts] = useState<ShareContact[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pendingInvites, setPendingInvites] = useState<ProjectInvite[]>([]);
   const [shareSummary, setShareSummary] = useState<ProjectShareSummary | null>(null);
   const trimmedEmail = email.trim();
-  const addMemberDisabled = saving || !trimmedEmail;
-  const addMemberDisabledHint =
-    !trimmedEmail && !saving ? 'Enter an email address first' : undefined;
+  const selectedContact = shareContacts.find((c) => c.userId === selectedContactId) ?? null;
+  const canSendToContact = Boolean(selectedContact && !saving);
+  const canSendToEmail = Boolean(trimmedEmail && !saving);
+  const addMemberDisabled = showEmailInvite ? !canSendToEmail : !canSendToContact;
+  const addMemberDisabledHint = addMemberDisabled
+    ? showEmailInvite
+      ? 'Enter an email address first'
+      : 'Select someone to invite'
+    : undefined;
 
   useEffect(() => {
     if (!project.canManageMembers) return;
-    Promise.all([listProjectInvites(project._id), getProjectShareSummary(project._id)])
-      .then(([{ invites }, { summary }]) => {
+    Promise.all([
+      listProjectInvites(project._id),
+      getProjectShareSummary(project._id),
+      listShareContacts(project._id),
+    ])
+      .then(([{ invites }, { summary }, { contacts }]) => {
         setPendingInvites(invites);
         setShareSummary(summary);
+        setShareContacts(contacts);
+        if (contacts.length === 0) {
+          setShowEmailInvite(true);
+        }
       })
       .catch(() => {
         // optional enrichment
@@ -58,12 +92,25 @@ export function ProjectMembersDialog({
     setError(null);
     setSuccess(null);
     try {
-      await onAdd(email.trim(), role);
-      setSuccess(`Invite sent to ${email.trim()}. They will be notified by email.`);
-      setEmail('');
+      if (showEmailInvite) {
+        await onAdd({ email: trimmedEmail }, role);
+        setSuccess(`Invite sent to ${trimmedEmail}. They will be notified by email.`);
+        setEmail('');
+      } else if (selectedContact) {
+        await onAdd({ userId: selectedContact.userId }, role);
+        const label = selectedContact.displayName || selectedContact.email;
+        setSuccess(`Invite sent to ${label}. They will be notified by email.`);
+        setSelectedContactId(null);
+      } else {
+        return;
+      }
       setRole('editor');
-      const { invites } = await listProjectInvites(project._id);
+      const [{ invites }, { contacts }] = await Promise.all([
+        listProjectInvites(project._id),
+        listShareContacts(project._id),
+      ]);
       setPendingInvites(invites);
+      setShareContacts(contacts);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send invite');
     }
@@ -124,10 +171,10 @@ export function ProjectMembersDialog({
             <ul className="project-members-list">
               {pendingInvites.map((invite) => (
                 <li key={invite._id} className="project-members-row">
-                  <div className="project-members-identity">
-                    <span className="project-members-name">{invite.inviteeEmail}</span>
-                    <span className="project-members-meta">Awaiting acceptance · {invite.role}</span>
-                  </div>
+                  <UserIdentity user={inviteUserSummary(invite)} size="sm" />
+                  <span className="project-members-meta-inline muted">
+                    Awaiting acceptance · {invite.role}
+                  </span>
                   <button
                     type="button"
                     className="secondary-button"
@@ -145,24 +192,20 @@ export function ProjectMembersDialog({
         <h3 className="project-members-subheading">Members</h3>
         <ul className="project-members-list">
           <li className="project-members-row">
-            <div className="project-members-identity">
-              <span className="project-members-name">
-                {project.userId === currentUserId
-                  ? 'You'
-                  : project.ownerDisplayName || project.ownerEmail}
-              </span>
-              <span className="project-members-meta">{project.ownerEmail}</span>
-            </div>
+            <UserIdentity
+              user={{
+                userId: project.userId,
+                email: project.ownerEmail,
+                displayName: project.ownerDisplayName,
+              }}
+              you={project.userId === currentUserId}
+              size="sm"
+            />
             <span className="project-members-role-badge">owner</span>
           </li>
           {project.collaborators.map((collaborator) => (
             <li key={collaborator.userId} className="project-members-row">
-              <div className="project-members-identity">
-                <span className="project-members-name">
-                  {collaborator.displayName || collaborator.email}
-                </span>
-                <span className="project-members-meta">{collaborator.email}</span>
-              </div>
+              <UserIdentity user={collaborator} size="sm" />
               {project.canManageMembers ? (
                 <div className="project-members-controls">
                   <select
@@ -171,7 +214,7 @@ export function ProjectMembersDialog({
                     onChange={(event) =>
                       handleRoleChange(collaborator.userId, event.target.value as CollaboratorRole)
                     }
-                    aria-label={`Role for ${collaborator.email}`}
+                    aria-label={`Role for ${collaborator.displayName || collaborator.email}`}
                   >
                     {ROLE_OPTIONS.map((option) => (
                       <option key={option} value={option}>
@@ -197,22 +240,39 @@ export function ProjectMembersDialog({
 
         {project.canManageMembers && (
           <form className="project-members-add" onSubmit={handleAdd}>
-            <label className="task-form-field">
-              Invite by email
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="collaborator@example.com"
-                disabled={saving}
-                autoFocus
-                aria-describedby={ADD_EMAIL_HINT_ID}
-                required
-              />
-              <span id={ADD_EMAIL_HINT_ID} className="muted project-members-add-hint">
-                {ADD_EMAIL_HELPER}
-              </span>
-            </label>
+            {!showEmailInvite && (
+              <>
+                <h3 className="project-members-subheading">Recent collaborators</h3>
+                {shareContacts.length > 0 ? (
+                  <ul className="project-members-contact-list" role="listbox" aria-label="Recent collaborators">
+                    {shareContacts.map((contact) => {
+                      const selected = selectedContactId === contact.userId;
+                      return (
+                        <li key={contact.userId}>
+                          <button
+                            type="button"
+                            className={`project-members-contact${selected ? ' selected' : ''}`}
+                            role="option"
+                            aria-selected={selected}
+                            disabled={saving}
+                            onClick={() =>
+                              setSelectedContactId(selected ? null : contact.userId)
+                            }
+                          >
+                            <UserIdentity user={contact} size="sm" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <p className="muted project-members-empty-contacts">
+                    No recent collaborators yet. Invite someone by email below.
+                  </p>
+                )}
+              </>
+            )}
+
             <label className="task-form-field">
               Role
               <select
@@ -227,11 +287,9 @@ export function ProjectMembersDialog({
                 ))}
               </select>
             </label>
+
             <div className="auth-dialog-actions">
-              <span
-                className="project-members-add-button-wrap"
-                title={addMemberDisabledHint}
-              >
+              <span className="project-members-add-button-wrap" title={addMemberDisabledHint}>
                 <button
                   type="submit"
                   className="primary-button"
@@ -242,6 +300,51 @@ export function ProjectMembersDialog({
                 </button>
               </span>
             </div>
+
+            {!showEmailInvite && shareContacts.length > 0 ? (
+              <button
+                type="button"
+                className="link-button project-members-email-toggle"
+                disabled={saving}
+                onClick={() => setShowEmailInvite(true)}
+              >
+                Invite someone new by email
+              </button>
+            ) : null}
+
+            {showEmailInvite ? (
+              <>
+                {shareContacts.length > 0 ? (
+                  <button
+                    type="button"
+                    className="link-button project-members-email-toggle"
+                    disabled={saving}
+                    onClick={() => {
+                      setShowEmailInvite(false);
+                      setEmail('');
+                    }}
+                  >
+                    Back to recent collaborators
+                  </button>
+                ) : null}
+                <label className="task-form-field">
+                  Invite by email
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="collaborator@example.com"
+                    disabled={saving}
+                    autoFocus
+                    aria-describedby={ADD_EMAIL_HINT_ID}
+                    required={showEmailInvite}
+                  />
+                  <span id={ADD_EMAIL_HINT_ID} className="muted project-members-add-hint">
+                    {ADD_EMAIL_HELPER}
+                  </span>
+                </label>
+              </>
+            ) : null}
           </form>
         )}
 

@@ -222,7 +222,7 @@ export async function search(query: string): Promise<import('../types').SearchRe
 }
 
 export async function createProject(
-  body: { name: string; description?: string; parentId?: string | null }
+  body: { name: string; description?: string; notes?: string; parentId?: string | null }
 ): Promise<{ project: import('../types').Project }> {
   return request('/api/projects', { method: 'POST', body: JSON.stringify(body) });
 }
@@ -232,6 +232,7 @@ export async function updateProject(
   body: {
     name?: string;
     description?: string | null;
+    notes?: string | null;
     parentId?: string | null;
     sortOrder?: number;
     progressShare?: number | null;
@@ -271,6 +272,15 @@ export async function addProjectCollaborator(
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+export async function listShareContacts(
+  excludeProjectId?: string
+): Promise<{ contacts: import('../types').ShareContact[] }> {
+  const params = excludeProjectId
+    ? `?excludeProjectId=${encodeURIComponent(excludeProjectId)}`
+    : '';
+  return request(`/api/projects/share-contacts${params}`);
 }
 
 export async function getProjectShareSummary(

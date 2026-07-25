@@ -24,12 +24,16 @@ describe('embedding text builders', () => {
     assert.match(text, /- Remove handle/);
   });
 
-  it('buildProjectEmbeddingText includes name and description', () => {
+  it('buildProjectEmbeddingText includes name, description, and notes', () => {
     const text = buildProjectEmbeddingText({
       name: 'Kitchen Remodel',
       description: 'Main floor renovation',
+      notes: 'Contractor contact: Bob at 555-0100',
     });
 
-    assert.equal(text, 'Kitchen Remodel\nMain floor renovation');
+    assert.equal(
+      text,
+      'Kitchen Remodel\nMain floor renovation\nContractor contact: Bob at 555-0100'
+    );
   });
 });

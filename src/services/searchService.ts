@@ -24,6 +24,7 @@ type LeanProject = Record<string, unknown> & {
   _id: unknown;
   name: string;
   description?: string;
+  notes?: string;
   status?: string;
   embedding?: number[];
 };
@@ -109,7 +110,8 @@ function taskMatchesRegex(task: LeanTask, regex: RegExp): boolean {
 function projectMatchesRegex(project: LeanProject, regex: RegExp): boolean {
   return (
     regex.test(project.name) ||
-    Boolean(project.description && regex.test(project.description))
+    Boolean(project.description && regex.test(project.description)) ||
+    Boolean(project.notes && regex.test(project.notes))
   );
 }
 
@@ -192,7 +194,7 @@ async function searchProjectsInternal(
     id: String(item._id),
     type: 'project' as const,
     title: item.name,
-    snippet: item.description?.trim() || undefined,
+    snippet: item.description?.trim() || item.notes?.trim() || undefined,
     score,
     status: item.status,
   }));

@@ -10,6 +10,7 @@ export interface UseDemoTourOptions {
   onSetDemoPrompt: (prompt: string | null) => void;
   onComplete: () => void | Promise<void>;
   autoApproveProposals?: boolean;
+  onPrepareStep?: (stepId: string) => void | Promise<void>;
 }
 
 async function waitForElement(selector: string, attempts = 40): Promise<Element | null> {
@@ -36,6 +37,7 @@ export function useDemoTour({
   onSetDemoPrompt,
   onComplete,
   autoApproveProposals = false,
+  onPrepareStep,
 }: UseDemoTourOptions) {
   const driverRef = useRef<Driver | null>(null);
   const runningRef = useRef(false);
@@ -60,10 +62,16 @@ export function useDemoTour({
         onSetDemoPrompt(DEMO_AGENT_PROMPT);
       }
 
+      if (step.prepare === 'selectFirstProject') {
+        await onPrepareStep?.(step.id);
+      } else if (onPrepareStep) {
+        await onPrepareStep(step.id);
+      }
+
       const element = await waitForElement(step.selector);
       return Boolean(element);
     },
-    [onSetDemoPrompt, setView]
+    [onPrepareStep, onSetDemoPrompt, setView]
   );
 
   const startTour = useCallback(async () => {
@@ -116,7 +124,7 @@ export function useDemoTour({
 
     driverRef.current = driverObj;
     driverObj.drive();
-  }, [autoApproveProposals, destroyTour, onComplete, onSetDemoPrompt, prepareStep]);
+  }, [autoApproveProposals, destroyTour, onComplete, onPrepareStep, onSetDemoPrompt, prepareStep]);
 
   return { startTour, destroyTour };
 }

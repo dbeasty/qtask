@@ -354,7 +354,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'share_project',
     description:
-      'Send a project collaboration invite to an existing QTask user by email (or userId). They must accept before gaining access. Roles: editor, executor, viewer.',
+      'Send a project collaboration invite to an existing QTask user by email (or userId). They must accept before gaining access. Roles: manager, editor, executor, viewer.',
     parameters: {
       type: 'object',
       properties: {
@@ -363,7 +363,7 @@ export const toolDefinitions: ToolDefinition[] = [
         userId: { type: 'string', description: 'User id (alternative to email)' },
         role: {
           type: 'string',
-          enum: ['editor', 'executor', 'viewer'],
+          enum: ['manager', 'editor', 'executor', 'viewer'],
           description: 'Collaborator role (default editor)',
         },
       },
@@ -373,14 +373,14 @@ export const toolDefinitions: ToolDefinition[] = [
       projectId: objectIdSchema,
       email: z.string().email().optional(),
       userId: objectIdSchema.optional(),
-      role: z.enum(['editor', 'executor', 'viewer']).optional(),
+      role: z.enum(['manager', 'editor', 'executor', 'viewer']).optional(),
     },
     async execute(userId, input) {
       try {
         const invite = await inviteService.createInvite(userId, String(input.projectId), {
           email: input.email as string | undefined,
           userId: input.userId as string | undefined,
-          role: input.role as 'editor' | 'executor' | 'viewer' | undefined,
+          role: input.role as 'manager' | 'editor' | 'executor' | 'viewer' | undefined,
         });
         return ok(JSON.stringify(invite, null, 2));
       } catch (error) {
@@ -400,7 +400,7 @@ export const toolDefinitions: ToolDefinition[] = [
         collaboratorId: { type: 'string', description: 'User id (alternative to email)' },
         role: {
           type: 'string',
-          enum: ['editor', 'executor', 'viewer'],
+          enum: ['manager', 'editor', 'executor', 'viewer'],
           description: 'Project role if they are not yet a member (default editor)',
         },
       },
@@ -410,7 +410,7 @@ export const toolDefinitions: ToolDefinition[] = [
       taskId: objectIdSchema,
       email: z.string().email().optional(),
       collaboratorId: objectIdSchema.optional(),
-      role: z.enum(['editor', 'executor', 'viewer']).optional(),
+      role: z.enum(['manager', 'editor', 'executor', 'viewer']).optional(),
     },
     async execute(userId, input) {
       try {
@@ -441,7 +441,7 @@ export const toolDefinitions: ToolDefinition[] = [
           const invite = await inviteService.createInvite(userId, projectId, {
             email,
             userId: collaboratorUserId,
-            role: (input.role as 'editor' | 'executor' | 'viewer' | undefined) ?? 'editor',
+            role: (input.role as 'manager' | 'editor' | 'executor' | 'viewer' | undefined) ?? 'editor',
           });
           return ok(
             JSON.stringify(

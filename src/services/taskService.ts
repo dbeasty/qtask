@@ -11,7 +11,7 @@ import type {
   UpdateTaskInput,
 } from '../types/task.js';
 import type { StagingContext } from '../types/staging.js';
-import { canEditProject, roleAtLeast, type ProjectRole } from '../types/project.js';
+import { canDeleteTask, canEditProject, roleAtLeast, type ProjectRole } from '../types/project.js';
 import { HttpError } from '../utils/httpError.js';
 import { applyPercentComplete } from '../utils/percentComplete.js';
 import { buildSubtaskTree, normalizeLaborLinesInput, normalizeMaterialsInput, normalizeStepsInput, serializeTask, sumLaborHours } from '../utils/serialization.js';
@@ -548,8 +548,13 @@ export class TaskService {
   }
 
   async deleteTask(userId: string, taskId: string, options: { keepChildren?: boolean } = {}) {
-    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
-    if (!task) return null;
+    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'editor');
+    if (!loaded) return null;
+
+    const { task, role } = loaded;
+    if (!canDeleteTask(role, task.userId, userId)) {
+      throw new HttpError(403, 'Insufficient project permissions');
+    }
 
     const title = task.title;
     const affectedProjectIds = this.getDocProjectIds(task);

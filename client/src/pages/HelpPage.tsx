@@ -28,7 +28,8 @@ export function HelpPage({ onBack, onStartTour }: HelpPageProps) {
         </div>
 
         <p className="muted help-intro">
-          Quick guide to Projects, Tasks, Agent, and sharing. For the full write-up, see the{' '}
+          Quick guide to Projects, Tasks, Agent, and sharing (including the guided tour). For the
+          full write-up, see the{' '}
           <a href={USER_GUIDE_URL} target="_blank" rel="noopener noreferrer">
             user guide on GitHub
           </a>
@@ -128,10 +129,19 @@ export function HelpPage({ onBack, onStartTour }: HelpPageProps) {
         <section className="help-section">
           <h3>Sharing and roles</h3>
           <p>
-            Each project has an owner and optional collaborators:{' '}
-            <strong>owner</strong> (full control including members), <strong>editor</strong>,{' '}
-            <strong>executor</strong> (status/progress updates), and <strong>viewer</strong>{' '}
-            (read-only). Access is always checked on the project you are using.
+            Each project has an owner and optional collaborators. Roles: <strong>owner</strong>{' '}
+            (full control), <strong>manager</strong> (create sub-projects and edit structure, no
+            delete or members), <strong>editor</strong> (tasks; delete own tasks only),{' '}
+            <strong>executor</strong> (status updates), <strong>viewer</strong> (read-only).
+          </p>
+          <p>
+            To share: open <strong>Members</strong> on a project you own. Pick from{' '}
+            <strong>Recent collaborators</strong> or invite someone new by email. They must accept
+            via the notification bell or email before gaining access. Members appear by display name
+            when set.
+          </p>
+          <p>
+            Manager access on a shared project is marked with an amber dot in the project tree.
           </p>
         </section>
 

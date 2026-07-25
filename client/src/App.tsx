@@ -94,6 +94,16 @@ export function App() {
       void handleTourComplete();
     },
     autoApproveProposals: preferences.autoApproveProposals,
+    onPrepareStep: async (stepId) => {
+      if (stepId === 'share-members') {
+        setView('projects');
+        const { projects } = await listProjects();
+        if (projects.length > 0) {
+          const next = projects[0]!;
+          setActiveProjectId(next._id);
+        }
+      }
+    },
   });
 
   const handleStartTour = useCallback(() => {

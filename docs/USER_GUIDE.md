@@ -118,8 +118,10 @@ Projects group related tasks. They can form a **tree**: a project may sit under 
 ### Members
 
 - Select a project and click **Members** in the detail panel to invite or manage collaborators.
-- Enter the email of an **existing qtask user** and choose a role, then click **Send invite**.
+- Pick someone from **Recent collaborators** (people you have shared with before), or expand **Invite someone new** and enter an email for a first-time collaborator.
+- Choose a role, then click **Send invite**.
 - The recipient receives an email and an in-app notification. They must **accept** the invite before gaining access.
+- After acceptance, members are shown by **display name** (email appears as secondary detail when a name is set).
 - When you accept an invite to a parent project, access is granted to that project and **all of its sub-projects** (same role).
 - Roles and permissions are **per project**. Nesting does not automatically share access with parent or child projects unless you invite on the parent (which cascades downward).
 - Pending invites appear in the Members dialog; owners can cancel them.
@@ -280,16 +282,33 @@ Expense data is optional — turn off **Track expenses** if you only need task m
 
 ## 12. Sharing and roles
 
-Each project has an owner and optional collaborators:
+Each project has an owner and optional collaborators.
 
-| Role | Typical access |
-|------|----------------|
-| **Owner** | Full control, including members |
-| **Editor** | Edit project and tasks |
-| **Executor** | Update status / progress-style fields |
-| **Viewer** | Read-only |
+### Role permissions
 
-Invite people by email when your deployment supports it. Access is always checked on the project you are working in.
+| Role | View | Update status | Create/edit tasks | Delete tasks | Create sub-projects | Edit project name/desc | Move projects | Manage members | Delete projects |
+|------|------|---------------|-------------------|--------------|---------------------|------------------------|---------------|----------------|-----------------|
+| **Viewer** | yes | — | — | — | — | — | — | — | — |
+| **Executor** | yes | yes | — | — | — | — | — | — | — |
+| **Editor** | yes | yes | yes | own tasks only | — | — | — | — | — |
+| **Manager** | yes | yes | yes | — | yes | yes | yes | — | — |
+| **Owner** | yes | yes | yes | all | yes | yes | yes | yes | yes |
+
+### How to share a project
+
+1. Open **Projects** and select a project you own.
+2. Click **Members** in the detail panel.
+3. Pick someone from **Recent collaborators**, or expand **Invite someone new** and enter an email.
+4. Choose a role (**manager**, **editor**, **executor**, or **viewer**), then click **Send invite**.
+5. The invitee must **Accept** via email notification or the notification bell.
+6. Inviting on a **parent** project cascades the same role to all sub-projects.
+7. Owners can change roles or remove members; collaborators can **Leave project**.
+
+### Manager visual indicator
+
+Projects where you are a **manager** show a tinted row and amber dot in the project tree. Hover the dot for a short explanation: managers can create and edit structure but cannot delete or manage members.
+
+See also [Members](#members) under Projects.
 
 ---
 
@@ -310,7 +329,13 @@ Invite people by email when your deployment supports it. Access is always checke
 - Choose or create a project on the Projects view first. Agent and Tasks require an active project.
 
 **I cannot edit a project or task**
-- Your role may be **viewer** or **executor** (executors can update status but not all fields). Ask the project owner to adjust your role via **Members**.
+- Your role may be **viewer** or **executor** (executors can update status but not all fields). If you need to create sub-projects or rename a shared project, ask for the **manager** role. For full member control, ask the owner to adjust your role via **Members**.
+
+**What role should I choose when sharing?**
+- **Manager** — trusted leads who need sub-projects and project structure edits, but should not delete or manage members.
+- **Editor** — contributors who create and edit tasks (can delete only tasks they created).
+- **Executor** — field/status updates only.
+- **Viewer** — read-only access.
 
 **What is the difference between subtasks and steps?**
 - **Subtasks** are nested work items in the task tree with their own status and detail panel. **Steps** are checklist lines on a single task/subtask. See [Checklist steps](#7-checklist-steps-not-subtasks).

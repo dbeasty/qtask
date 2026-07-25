@@ -19,6 +19,7 @@ interface ProjectMoveMenuProps {
   onNestUnder: (parentId: string) => void;
   onDelete: () => void | Promise<boolean>;
   onClose: () => void;
+  showDelete?: boolean;
 }
 
 export function ProjectMoveMenu({
@@ -34,6 +35,7 @@ export function ProjectMoveMenu({
   onNestUnder,
   onDelete,
   onClose,
+  showDelete = true,
 }: ProjectMoveMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<{ top: number; left: number; visibility: 'hidden' | 'visible' }>({
@@ -139,15 +141,17 @@ export function ProjectMoveMenu({
         </button>
       )}
       <div className="task-move-menu-divider" role="separator" />
-      <button
-        type="button"
-        className="task-move-menu-item task-move-menu-item-danger"
-        role="menuitem"
-        disabled={saving}
-        onClick={() => void handleDelete()}
-      >
-        Delete
-      </button>
+      {showDelete && (
+        <button
+          type="button"
+          className="task-move-menu-item task-move-menu-item-danger"
+          role="menuitem"
+          disabled={saving}
+          onClick={() => void handleDelete()}
+        >
+          Delete
+        </button>
+      )}
       {nestTargets.length > 0 && (
         <div className="task-move-menu-attach">
           <div className="task-move-menu-attach-label">Nest under</div>

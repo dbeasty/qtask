@@ -54,6 +54,7 @@ interface TaskHierarchyTreeProps {
   onToggleDone: (taskId: string, path: string[], done: boolean) => void;
   canManageProjects?: boolean;
   onOpenProjectDialog?: (taskId: string) => void;
+  canDeleteTask?: (task: Task) => boolean;
 }
 
 function isSelectionActive(selection: Selection | null, taskId: string, path: string[]): boolean {
@@ -421,6 +422,7 @@ export function TaskHierarchyTree({
   onToggleDone,
   canManageProjects = false,
   onOpenProjectDialog,
+  canDeleteTask,
 }: TaskHierarchyTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [openMoveMenuKey, setOpenMoveMenuKey] = useState<string | null>(null);
@@ -572,6 +574,7 @@ export function TaskHierarchyTree({
                         onAttachTask(task._id, projectTarget.targetTaskId, projectTarget.parentPath);
                       }}
                       onDelete={onDelete}
+                      showDelete={canDeleteTask ? canDeleteTask(task) : true}
                       onOpenProjectDialog={
                         onOpenProjectDialog ? () => onOpenProjectDialog(task._id) : undefined
                       }

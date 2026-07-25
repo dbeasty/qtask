@@ -42,6 +42,18 @@ projectsRouter.get('/', async (req, res, next) => {
   }
 });
 
+projectsRouter.get('/share-contacts', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const excludeProjectId =
+      typeof req.query.excludeProjectId === 'string' ? req.query.excludeProjectId : undefined;
+    const contacts = await projectService.listShareContacts(userId, excludeProjectId);
+    res.json({ contacts });
+  } catch (error) {
+    next(error);
+  }
+});
+
 projectsRouter.post('/', async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -70,9 +82,10 @@ projectsRouter.post('/', async (req, res, next) => {
 projectsRouter.patch('/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const { name, description, parentId, sortOrder, progressShare, hourlyRate } = req.body as {
+    const { name, description, notes, parentId, sortOrder, progressShare, hourlyRate } = req.body as {
       name?: string;
       description?: string | null;
+      notes?: string | null;
       parentId?: string | null;
       sortOrder?: number;
       progressShare?: number | null;
@@ -81,6 +94,7 @@ projectsRouter.patch('/:id', async (req, res, next) => {
     const project = await projectService.updateProject(userId, req.params.id!, {
       name,
       description,
+      notes,
       parentId,
       sortOrder,
       progressShare,

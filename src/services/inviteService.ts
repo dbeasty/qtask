@@ -28,6 +28,7 @@ export type SerializedInvite = {
   inviterDisplayName?: string;
   inviteeEmail: string;
   inviteeUserId?: string;
+  inviteeDisplayName?: string;
   role: CollaboratorRole;
   status: 'pending' | 'accepted' | 'declined' | 'expired';
   token: string;
@@ -51,9 +52,12 @@ type LeanInvite = {
 };
 
 async function serializeInvite(invite: LeanInvite): Promise<SerializedInvite> {
-  const [project, inviter] = await Promise.all([
+  const [project, inviter, invitee] = await Promise.all([
     ProjectModel.findById(invite.projectId).select('name').lean(),
     UserModel.findById(invite.inviterUserId).select('email displayName').lean(),
+    invite.inviteeUserId
+      ? UserModel.findById(invite.inviteeUserId).select('email displayName').lean()
+      : Promise.resolve(null),
   ]);
 
   return {
@@ -65,6 +69,7 @@ async function serializeInvite(invite: LeanInvite): Promise<SerializedInvite> {
     inviterDisplayName: inviter?.displayName ?? undefined,
     inviteeEmail: invite.inviteeEmail,
     inviteeUserId: invite.inviteeUserId,
+    inviteeDisplayName: invitee?.displayName ?? undefined,
     role: invite.role,
     status: invite.status,
     token: invite.token,

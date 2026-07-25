@@ -26,6 +26,7 @@ interface ProjectSectionProps {
   onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
   canManageProjects?: boolean;
   onOpenProjectDialog?: (taskId: string) => void;
+  canDeleteTask?: (task: Task) => boolean;
 }
 
 export function ProjectSection({
@@ -43,6 +44,7 @@ export function ProjectSection({
   onDelete,
   canManageProjects,
   onOpenProjectDialog,
+  canDeleteTask,
 }: ProjectSectionProps) {
   return (
     <div className="project-section">
@@ -62,6 +64,7 @@ export function ProjectSection({
           onDelete={onDelete}
           canManageProjects={canManageProjects}
           onOpenProjectDialog={onOpenProjectDialog}
+          canDeleteTask={canDeleteTask}
         />
       ) : (
         <p className="muted project-section-empty">No tasks in this project yet.</p>

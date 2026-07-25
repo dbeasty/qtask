@@ -104,8 +104,18 @@ export interface Subtask {
   subtasks: Subtask[];
 }
 
-export type CollaboratorRole = 'editor' | 'executor' | 'viewer';
+export type CollaboratorRole = 'editor' | 'executor' | 'viewer' | 'manager';
 export type ProjectRole = 'owner' | CollaboratorRole;
+
+export interface UserSummary {
+  userId: string;
+  displayName?: string;
+  email: string;
+}
+
+export interface ShareContact extends UserSummary {
+  lastSharedAt: string;
+}
 
 export interface ProjectCollaborator {
   userId: string;
@@ -160,6 +170,7 @@ export interface Project {
   ownerDisplayName?: string;
   name: string;
   description?: string;
+  notes?: string;
   parentId?: string | null;
   sortOrder: number;
   status: TaskStatus;
@@ -171,6 +182,9 @@ export interface Project {
   canEdit: boolean;
   canUpdateStatus: boolean;
   canManageMembers: boolean;
+  canManageStructure: boolean;
+  canDeleteProjects: boolean;
+  canDeleteOwnTasks: boolean;
   collaborators: ProjectCollaborator[];
   createdAt: string;
   updatedAt: string;
@@ -360,6 +374,7 @@ export interface ProjectInvite {
   inviterDisplayName?: string;
   inviteeEmail: string;
   inviteeUserId?: string;
+  inviteeDisplayName?: string;
   role: CollaboratorRole;
   status: 'pending' | 'accepted' | 'declined' | 'expired';
   token: string;

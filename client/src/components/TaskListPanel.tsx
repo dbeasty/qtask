@@ -33,6 +33,7 @@ interface TaskListPanelProps {
   ) => void;
   canManageProjects?: boolean;
   onOpenProjectDialog?: (taskId: string) => void;
+  canDeleteTask?: (task: Task) => boolean;
 }
 
 export function TaskListPanel({
@@ -56,6 +57,7 @@ export function TaskListPanel({
   onAttachTask,
   canManageProjects,
   onOpenProjectDialog,
+  canDeleteTask,
 }: TaskListPanelProps) {
   return (
     <aside className="task-list-panel">
@@ -99,6 +101,7 @@ export function TaskListPanel({
           onDelete={onDelete}
           canManageProjects={canManageProjects}
           onOpenProjectDialog={onOpenProjectDialog}
+          canDeleteTask={canDeleteTask}
         />
       </div>
     </aside>

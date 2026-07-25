@@ -29,4 +29,13 @@ describe('demoSteps', () => {
     assert.match(DEMO_AGENT_PROMPT, /onboarding tasks/i);
     assert.ok(DEMO_STEPS.some((step) => step.prefillAgentPrompt));
   });
+
+  it('includes sharing walkthrough steps', () => {
+    const ids = getDemoStepIds();
+    assert.ok(ids.includes('share-members'));
+    assert.ok(ids.includes('share-notifications'));
+    const shareIndex = ids.indexOf('share-members');
+    const tasksIndex = ids.indexOf('tasks');
+    assert.ok(shareIndex >= 0 && tasksIndex > shareIndex);
+  });
 });

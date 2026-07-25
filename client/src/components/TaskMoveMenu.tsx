@@ -29,6 +29,7 @@ interface TaskMoveMenuProps {
   onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
   onOpenProjectDialog?: () => void;
   onClose: () => void;
+  showDelete?: boolean;
 }
 
 export function TaskMoveMenu({
@@ -52,6 +53,7 @@ export function TaskMoveMenu({
   onDelete,
   onOpenProjectDialog,
   onClose,
+  showDelete = true,
 }: TaskMoveMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<{ top: number; left: number; visibility: 'hidden' | 'visible' }>({
@@ -171,25 +173,29 @@ export function TaskMoveMenu({
         </button>
       )}
       <div className="task-move-menu-divider" role="separator" />
-      <button
-        type="button"
-        className="task-move-menu-item task-move-menu-item-danger"
-        role="menuitem"
-        disabled={saving}
-        onClick={() => void handleDelete(false)}
-      >
-        Delete
-      </button>
-      {hasChildren && (
-        <button
-          type="button"
-          className="task-move-menu-item task-move-menu-item-danger"
-          role="menuitem"
-          disabled={saving}
-          onClick={() => void handleDelete(true)}
-        >
-          Delete, keep subtasks
-        </button>
+      {showDelete && (
+        <>
+          <button
+            type="button"
+            className="task-move-menu-item task-move-menu-item-danger"
+            role="menuitem"
+            disabled={saving}
+            onClick={() => void handleDelete(false)}
+          >
+            Delete
+          </button>
+          {hasChildren && (
+            <button
+              type="button"
+              className="task-move-menu-item task-move-menu-item-danger"
+              role="menuitem"
+              disabled={saving}
+              onClick={() => void handleDelete(true)}
+            >
+              Delete, keep subtasks
+            </button>
+          )}
+        </>
       )}
       {kind === 'subtask' && (
         <>

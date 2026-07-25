@@ -15,11 +15,13 @@ import { useAuth } from '../auth/AuthContext';
 import { getUserPreferences } from '../auth/storage';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { DescriptionSection } from '../components/DescriptionSection';
+import { NotesSection } from '../components/NotesSection';
 import { ProjectTasksList } from '../components/ProjectTasksList';
 import { CurrentProjectLabel } from '../components/CurrentProjectBar';
 import { HourlyRateDialog } from '../components/HourlyRateDialog';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectHierarchyTree } from '../components/ProjectHierarchyTree';
+import { ProjectRoleIndicator } from '../components/ProjectRoleIndicator';
 import { TaskSplitInput } from '../components/TaskSplitInput';
 import { ExpenseTree } from '../components/ExpenseTree';
 import type { CollaboratorRole, ExpenseTreeNode, Project, Task, TaskStatus } from '../types';
@@ -73,6 +75,7 @@ export function ProjectsPage({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [detailName, setDetailName] = useState('');
   const [detailDescription, setDetailDescription] = useState('');
+  const [detailNotes, setDetailNotes] = useState('');
   const [detailProgressShare, setDetailProgressShare] = useState('');
   const [trackingTree, setTrackingTree] = useState<ExpenseTreeNode[]>([]);
   const [trackingOpen, setTrackingOpen] = useState(false);
@@ -81,7 +84,7 @@ export function ProjectsPage({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const lastSavedRef = useRef({ name: '', description: '' });
+  const lastSavedRef = useRef({ name: '', description: '', notes: '' });
   const saveGenerationRef = useRef(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -154,10 +157,12 @@ export function ProjectsPage({
     isDirtyRef.current = false;
     setDetailName(activeProject?.name ?? '');
     setDetailDescription(activeProject?.description ?? '');
+    setDetailNotes(activeProject?.notes ?? '');
     setDetailProgressShare(progressShareToFormValue(activeProject?.progressShare));
     lastSavedRef.current = {
       name: activeProject?.name ?? '',
       description: activeProject?.description ?? '',
+      notes: activeProject?.notes ?? '',
     };
     setSaveStatus('idle');
     setSaveError(null);
@@ -228,8 +233,8 @@ export function ProjectsPage({
   };
 
   const performAutoSave = useCallback(
-    async (name: string, description: string) => {
-      if (!activeProject || !activeProject.canManageMembers) return;
+    async (name: string, description: string, notes: string) => {
+      if (!activeProject || !activeProject.canManageStructure) return;
 
       const trimmed = name.trim();
       if (!trimmed) {
@@ -238,9 +243,13 @@ export function ProjectsPage({
         return;
       }
 
-      const next = { name: trimmed, description: description.trim() };
+      const next = { name: trimmed, description: description.trim(), notes: notes.trim() };
       const last = lastSavedRef.current;
-      if (next.name === last.name && next.description === last.description) {
+      if (
+        next.name === last.name &&
+        next.description === last.description &&
+        next.notes === last.notes
+      ) {
         return;
       }
 
@@ -252,6 +261,7 @@ export function ProjectsPage({
         const { project } = await updateProject(activeProject._id, {
           name: next.name,
           description: next.description || null,
+          notes: next.notes || null,
         });
 
         if (generation !== saveGenerationRef.current) return;
@@ -260,6 +270,7 @@ export function ProjectsPage({
         lastSavedRef.current = {
           name: project.name,
           description: project.description ?? '',
+          notes: project.notes ?? '',
         };
         isDirtyRef.current = false;
         setSaveStatus('saved');
@@ -277,30 +288,41 @@ export function ProjectsPage({
   );
 
   const scheduleAutoSave = useCallback(
-    (name: string, description: string) => {
-      if (!activeProject?.canManageMembers) return;
+    (name: string, description: string, notes: string) => {
+      if (!activeProject?.canManageStructure) return;
       clearDebounce();
       debounceTimerRef.current = setTimeout(() => {
-        void performAutoSave(name, description);
+        void performAutoSave(name, description, notes);
       }, 500);
     },
-    [activeProject?.canManageMembers, clearDebounce, performAutoSave]
+    [activeProject?.canManageStructure, clearDebounce, performAutoSave]
   );
 
   const updateDetailName = (value: string) => {
     setDetailName(value);
     isDirtyRef.current =
       value.trim() !== lastSavedRef.current.name ||
-      detailDescription.trim() !== lastSavedRef.current.description;
-    scheduleAutoSave(value, detailDescription);
+      detailDescription.trim() !== lastSavedRef.current.description ||
+      detailNotes.trim() !== lastSavedRef.current.notes;
+    scheduleAutoSave(value, detailDescription, detailNotes);
   };
 
   const updateDetailDescription = (value: string) => {
     setDetailDescription(value);
     isDirtyRef.current =
       detailName.trim() !== lastSavedRef.current.name ||
-      value.trim() !== lastSavedRef.current.description;
-    scheduleAutoSave(detailName, value);
+      value.trim() !== lastSavedRef.current.description ||
+      detailNotes.trim() !== lastSavedRef.current.notes;
+    scheduleAutoSave(detailName, value, detailNotes);
+  };
+
+  const updateDetailNotes = (value: string) => {
+    setDetailNotes(value);
+    isDirtyRef.current =
+      detailName.trim() !== lastSavedRef.current.name ||
+      detailDescription.trim() !== lastSavedRef.current.description ||
+      value.trim() !== lastSavedRef.current.notes;
+    scheduleAutoSave(detailName, detailDescription, value);
   };
 
   const projectEffectiveHourlyRate =
@@ -374,11 +396,14 @@ export function ProjectsPage({
     }
   };
 
-  const handleAddCollaborator = async (email: string, role: CollaboratorRole) => {
+  const handleAddCollaborator = async (
+    input: { email?: string; userId?: string },
+    role: CollaboratorRole
+  ) => {
     if (!activeProject) return;
     setSaving(true);
     try {
-      await addProjectCollaborator(activeProject._id, { email, role });
+      await addProjectCollaborator(activeProject._id, { ...input, role });
     } finally {
       setSaving(false);
     }
@@ -469,7 +494,7 @@ export function ProjectsPage({
                     <button
                       type="button"
                       className="primary-button"
-                      disabled={!activeProject || saving || !activeProject.canManageMembers}
+                      disabled={!activeProject || saving || !activeProject.canManageStructure}
                       onClick={() => {
                         if (creatingChildOf) {
                           setCreatingChildOf(null);
@@ -566,14 +591,14 @@ export function ProjectsPage({
                     <input
                       value={detailName}
                       onChange={(event) => updateDetailName(event.target.value)}
-                      disabled={saving || !activeProject.canManageMembers}
+                      disabled={saving || !activeProject.canManageStructure}
                     />
                   </label>
                   <DescriptionSection
                     key={activeProject._id}
                     value={detailDescription}
                     onChange={updateDetailDescription}
-                    disabled={saving || !activeProject.canManageMembers}
+                    disabled={saving || !activeProject.canManageStructure}
                   />
 
                   {onOpenTask && onAddTask && (
@@ -586,6 +611,13 @@ export function ProjectsPage({
                       onAddTask={onAddTask}
                     />
                   )}
+
+                  <NotesSection
+                    key={`${activeProject._id}-notes`}
+                    value={detailNotes}
+                    onChange={updateDetailNotes}
+                    disabled={saving || !activeProject.canManageStructure}
+                  />
 
                   <div className="task-form-field">
                     <span>Status</span>
@@ -693,16 +725,20 @@ export function ProjectsPage({
                     </div>
                   </details>
 
-                  <p className="muted">
-                    Role: {activeProject.role}
-                    {activeProject.parentId
-                      ? ` · Nested under ${projects.find((p) => p._id === activeProject.parentId)?.name ?? 'parent'}`
-                      : ' · Root project'}
+                  <p className="muted project-detail-role">
+                    <ProjectRoleIndicator role={activeProject.role} />
+                    <span>
+                      Role: {activeProject.role}
+                      {activeProject.parentId
+                        ? ` · Nested under ${projects.find((p) => p._id === activeProject.parentId)?.name ?? 'parent'}`
+                        : ' · Root project'}
+                    </span>
                   </p>
                   <div className="task-form-actions">
                     <button
                       type="button"
                       className="secondary-button"
+                      data-demo-step="project-members"
                       disabled={saving}
                       onClick={() => setMembersOpen(true)}
                     >

@@ -1,5 +1,5 @@
 import { isValidObjectId } from 'mongoose';
-import { ProjectModel, TaskModel, UserModel } from '../models/index.js';
+import { InviteModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
 import { config } from '../config/index.js';
 import {
   enqueueProjectEmbeddingJob,
@@ -7,8 +7,11 @@ import {
 } from './embeddingQueue.js';
 import { HttpError } from '../utils/httpError.js';
 import {
+  canDeleteOwnTasks,
+  canDeleteProject,
   canEditProject,
   canManageMembers,
+  canManageStructure,
   canUpdateStatus,
   isCollaboratorRole,
   roleAtLeast,
@@ -18,6 +21,7 @@ import {
   type SerializedCollaborator,
   type SerializedProject,
 } from '../types/project.js';
+import type { ShareContact } from '../types/user.js';
 import {
   computeLeafProjectProgress,
   computeParentProjectProgress,
@@ -38,6 +42,7 @@ type LeanProject = {
   userId: string;
   name: string;
   description?: string | null;
+  notes?: string | null;
   parentId?: string | null;
   sortOrder?: number;
   status?: ProjectStatus;
@@ -110,6 +115,7 @@ async function serializeProject(project: LeanProject, viewerId: string): Promise
     ownerDisplayName: owner?.displayName ?? undefined,
     name: project.name,
     description: project.description ?? undefined,
+    notes: project.notes ?? undefined,
     parentId: project.parentId ?? null,
     sortOrder: project.sortOrder ?? 0,
     status: project.status ?? 'todo',
@@ -135,6 +141,9 @@ async function serializeProject(project: LeanProject, viewerId: string): Promise
     canEdit: canEditProject(role),
     canUpdateStatus: canUpdateStatus(role),
     canManageMembers: canManageMembers(role),
+    canManageStructure: canManageStructure(role),
+    canDeleteProjects: canDeleteProject(role),
+    canDeleteOwnTasks: canDeleteOwnTasks(role),
     collaborators,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
@@ -246,6 +255,7 @@ export class ProjectService {
     input: {
       name?: string;
       description?: string | null;
+      notes?: string | null;
       parentId?: string | null;
       sortOrder?: number;
       progressShare?: number | null;
@@ -255,13 +265,14 @@ export class ProjectService {
     const structural =
       input.name !== undefined ||
       input.description !== undefined ||
+      input.notes !== undefined ||
       input.parentId !== undefined ||
       input.sortOrder !== undefined;
 
     const rateChanged = input.hourlyRate !== undefined;
 
     if (structural) {
-      await this.assertProjectAccess(userId, projectId, 'owner');
+      await this.assertProjectAccess(userId, projectId, 'manager');
     } else {
       await this.assertProjectAccess(userId, projectId, 'editor');
     }
@@ -271,6 +282,7 @@ export class ProjectService {
 
     const previousName = project.name;
     const previousDescription = project.description ?? undefined;
+    const previousNotes = project.notes ?? undefined;
 
     const previousParentId =
       project.parentId !== undefined && project.parentId !== null ? String(project.parentId) : null;
@@ -284,6 +296,9 @@ export class ProjectService {
     }
     if (input.description !== undefined) {
       project.description = input.description ?? undefined;
+    }
+    if (input.notes !== undefined) {
+      project.notes = input.notes ?? undefined;
     }
     if (input.parentId !== undefined) {
       await this.assertValidParent(userId, projectId, input.parentId);
@@ -332,7 +347,9 @@ export class ProjectService {
     const nameChanged = input.name !== undefined && input.name.trim() !== previousName;
     const descriptionChanged =
       input.description !== undefined && (input.description ?? undefined) !== previousDescription;
-    if (!project.staging && (nameChanged || descriptionChanged)) {
+    const notesChanged =
+      input.notes !== undefined && (input.notes ?? undefined) !== previousNotes;
+    if (!project.staging && (nameChanged || descriptionChanged || notesChanged)) {
       await enqueueProjectEmbeddingJob(projectId);
       await enqueueTaskEmbeddingsForProject(projectId);
     }
@@ -349,13 +366,21 @@ export class ProjectService {
     staging?: StagingContext,
     parentId?: string | null
   ) {
+    let ownerUserId = userId;
+    let inheritedCollaborators: Array<{ userId: string; role: CollaboratorRole }> = [];
+
     if (parentId) {
-      await this.assertProjectAccess(userId, parentId, 'owner');
+      const parentAccess = await this.assertProjectAccess(userId, parentId, 'manager');
+      ownerUserId = parentAccess.project.userId;
+      inheritedCollaborators = (parentAccess.project.collaborators ?? []).map((c) => ({
+        userId: c.userId,
+        role: c.role,
+      }));
     }
 
     if (staging) {
       const existing = await ProjectModel.findOne({
-        userId,
+        userId: ownerUserId,
         name,
         'staging.conversationId': staging.conversationId,
       }).lean();
@@ -365,7 +390,7 @@ export class ProjectService {
     }
 
     const siblingFilter = {
-      userId,
+      userId: ownerUserId,
       parentId: parentId ?? null,
       staging: { $exists: false },
     };
@@ -376,14 +401,14 @@ export class ProjectService {
     const sortOrder = maxSibling ? (maxSibling.sortOrder ?? 0) + 1 : 0;
 
     const project = await ProjectModel.create({
-      userId,
+      userId: ownerUserId,
       name,
       description,
       parentId: parentId ?? null,
       sortOrder,
       status: 'todo',
       percentComplete: 0,
-      collaborators: [],
+      collaborators: inheritedCollaborators,
       staging: staging ? { ...staging, stagedAt: new Date() } : undefined,
     });
 
@@ -404,7 +429,7 @@ export class ProjectService {
     projectId: string,
     input: { parentId: string | null; index?: number }
   ) {
-    await this.assertProjectAccess(userId, projectId, 'owner');
+    await this.assertProjectAccess(userId, projectId, 'manager');
     await this.assertValidParent(userId, projectId, input.parentId);
 
     const project = await ProjectModel.findById(projectId);
@@ -462,7 +487,7 @@ export class ProjectService {
     if (parentId === projectId) {
       throw new HttpError(400, 'A project cannot be its own parent');
     }
-    await this.assertProjectAccess(userId, parentId, 'owner');
+    await this.assertProjectAccess(userId, parentId, 'manager');
 
     // Walk ancestors of the proposed parent; none may be the moving project.
     let cursor: string | null = parentId;
@@ -492,6 +517,85 @@ export class ProjectService {
       .sort({ sortOrder: 1, createdAt: 1 })
       .lean();
     return Promise.all(projects.map((p) => serializeProject(p as LeanProject, userId)));
+  }
+
+  /** Users this account has previously shared projects with (accepted invites + owned-project collaborators). */
+  async listShareContacts(userId: string, excludeProjectId?: string): Promise<ShareContact[]> {
+    const excludeUserIds = new Set<string>([userId]);
+
+    if (excludeProjectId) {
+      const project = await ProjectModel.findById(excludeProjectId).lean();
+      if (project) {
+        excludeUserIds.add(project.userId);
+        for (const c of project.collaborators ?? []) {
+          excludeUserIds.add(c.userId);
+        }
+      }
+      const pending = await InviteModel.find({
+        projectId: excludeProjectId,
+        status: 'pending',
+      })
+        .select('inviteeUserId inviteeEmail')
+        .lean();
+      for (const invite of pending) {
+        if (invite.inviteeUserId) excludeUserIds.add(invite.inviteeUserId);
+      }
+    }
+
+    const lastSharedAt = new Map<string, Date>();
+
+    const acceptedInvites = await InviteModel.find({
+      inviterUserId: userId,
+      status: 'accepted',
+      inviteeUserId: { $exists: true, $ne: null },
+    })
+      .select('inviteeUserId respondedAt createdAt')
+      .lean();
+
+    for (const invite of acceptedInvites) {
+      const id = invite.inviteeUserId as string;
+      const at = invite.respondedAt ?? invite.createdAt;
+      const prev = lastSharedAt.get(id);
+      if (!prev || at > prev) lastSharedAt.set(id, at);
+    }
+
+    const ownedProjects = await ProjectModel.find({ userId, staging: { $exists: false } })
+      .select('collaborators updatedAt')
+      .lean();
+
+    for (const project of ownedProjects) {
+      const at = project.updatedAt ?? new Date();
+      for (const c of project.collaborators ?? []) {
+        const prev = lastSharedAt.get(c.userId);
+        if (!prev || at > prev) lastSharedAt.set(c.userId, at);
+      }
+    }
+
+    const contactIds = [...lastSharedAt.keys()].filter((id) => !excludeUserIds.has(id));
+    if (contactIds.length === 0) return [];
+
+    const users = await UserModel.find({ _id: { $in: contactIds } })
+      .select('email displayName')
+      .lean();
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+
+    const contacts: ShareContact[] = contactIds
+      .map((id) => {
+        const user = byId.get(id);
+        if (!user) return null;
+        return {
+          userId: id,
+          email: user.email,
+          displayName: user.displayName ?? undefined,
+          lastSharedAt: (lastSharedAt.get(id) ?? new Date()).toISOString(),
+        };
+      })
+      .filter((c): c is ShareContact => c !== null);
+
+    contacts.sort(
+      (a, b) => new Date(b.lastSharedAt).getTime() - new Date(a.lastSharedAt).getTime()
+    );
+    return contacts;
   }
 
   async deleteProject(userId: string, projectId: string) {
