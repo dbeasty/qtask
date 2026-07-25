@@ -81,4 +81,5 @@ export type AgentStreamEvent =
   | { type: 'warning'; message: string }
   | { type: 'paused'; conversationId: string; pendingCount: number }
   | { type: 'error'; message: string }
+  | { type: 'aborted'; conversationId: string }
   | { type: 'done'; conversationId: string; content: string; paused?: boolean };

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getProposalEntityLink } from '../client/src/utils/agentEntityLink.ts';
+import { filterToolCallsEntityLinks, getProposalEntityLink } from '../client/src/utils/agentEntityLink.ts';
 import type { UiProposal } from '../client/src/types.ts';
 
 const ACTIVE = 'proj-active-123';
@@ -164,5 +164,43 @@ describe('getProposalEntityLink', () => {
       ACTIVE
     );
     assert.equal(link, null);
+  });
+});
+
+describe('filterToolCallsEntityLinks', () => {
+  it('filters find_tasks after get_project in same message', () => {
+    const filtered = filterToolCallsEntityLinks([
+      {
+        name: 'get_project',
+        success: true,
+        entityLinks: [{ kind: 'project', id: 'boat', label: 'Boat' }],
+      },
+      {
+        name: 'find_tasks',
+        success: true,
+        entityLinks: [
+          { kind: 'task', id: 't1', label: 'Wash boat', projectId: 'boat' },
+          { kind: 'task', id: 't2', label: 'Wash car', projectId: 'car' },
+        ],
+      },
+    ]);
+
+    assert.equal(filtered[1]?.entityLinks?.length, 1);
+    assert.equal(filtered[1]?.entityLinks?.[0]?.id, 't1');
+  });
+
+  it('leaves find_tasks unfiltered without prior project highlight', () => {
+    const filtered = filterToolCallsEntityLinks([
+      {
+        name: 'find_tasks',
+        success: true,
+        entityLinks: [
+          { kind: 'task', id: 't1', label: 'A', projectId: 'p1' },
+          { kind: 'task', id: 't2', label: 'B', projectId: 'p2' },
+        ],
+      },
+    ]);
+
+    assert.equal(filtered[0]?.entityLinks?.length, 2);
   });
 });

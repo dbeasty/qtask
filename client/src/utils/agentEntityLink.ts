@@ -10,6 +10,69 @@ export interface AgentEntityLink {
 }
 
 const TASK_STATUS_VALUES: TaskStatus[] = ['todo', 'in_progress', 'done', 'cancelled'];
+const TASK_LIST_TOOLS = new Set(['find_tasks', 'get_workload']);
+const PROJECT_HIGHLIGHT_TOOLS = new Set(['get_project', 'summarize_project']);
+
+function filterTaskLinksByProject(links: AgentEntityLink[], projectId: string | undefined): AgentEntityLink[] {
+  if (!projectId) return links;
+  return links.filter((link) => link.kind !== 'task' || link.projectId === projectId);
+}
+
+function updateHighlightedProjectId(
+  current: string | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+  success: boolean,
+  entityLinks?: AgentEntityLink[]
+): string | undefined {
+  if (!success) return current;
+
+  const projectIdArg = stringArg(args, 'projectId');
+  if (projectIdArg && TASK_LIST_TOOLS.has(toolName)) {
+    return projectIdArg;
+  }
+
+  if (PROJECT_HIGHLIGHT_TOOLS.has(toolName)) {
+    if (projectIdArg) return projectIdArg;
+    const projectLink = entityLinks?.find((link) => link.kind === 'project');
+    if (projectLink) return projectLink.id;
+  }
+
+  return current;
+}
+
+export function filterToolCallsEntityLinks(toolCalls: Array<{
+  name: string;
+  arguments?: Record<string, unknown>;
+  success?: boolean;
+  entityLinks?: AgentEntityLink[];
+}>): Array<{
+  name: string;
+  arguments?: Record<string, unknown>;
+  success?: boolean;
+  entityLinks?: AgentEntityLink[];
+}> {
+  let highlightedProjectId: string | undefined;
+
+  return toolCalls.map((call) => {
+    const scope = highlightedProjectId;
+    let entityLinks = call.entityLinks;
+    if (entityLinks && scope && TASK_LIST_TOOLS.has(call.name)) {
+      entityLinks = filterTaskLinksByProject(entityLinks, scope);
+    }
+
+    const success = call.success !== false;
+    highlightedProjectId = updateHighlightedProjectId(
+      highlightedProjectId,
+      call.name,
+      call.arguments ?? {},
+      success,
+      entityLinks
+    );
+
+    return entityLinks !== call.entityLinks ? { ...call, entityLinks } : call;
+  });
+}
 
 function unwrapTaskTitle(title: string): string {
   const trimmed = title.trim();

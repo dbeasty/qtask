@@ -26,8 +26,11 @@ import type {
 } from '../types/conversation.js';
 import { createLogger } from '../utils/logger.js';
 import { isCurrentProjectQuery } from '../utils/currentProjectQuery.js';
+import { isListProjectsQuery } from '../utils/listProjectsQuery.js';
 import { runGetProjectPreflight } from '../utils/runGetProjectPreflight.js';
-import { buildMessageToolResults, entityLinksFromToolResult } from '../utils/toolEntityLinks.js';
+import { runListProjectsPreflight } from '../utils/runListProjectsPreflight.js';
+import { buildMessageToolResults, entityLinksFromToolResult, resolveHighlightedProjectFromMessages, updateHighlightedProjectId } from '../utils/toolEntityLinks.js';
+import { AbortError, throwIfAborted } from '../utils/abortSignal.js';
 import { conversationService } from './conversationService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 import { stagingService } from './stagingService.js';
@@ -258,9 +261,15 @@ function toolResultEvent(
   name: string,
   success: boolean,
   content: string,
-  entityLinkSource?: string
+  entityLinkSource?: string,
+  scopeProjectId?: string
 ) {
-  const entityLinks = entityLinksFromToolResult(name, entityLinkSource ?? content, success);
+  const entityLinks = entityLinksFromToolResult(
+    name,
+    entityLinkSource ?? content,
+    success,
+    scopeProjectId
+  );
   return {
     type: 'tool_result' as const,
     name,
@@ -512,7 +521,8 @@ export async function* streamOllamaAgent(
   messages: OllamaChatMessage[],
   iteration: number,
   userId: string,
-  conversationId: string
+  conversationId: string,
+  signal?: AbortSignal
 ): AsyncGenerator<OllamaStreamPart> {
   log.debug('Ollama chat request', {
     model: config.ollama.model,
@@ -533,6 +543,7 @@ export async function* streamOllamaAgent(
     response = await fetch(`${config.ollama.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal,
       body: JSON.stringify({
         model: config.ollama.model,
         messages,
@@ -543,6 +554,10 @@ export async function* streamOllamaAgent(
       }),
     });
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      tracker.fail(error);
+      throw new AbortError();
+    }
     tracker.fail(error);
     throw error;
   }
@@ -571,6 +586,7 @@ export async function* streamOllamaAgent(
 
   try {
     while (true) {
+      throwIfAborted(signal);
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -616,6 +632,15 @@ export async function* streamOllamaAgent(
       }
     }
   } catch (error) {
+    if (error instanceof AbortError || (error instanceof Error && error.name === 'AbortError')) {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore cancel errors
+      }
+      tracker.fail(error);
+      throw new AbortError();
+    }
     tracker.fail(error, response.status);
     throw error;
   }
@@ -744,12 +769,15 @@ export class AgentService {
     userId: string,
     conversationId: string,
     workingMessages: StoredMessage[],
-    startIteration = 0
+    startIteration = 0,
+    signal?: AbortSignal
   ): AsyncGenerator<AgentStreamEvent> {
     let finalAssistantContent = '';
     const multiCreateNudgeSent = { value: false };
 
+    try {
     for (let iteration = startIteration; iteration < MAX_ITERATIONS; iteration++) {
+      throwIfAborted(signal);
       let content = '';
       let toolCalls: OllamaToolCall[] = [];
 
@@ -759,8 +787,10 @@ export class AgentService {
         await buildOllamaMessagesWithContext(userId, conversationId, workingMessages),
         iteration,
         userId,
-        conversationId
+        conversationId,
+        signal
       )) {
+        throwIfAborted(signal);
         if (part.kind === 'token') {
           yield { type: 'token', content: part.content };
         } else {
@@ -882,7 +912,8 @@ export class AgentService {
         content || '',
         toolCalls,
         0,
-        []
+        [],
+        signal
       );
       if (paused) {
         yield { type: 'done', conversationId, content: content || '', paused: true };
@@ -993,6 +1024,13 @@ export class AgentService {
       conversationId,
       content: finalAssistantContent,
     };
+    } catch (error) {
+      if (error instanceof AbortError) {
+        yield { type: 'aborted', conversationId };
+        return;
+      }
+      throw error;
+    }
   }
 
   private async *processToolCallBatch(
@@ -1002,7 +1040,8 @@ export class AgentService {
     assistantContent: string,
     toolCalls: OllamaToolCall[],
     startIndex: number,
-    existingProposals: PendingProposal[] = []
+    existingProposals: PendingProposal[] = [],
+    signal?: AbortSignal
   ): AsyncGenerator<AgentStreamEvent, boolean> {
     const current = await conversationService.getConversation(userId, conversationId);
     const proposals: PendingProposal[] = [
@@ -1012,10 +1051,21 @@ export class AgentService {
       ),
     ];
 
+    let highlightedProjectId = resolveHighlightedProjectFromMessages(workingMessages);
+
     for (let i = startIndex; i < toolCalls.length; i++) {
+      throwIfAborted(signal);
       const toolCall = toolCalls[i]!;
       const name = toolCall.function.name;
-      const args = normalizeToolArgs(name, toolCall.function.arguments);
+      let args = normalizeToolArgs(name, toolCall.function.arguments);
+
+      if (
+        (name === 'find_tasks' || name === 'get_workload') &&
+        highlightedProjectId &&
+        !args.projectId
+      ) {
+        args = { ...args, projectId: highlightedProjectId };
+      }
 
       log.info('Processing tool call', { name, write: isWriteTool(name), index: i });
 
@@ -1111,13 +1161,27 @@ export class AgentService {
 
       yield { type: 'tool_call', name, arguments: args };
       const result = await executeTool(name, args, userId);
+      const scopeForFilter = highlightedProjectId;
       const entityLinkSource = await entityLinkSourceForToolResult(
         userId,
         name,
         args,
         result.success
       );
-      yield toolResultEvent(name, result.success, result.text, entityLinkSource);
+      const entityLinks = entityLinksFromToolResult(
+        name,
+        entityLinkSource ?? result.text,
+        result.success,
+        scopeForFilter
+      );
+      highlightedProjectId = updateHighlightedProjectId(
+        highlightedProjectId,
+        name,
+        args,
+        result.success,
+        entityLinks
+      );
+      yield toolResultEvent(name, result.success, result.text, entityLinkSource, scopeForFilter);
 
       workingMessages.push({
         role: 'tool',
@@ -1239,7 +1303,8 @@ export class AgentService {
     userId: string,
     message: string,
     conversationId?: string,
-    projectId?: string
+    projectId?: string,
+    signal?: AbortSignal
   ): AsyncGenerator<AgentStreamEvent> {
     let conversation =
       conversationId != null
@@ -1301,18 +1366,26 @@ export class AgentService {
 
     const activeProjectId = conversation.projectId ?? projectId;
     if (activeProjectId && isCurrentProjectQuery(message)) {
+      throwIfAborted(signal);
       yield* runGetProjectPreflight(userId, activeProjectId, workingMessages);
+      throwIfAborted(signal);
+      await conversationService.setMessages(userId, conversation._id, workingMessages);
+    } else if (isListProjectsQuery(message)) {
+      throwIfAborted(signal);
+      yield* runListProjectsPreflight(userId, workingMessages);
+      throwIfAborted(signal);
       await conversationService.setMessages(userId, conversation._id, workingMessages);
     }
 
-    yield* this.runAgentLoop(userId, conversation._id, workingMessages);
+    yield* this.runAgentLoop(userId, conversation._id, workingMessages, 0, signal);
   }
 
   async *resumeAfterApproval(
     userId: string,
     conversationId: string,
     proposalId: string,
-    action: 'approve' | 'reject'
+    action: 'approve' | 'reject',
+    signal?: AbortSignal
   ): AsyncGenerator<AgentStreamEvent> {
     const conversation = await conversationService.getConversation(userId, conversationId);
     if (!conversation) {
@@ -1434,7 +1507,7 @@ export class AgentService {
         pausedBatch: null,
       });
       yield { type: 'status', message: 'Reviewing tool results…' };
-      yield* this.runAgentLoop(userId, conversationId, workingMessages);
+      yield* this.runAgentLoop(userId, conversationId, workingMessages, 0, signal);
       return;
     }
 
@@ -1448,7 +1521,8 @@ export class AgentService {
         updated.pausedBatch.assistantContent,
         toolCalls,
         nextToolIndex + 1,
-        updated.pendingProposals ?? []
+        updated.pendingProposals ?? [],
+        signal
       );
       if (paused) {
         yield { type: 'done', conversationId, content: '', paused: true };
@@ -1466,7 +1540,7 @@ export class AgentService {
     }
 
     yield { type: 'status', message: 'Reviewing tool results…' };
-    yield* this.runAgentLoop(userId, conversationId, workingMessages);
+    yield* this.runAgentLoop(userId, conversationId, workingMessages, 0, signal);
   }
 }
 

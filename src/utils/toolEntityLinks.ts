@@ -77,6 +77,55 @@ function mapProjects(items: unknown): ToolEntityLink[] {
 }
 
 const READ_TOOLS = new Set(['find_tasks', 'get_workload', 'list_projects', 'get_project', 'get_task']);
+const TASK_LIST_TOOLS = new Set(['find_tasks', 'get_workload']);
+const PROJECT_HIGHLIGHT_TOOLS = new Set(['get_project', 'summarize_project']);
+
+function stringArg(args: Record<string, unknown>, key: string): string | undefined {
+  const value = args[key];
+  if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  return undefined;
+}
+
+export function filterTaskLinksByProject(
+  links: ToolEntityLink[],
+  projectId: string | undefined
+): ToolEntityLink[] {
+  if (!projectId) return links;
+  return links.filter((link) => link.kind !== 'task' || link.projectId === projectId);
+}
+
+export function updateHighlightedProjectId(
+  current: string | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+  success: boolean,
+  entityLinks?: ToolEntityLink[]
+): string | undefined {
+  if (!success) return current;
+
+  const projectIdArg = stringArg(args, 'projectId');
+  if (TASK_LIST_TOOLS.has(toolName) && projectIdArg) {
+    return projectIdArg;
+  }
+
+  if (PROJECT_HIGHLIGHT_TOOLS.has(toolName)) {
+    if (projectIdArg) return projectIdArg;
+    const projectLink = entityLinks?.find((link) => link.kind === 'project');
+    if (projectLink) return projectLink.id;
+  }
+
+  return current;
+}
+
+function applyScopeToEntityLinks(
+  toolName: string,
+  links: ToolEntityLink[] | undefined,
+  scopeProjectId: string | undefined
+): ToolEntityLink[] | undefined {
+  if (links === undefined) return undefined;
+  if (!scopeProjectId || !TASK_LIST_TOOLS.has(toolName)) return links;
+  return filterTaskLinksByProject(links, scopeProjectId);
+}
 
 function parseToolResultJson(content: string): unknown | null {
   try {
@@ -105,38 +154,98 @@ function isSuccessfulToolResult(toolName: string, content: string): boolean {
 export function entityLinksFromToolResult(
   toolName: string,
   content: string,
-  success: boolean
+  success: boolean,
+  scopeProjectId?: string
 ): ToolEntityLink[] | undefined {
   if (!success) return undefined;
 
   const parsed = parseToolResultJson(content);
   if (parsed === null) return undefined;
 
+  let links: ToolEntityLink[] | undefined;
+
   switch (toolName) {
     case 'find_tasks': {
       const payload = parsed as { tasks?: unknown };
-      return mapTasks(payload.tasks);
+      links = mapTasks(payload.tasks);
+      break;
     }
     case 'get_workload': {
       const payload = parsed as { workload?: unknown };
-      return mapTasks(payload.workload);
+      links = mapTasks(payload.workload);
+      break;
     }
     case 'get_task': {
       const link = taskToEntityLink(parsed as Record<string, unknown>);
-      return link ? [link] : [];
+      links = link ? [link] : [];
+      break;
     }
     case 'list_projects': {
       const payload = parsed as { projects?: unknown };
-      return mapProjects(payload.projects);
+      links = mapProjects(payload.projects);
+      break;
     }
     case 'get_project':
     case 'summarize_project': {
       const link = projectToEntityLink(parsed as Record<string, unknown>);
-      return link ? [link] : [];
+      links = link ? [link] : [];
+      break;
     }
     default:
       return undefined;
   }
+
+  return applyScopeToEntityLinks(toolName, links, scopeProjectId);
+}
+
+export function resolveHighlightedProjectFromMessages(
+  messages: Array<{
+    role: string;
+    toolCalls?: Array<{ function: { name: string; arguments?: Record<string, unknown> } }>;
+    toolName?: string;
+    content?: string;
+    entityLinkSource?: string;
+  }>
+): string | undefined {
+  let highlightedProjectId: string | undefined;
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!;
+    if (message.role === 'user') {
+      highlightedProjectId = undefined;
+      continue;
+    }
+    if (message.role !== 'assistant' || !message.toolCalls?.length) continue;
+
+    let toolMessageIndex = i + 1;
+    for (const call of message.toolCalls) {
+      while (toolMessageIndex < messages.length && messages[toolMessageIndex]?.role !== 'tool') {
+        toolMessageIndex++;
+      }
+      const toolMessage = messages[toolMessageIndex];
+      if (!toolMessage || toolMessage.role !== 'tool') continue;
+
+      const args = call.function.arguments ?? {};
+      const toolContent = toolMessage.content ?? '';
+      const toolSuccess = isSuccessfulToolResult(call.function.name, toolContent);
+      const entityLinks = entityLinksFromToolResult(
+        call.function.name,
+        toolMessage.entityLinkSource ?? toolContent,
+        toolSuccess,
+        highlightedProjectId
+      );
+      highlightedProjectId = updateHighlightedProjectId(
+        highlightedProjectId,
+        call.function.name,
+        args,
+        toolSuccess,
+        entityLinks
+      );
+      toolMessageIndex++;
+    }
+  }
+
+  return highlightedProjectId;
 }
 
 export interface UiToolCallEnrichment {
@@ -150,7 +259,7 @@ export function buildMessageToolResults(
   messages: Array<{
     role: string;
     content: string;
-    toolCalls?: Array<{ function: { name: string } }>;
+    toolCalls?: Array<{ function: { name: string; arguments?: Record<string, unknown> } }>;
     toolName?: string;
     entityLinkSource?: string;
   }>
@@ -158,8 +267,13 @@ export function buildMessageToolResults(
   const result: Record<number, UiToolCallEnrichment[]> = {};
 
   let visibleIndex = 0;
+  let highlightedProjectId: string | undefined;
+
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]!;
+    if (message.role === 'user') {
+      highlightedProjectId = undefined;
+    }
     if (message.role !== 'user' && message.role !== 'assistant') continue;
 
     if (message.role === 'assistant' && message.toolCalls?.length) {
@@ -177,11 +291,21 @@ export function buildMessageToolResults(
           continue;
         }
 
+        const args = call.function.arguments ?? {};
         const toolSuccess = isSuccessfulToolResult(call.function.name, toolMessage.content);
         const entityLinks = entityLinksFromToolResult(
           call.function.name,
           toolMessage.entityLinkSource ?? toolMessage.content,
-          toolSuccess
+          toolSuccess,
+          highlightedProjectId
+        );
+
+        highlightedProjectId = updateHighlightedProjectId(
+          highlightedProjectId,
+          call.function.name,
+          args,
+          toolSuccess,
+          entityLinks
         );
 
         enrichments.push({

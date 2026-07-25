@@ -143,6 +143,7 @@ function stripReadToolDetailBlocks(content: string, entityLinks: ToolEntityLink[
   if (entityLinks.length === 0) return content;
 
   let result = content;
+  const projectLinkCount = entityLinks.filter((link) => link.kind === 'project').length;
 
   for (const link of entityLinks) {
     const label = escapeRegExp(link.label);
@@ -160,32 +161,76 @@ function stripReadToolDetailBlocks(content: string, entityLinks: ToolEntityLink[
       new RegExp(`(?:^|\\n)\\s*\\*{0,2}${label}\\*{0,2}\\s*\\(ID:\\s*\`[^\`]+\`\\)`, 'gim'),
       '\n'
     );
+
+    result = result.replace(
+      new RegExp(
+        `(?:^|\\n)\\s*\\*{0,2}\\d+\\.\\s*\\*{0,2}[^*\\n]*${label}[^\\n]*`,
+        'gim'
+      ),
+      '\n'
+    );
+  }
+
+  const detailFieldPattern =
+    /(?:\*\*)?(?:Status|Percent Complete|Description|Owner Email|Project|Task)(?:\*\*)?:/i;
+
+  function isNumberedEntityLine(trimmed: string): boolean {
+    return /\d+\.\s/.test(trimmed) && entityLinks.some((link) => trimmed.includes(link.label));
   }
 
   const lines = result.split('\n');
-  const filtered = lines.filter((line) => {
+  const filtered: string[] = [];
+  let skippingSubBullets = false;
+
+  for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed) return true;
-    if (/^\d+\.\s+\*\*/.test(trimmed) && entityLinks.some((link) => trimmed.includes(link.label))) {
-      return false;
+
+    if (isNumberedEntityLine(trimmed)) {
+      skippingSubBullets = true;
+      continue;
     }
+
+    if (skippingSubBullets) {
+      if (!trimmed) {
+        skippingSubBullets = false;
+        continue;
+      }
+      if (/^\s*[-*]\s+/.test(line)) {
+        continue;
+      }
+      skippingSubBullets = false;
+    }
+
+    if (!trimmed) {
+      filtered.push(line);
+      continue;
+    }
+
     if (
       /^[-*]\s+/.test(trimmed) &&
-      /(\*\*Status:\*\*|\*\*Percent Complete:\*\*|\*\*Description:\*\*|\*\*Owner Email:\*\*|\*\*Project:\*\*|\*\*Task:\*\*)/i.test(
-        trimmed
-      )
+      (detailFieldPattern.test(trimmed) ||
+        /(\*\*Status:\*\*|\*\*Percent Complete:\*\*|\*\*Description:\*\*|\*\*Owner Email:\*\*|\*\*Project:\*\*|\*\*Task:\*\*)/i.test(
+          trimmed
+        ))
     ) {
-      return false;
+      continue;
     }
-    if (/^\*\*Status:\*\*/i.test(trimmed)) return false;
-    if (/^\*\*Percent Complete:\*\*/i.test(trimmed)) return false;
-    if (/^\*\*Description:\*\*/i.test(trimmed)) return false;
-    if (/^\*\*Owner Email:\*\*/i.test(trimmed)) return false;
+    if (/^\*\*Status:\*\*/i.test(trimmed)) continue;
+    if (/^\*\*Percent Complete:\*\*/i.test(trimmed)) continue;
+    if (/^\*\*Description:\*\*/i.test(trimmed)) continue;
+    if (/^\*\*Owner Email:\*\*/i.test(trimmed)) continue;
     if (/^\*\*Project:\*\*/i.test(trimmed) && entityLinks.some((link) => trimmed.includes(link.label))) {
-      return false;
+      continue;
     }
-    return true;
-  });
+    if (
+      projectLinkCount > 1 &&
+      (/^all .+ projects? are\b/i.test(trimmed) || /^all projects? are owned\b/i.test(trimmed))
+    ) {
+      continue;
+    }
+
+    filtered.push(line);
+  }
 
   result = filtered.join('\n');
   result = result.replace(/\n{3,}/g, '\n\n').trim();

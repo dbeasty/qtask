@@ -4,19 +4,39 @@ import { agentService } from '../services/agentService.js';
 import { conversationService } from '../services/conversationService.js';
 import { stagingService } from '../services/stagingService.js';
 import { createLogger } from '../utils/logger.js';
+import { AbortError } from '../utils/abortSignal.js';
 
 const log = createLogger('agentRoute');
 
 export const agentRouter = Router();
 
+function createRequestAbortSignal(req: import('express').Request): AbortSignal {
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  req.on('close', onClose);
+  req.on('aborted', onClose);
+  return controller.signal;
+}
+
 async function streamEvents(
   res: import('express').Response,
-  generator: AsyncGenerator<import('../types/conversation.js').AgentStreamEvent>
+  generator: AsyncGenerator<import('../types/conversation.js').AgentStreamEvent>,
+  signal?: AbortSignal
 ) {
-  for await (const event of generator) {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  try {
+    for await (const event of generator) {
+      if (signal?.aborted) break;
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  } catch (error) {
+    if (!(error instanceof AbortError)) throw error;
+  } finally {
+    if (!res.writableEnded) {
+      res.end();
+    }
   }
-  res.end();
 }
 
 agentRouter.get('/conversations', async (req, res, next) => {
@@ -137,9 +157,11 @@ agentRouter.post('/agent', async (req, res, next) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
+    const signal = createRequestAbortSignal(req);
     await streamEvents(
       res,
-      agentService.streamAgent(userId, message.trim(), conversationId, projectId)
+      agentService.streamAgent(userId, message.trim(), conversationId, projectId, signal),
+      signal
     );
 
     log.info('Agent stream completed', { userId, conversationId });
@@ -207,9 +229,11 @@ agentRouter.post('/agent/approve', async (req, res, next) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
+    const signal = createRequestAbortSignal(req);
     await streamEvents(
       res,
-      agentService.resumeAfterApproval(userId, conversationId, proposalId, action)
+      agentService.resumeAfterApproval(userId, conversationId, proposalId, action, signal),
+      signal
     );
 
     log.info('Approve stream completed', { userId, conversationId, proposalId, action });

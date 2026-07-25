@@ -18,7 +18,7 @@ import { ConversationMenu } from '../components/ConversationMenu';
 import { CurrentProjectBar } from '../components/CurrentProjectBar';
 import type { AgentStreamEvent, ConversationSummary, Project, UiMessage, UiProposal, UiToolCall } from '../types';
 import { displayMessageContent, proposalDisplayLabel } from '../utils/agentContent';
-import { getProposalEntityLink } from '../utils/agentEntityLink';
+import { filterToolCallsEntityLinks, getProposalEntityLink } from '../utils/agentEntityLink';
 import { buildUiMessagesFromConversation } from '../utils/mergeAssistantTurns';
 import { suggestProjectFromMessages } from '../utils/project';
 import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
@@ -37,6 +37,8 @@ interface AgentPageProps {
   onDemoPromptConsumed?: () => void;
   restoredConversationId?: string;
   onSessionRestoreConsumed?: () => void;
+  isActive?: boolean;
+  onAgentWorkingChange?: (working: boolean) => void;
 }
 
 type PendingConfirm =
@@ -276,7 +278,7 @@ function handleStreamEvent(
         message.id === assistantId
           ? clearStatusMessage({
               ...message,
-              toolCalls: [...(message.toolCalls ?? []), { name: event.name }],
+              toolCalls: [...(message.toolCalls ?? []), { name: event.name, arguments: event.arguments }],
             })
           : message
       )
@@ -351,6 +353,22 @@ function handleStreamEvent(
     setError(event.message);
   }
 
+  if (event.type === 'aborted') {
+    setConversationId(event.conversationId);
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.id === assistantId
+          ? clearStatusMessage({
+              ...message,
+              streaming: false,
+              stopped: true,
+              statusMessage: 'Stopped',
+            })
+          : message
+      )
+    );
+  }
+
   if (event.type === 'done') {
     setConversationId(event.conversationId);
     setMessages((prev) =>
@@ -386,6 +404,8 @@ export function AgentPage({
   onDemoPromptConsumed,
   restoredConversationId,
   onSessionRestoreConsumed,
+  isActive = true,
+  onAgentWorkingChange,
 }: AgentPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
@@ -420,6 +440,16 @@ export function AgentPage({
   const conversationIdRef = useRef<string | undefined>(undefined);
   conversationIdRef.current = conversationId;
   const sessionRestoreAppliedRef = useRef(false);
+  const streamAbortRef = useRef<AbortController | null>(null);
+
+  function abortActiveStream() {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+  }
+
+  useEffect(() => {
+    onAgentWorkingChange?.(sending || approvingId !== null);
+  }, [sending, approvingId, onAgentWorkingChange]);
 
   useEffect(() => {
     mergeAppSessionStateDebounced({
@@ -530,8 +560,9 @@ export function AgentPage({
   }, [messages, projects, onProjectSuggested]);
 
   useEffect(() => {
+    if (!isActive) return;
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, sending, approvingId, submittingProposal]);
+  }, [messages, sending, approvingId, submittingProposal, isActive]);
 
   async function syncConversationFromServer(id: string, keepStreaming = false) {
     const { conversation } = await getConversation(id);
@@ -631,10 +662,33 @@ export function AgentPage({
     }
   }
 
+  async function handleStop() {
+    abortActiveStream();
+    setSending(false);
+    setApprovingId(null);
+    setApprovalProgress(null);
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.streaming
+          ? {
+              ...message,
+              streaming: false,
+              stopped: true,
+              statusMessage: 'Stopped',
+            }
+          : message
+      )
+    );
+  }
+
   async function handleSend(event: React.FormEvent) {
     event.preventDefault();
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text) return;
+
+    if (sending || approvingId) {
+      abortActiveStream();
+    }
 
     const pending = getPendingProposals(messages);
     if (pending.length > 0 && APPROVAL_PHRASES.test(text)) {
@@ -647,6 +701,9 @@ export function AgentPage({
     setInput('');
     setSending(true);
     setError(null);
+
+    const abortController = new AbortController();
+    streamAbortRef.current = abortController;
 
     const userMessage: UiMessage = {
       id: `user-${Date.now()}`,
@@ -662,6 +719,7 @@ export function AgentPage({
 
     let toolsTouched = false;
     let resolvedConversationId = conversationId;
+    let aborted = false;
 
     try {
       await streamAgent(
@@ -670,6 +728,10 @@ export function AgentPage({
         (event) => {
           const result = handleStreamEvent(event, assistantId, setMessages, setConversationId, setError);
           if (result.toolsTouched) toolsTouched = true;
+          if (event.type === 'aborted') {
+            aborted = true;
+            resolvedConversationId = event.conversationId;
+          }
           if (event.type === 'done') {
             resolvedConversationId = event.conversationId;
             if (activeProjectId) {
@@ -679,23 +741,39 @@ export function AgentPage({
             }
           }
         },
-        activeProjectId ?? undefined
+        activeProjectId ?? undefined,
+        abortController.signal
       );
 
-      if (resolvedConversationId) {
+      if (resolvedConversationId && !aborted) {
         await syncConversationFromServer(resolvedConversationId);
+      } else if (aborted && resolvedConversationId) {
+        await syncConversationFromServer(resolvedConversationId).catch(() => {
+          // ignore sync errors after abort
+        });
       }
 
-      if (toolsTouched) {
+      if (toolsTouched && !aborted) {
         onTasksChanged();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Agent request failed');
-      setMessages((prev) => prev.filter((message) => message.id !== assistantId));
+      if (abortController.signal.aborted) {
+        // handled via aborted event or handleStop
+      } else {
+        setError(err instanceof Error ? err.message : 'Agent request failed');
+        setMessages((prev) => prev.filter((message) => message.id !== assistantId));
+      }
     } finally {
-      setSending(false);
+      if (streamAbortRef.current === abortController) {
+        streamAbortRef.current = null;
+        setSending(false);
+      }
       setMessages((prev) =>
-        prev.map((message) => (message.streaming ? { ...message, streaming: false } : message))
+        prev.map((message) =>
+          message.id === assistantId && message.streaming
+            ? { ...message, streaming: false }
+            : message
+        )
       );
     }
   }
@@ -725,12 +803,17 @@ export function AgentPage({
     setApprovalProgress({ proposalId: proposal.id, phase: 'committing' });
     setError(null);
 
+    const abortController = new AbortController();
+    streamAbortRef.current = abortController;
+
     const assistantId = messageId;
     let toolsTouched = false;
+    let aborted = false;
 
     try {
       await approveProposal(conversationId, proposal.id, action, (event) => {
         handleStreamEvent(event, assistantId, setMessages, setConversationId, setError);
+        if (event.type === 'aborted') aborted = true;
 
         if (event.type === 'tool_result' && event.success) {
           toolsTouched = true;
@@ -795,14 +878,19 @@ export function AgentPage({
             // ignore sync errors after approval
           });
         }
-      });
+      }, abortController.signal);
 
-      if (action === 'approve' && toolsTouched) {
+      if (action === 'approve' && toolsTouched && !aborted) {
         onTasksChanged();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Approval failed');
+      if (!abortController.signal.aborted) {
+        setError(err instanceof Error ? err.message : 'Approval failed');
+      }
     } finally {
+      if (streamAbortRef.current === abortController) {
+        streamAbortRef.current = null;
+      }
       setApprovingId(null);
       setApprovalProgress(null);
       autoApproveInFlightRef.current = false;
@@ -936,6 +1024,7 @@ export function AgentPage({
   }
 
   const pendingProposals = getPendingProposals(messages);
+  const agentWorking = sending || approvingId !== null;
   const activeProject = useMemo(
     () => projects.find((project) => project._id === activeProjectId) ?? null,
     [projects, activeProjectId]
@@ -1080,7 +1169,7 @@ export function AgentPage({
                   )
               )}
 
-              {message.toolCalls?.map((call, callIndex) => {
+              {filterToolCallsEntityLinks(message.toolCalls ?? []).map((call, callIndex) => {
                 if (!call.entityLinks || call.entityLinks.length === 0) return null;
                 const heading = entityLinkListHeading(call);
                 return (
@@ -1114,6 +1203,10 @@ export function AgentPage({
                     Running {message.toolCalls[message.toolCalls.length - 1]?.name ?? 'tool'}…
                   </p>
                 )}
+
+              {message.stopped && (
+                <p className="agent-stopped-indicator muted">Stopped</p>
+              )}
 
               {message.proposals && message.proposals.length > 0 && (
                 <div className="tool-proposals">
@@ -1431,7 +1524,7 @@ export function AgentPage({
             onKeyDown={(event) =>
               handleAgentInputKeyDown(event, {
                 enterToSend: preferences.agentEnterToSend,
-                canSend: !sending && !!input.trim(),
+                canSend: !!input.trim(),
                 onSend: () => event.currentTarget.form?.requestSubmit(),
               })
             }
@@ -1440,14 +1533,21 @@ export function AgentPage({
                 ? preferences.autoApproveProposals
                   ? 'Pending actions will be approved automatically…'
                   : 'Type a message, or "approve" to confirm the pending action…'
-                : 'Create tasks, search work, summarize a project…'
+                : agentWorking
+                  ? 'Type to queue another message, or click Stop…'
+                  : 'Create tasks, search work, summarize a project…'
             }
             rows={3}
-            disabled={sending}
           />
-          <button type="submit" className="primary-button" disabled={sending || !input.trim()}>
-            {sending ? 'Working…' : 'Send'}
-          </button>
+          {agentWorking ? (
+            <button type="button" className="primary-button" onClick={() => void handleStop()}>
+              Stop
+            </button>
+          ) : (
+            <button type="submit" className="primary-button" disabled={!input.trim()}>
+              Send
+            </button>
+          )}
         </form>
       </section>
 

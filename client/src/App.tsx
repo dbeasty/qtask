@@ -90,6 +90,7 @@ export function App() {
   });
   const defaultViewSetRef = useRef(false);
   const [sessionRestore, setSessionRestore] = useState<SessionRestore | null>(null);
+  const [agentWorking, setAgentWorking] = useState(false);
 
   const preferences = getUserPreferences(user);
 
@@ -452,10 +453,10 @@ export function App() {
             <span className="header-views-label">Views</span>
             <button
               type="button"
-              className={view === 'agent' ? 'nav-active' : ''}
+              className={`${view === 'agent' ? 'nav-active' : ''}${agentWorking ? ' nav-working' : ''}`}
               onClick={() => setAppView('agent')}
             >
-              Agent
+              Agent{agentWorking ? '…' : ''}
             </button>
             <button
               type="button"
@@ -483,6 +484,31 @@ export function App() {
       ) : null}
 
       <main>
+        <div className={view === 'agent' ? 'view-panel' : 'view-panel view-panel--hidden'}>
+          <AgentPage
+            activeProjectId={activeProjectId}
+            onTasksChanged={handleTasksChanged}
+            onProjectSuggested={setSuggestedProjectName}
+            onOpenTask={(taskId, projectId) => {
+              if (projectId) setActiveProjectId(projectId);
+              setPendingTaskSelection({ kind: 'task', taskId });
+              setAppView('tasks');
+            }}
+            onOpenProject={(projectId) => {
+              setActiveProjectId(projectId);
+              setAppView('projects');
+            }}
+            onNeedProject={() => setAppView('projects')}
+            externalRefreshKey={shellRefreshKey}
+            demoPrompt={demoPrompt}
+            onDemoPromptConsumed={() => setDemoPrompt(null)}
+            demoPromptGeneration={demoPromptGeneration}
+            restoredConversationId={sessionRestore?.agent?.conversationId}
+            onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
+            isActive={view === 'agent'}
+            onAgentWorkingChange={setAgentWorking}
+          />
+        </div>
         {view === 'projects' ? (
           <ProjectsPage
             activeProjectId={activeProjectId}
@@ -508,28 +534,6 @@ export function App() {
             restoredListExpanded={sessionRestore?.projects?.listExpanded}
             onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
           />
-        ) : view === 'agent' ? (
-          <AgentPage
-            activeProjectId={activeProjectId}
-            onTasksChanged={handleTasksChanged}
-            onProjectSuggested={setSuggestedProjectName}
-            onOpenTask={(taskId, projectId) => {
-              if (projectId) setActiveProjectId(projectId);
-              setPendingTaskSelection({ kind: 'task', taskId });
-              setAppView('tasks');
-            }}
-            onOpenProject={(projectId) => {
-              setActiveProjectId(projectId);
-              setAppView('projects');
-            }}
-            onNeedProject={() => setAppView('projects')}
-            externalRefreshKey={shellRefreshKey}
-            demoPrompt={demoPrompt}
-            onDemoPromptConsumed={() => setDemoPrompt(null)}
-            demoPromptGeneration={demoPromptGeneration}
-            restoredConversationId={sessionRestore?.agent?.conversationId}
-            onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
-          />
         ) : view === 'search' ? (
           <SearchPage
             query={searchQuery}
@@ -547,7 +551,7 @@ export function App() {
           <HelpPage onBack={() => setAppView('projects')} onStartTour={handleStartTour} />
         ) : view === 'about' ? (
           <AboutPage apiVersion={apiVersion} aiVersion={aiVersion} onBack={() => setAppView('projects')} />
-        ) : (
+        ) : view === 'tasks' ? (
           <TasksPage
             activeProjectId={activeProjectId}
             onActiveProjectChange={setActiveProjectId}
@@ -562,7 +566,7 @@ export function App() {
             restoredTaskListExpanded={sessionRestore?.tasks?.taskListExpanded}
             onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
           />
-        )}
+        ) : null}
       </main>
 
       {changePasswordOpen && <ChangePasswordDialog onClose={() => setChangePasswordOpen(false)} />}

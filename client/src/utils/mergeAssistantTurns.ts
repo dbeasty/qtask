@@ -10,6 +10,7 @@ export function mergeToolCalls(
     const enriched = enrichments?.[index];
     return {
       name: call.function.name,
+      arguments: call.function.arguments,
       success: enriched?.success,
       errorContent: enriched?.errorContent,
       entityLinks: enriched?.entityLinks,

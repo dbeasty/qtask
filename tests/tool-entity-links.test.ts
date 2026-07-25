@@ -4,6 +4,8 @@ import { slimProjectForTool, slimTaskForTool } from '../src/utils/serialization.
 import {
   buildMessageToolResults,
   entityLinksFromToolResult,
+  filterTaskLinksByProject,
+  updateHighlightedProjectId,
 } from '../src/utils/toolEntityLinks.ts';
 
 describe('slimTaskForTool', () => {
@@ -216,6 +218,58 @@ describe('entityLinksFromToolResult', () => {
       },
     ]);
   });
+
+  it('filters find_tasks by scope projectId', () => {
+    const content = JSON.stringify({
+      count: 2,
+      tasks: [
+        { _id: 't1', title: 'Boat task', status: 'todo', percentComplete: 0, projectIds: ['boat'] },
+        { _id: 't2', title: 'Car task', status: 'todo', percentComplete: 0, projectIds: ['car'] },
+      ],
+    });
+
+    const links = entityLinksFromToolResult('find_tasks', content, true, 'boat');
+    assert.equal(links?.length, 1);
+    assert.equal(links?.[0]?.id, 't1');
+  });
+
+  it('returns all tasks when no scope projectId', () => {
+    const content = JSON.stringify({
+      count: 2,
+      tasks: [
+        { _id: 't1', title: 'A', status: 'todo', percentComplete: 0, projectIds: ['p1'] },
+        { _id: 't2', title: 'B', status: 'todo', percentComplete: 0, projectIds: ['p2'] },
+      ],
+    });
+
+    assert.equal(entityLinksFromToolResult('find_tasks', content, true)?.length, 2);
+  });
+});
+
+describe('updateHighlightedProjectId', () => {
+  it('sets scope from get_project entity link', () => {
+    const links = [{ kind: 'project' as const, id: 'boat', label: 'Boat' }];
+    const scope = updateHighlightedProjectId(undefined, 'get_project', {}, true, links);
+    assert.equal(scope, 'boat');
+  });
+
+  it('sets scope from find_tasks projectId arg', () => {
+    const scope = updateHighlightedProjectId(undefined, 'find_tasks', { projectId: 'boat' }, true, []);
+    assert.equal(scope, 'boat');
+  });
+});
+
+describe('filterTaskLinksByProject', () => {
+  it('keeps project links and matching tasks', () => {
+    const links = [
+      { kind: 'project' as const, id: 'boat', label: 'Boat' },
+      { kind: 'task' as const, id: 't1', label: 'Wash', projectId: 'boat' },
+      { kind: 'task' as const, id: 't2', label: 'Other', projectId: 'car' },
+    ];
+    const filtered = filterTaskLinksByProject(links, 'boat');
+    assert.equal(filtered.length, 2);
+    assert.equal(filtered[1]?.id, 't1');
+  });
 });
 
 describe('buildMessageToolResults', () => {
@@ -288,5 +342,42 @@ describe('buildMessageToolResults', () => {
         percentComplete: 70,
       },
     ]);
+  });
+
+  it('scopes find_tasks to prior get_project in same turn', () => {
+    const boatProject = JSON.stringify({
+      _id: 'boat-proj',
+      name: 'Boat',
+      status: 'in_progress',
+      percentComplete: 50,
+    });
+    const findTasks = JSON.stringify({
+      count: 2,
+      tasks: [
+        { _id: 't1', title: 'Wash boat', status: 'todo', percentComplete: 0, projectIds: ['boat-proj'] },
+        { _id: 't2', title: 'Wash car', status: 'todo', percentComplete: 0, projectIds: ['car-proj'] },
+      ],
+    });
+    const messages = [
+      { role: 'user', content: 'open tasks in Boat project' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ function: { name: 'get_project', arguments: { projectId: 'boat-proj' } } }],
+      },
+      { role: 'tool', content: boatProject, toolName: 'get_project' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ function: { name: 'find_tasks', arguments: { query: 'open' } } }],
+      },
+      { role: 'tool', content: findTasks, toolName: 'find_tasks' },
+      { role: 'assistant', content: 'Here are the open tasks.' },
+    ];
+
+    const results = buildMessageToolResults(messages);
+    assert.equal(results[1]?.[0]?.entityLinks?.[0]?.kind, 'project');
+    assert.equal(results[2]?.[0]?.entityLinks?.length, 1);
+    assert.equal(results[2]?.[0]?.entityLinks?.[0]?.id, 't1');
   });
 });

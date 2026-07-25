@@ -158,7 +158,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function consumeSseStream(
   response: Response,
-  onEvent: (event: import('../types').AgentStreamEvent) => void
+  onEvent: (event: import('../types').AgentStreamEvent) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
@@ -173,20 +174,40 @@ async function consumeSseStream(
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  const abortReader = () => {
+    void reader.cancel().catch(() => {
+      // ignore cancel errors
+    });
+  };
 
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split('\n\n');
-    buffer = parts.pop() ?? '';
-
-    for (const part of parts) {
-      const line = part.trim();
-      if (!line.startsWith('data: ')) continue;
-      const event = JSON.parse(line.slice(6)) as import('../types').AgentStreamEvent;
-      onEvent(event);
+  if (signal) {
+    if (signal.aborted) {
+      abortReader();
+      return;
     }
+    signal.addEventListener('abort', abortReader, { once: true });
+  }
+
+  try {
+    while (true) {
+      if (signal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data: ')) continue;
+        const event = JSON.parse(line.slice(6)) as import('../types').AgentStreamEvent;
+        onEvent(event);
+      }
+    }
+  } catch (error) {
+    if (signal?.aborted) return;
+    throw error;
   }
 }
 
@@ -556,14 +577,16 @@ export async function streamAgent(
   message: string,
   conversationId: string | undefined,
   onEvent: (event: import('../types').AgentStreamEvent) => void,
-  projectId?: string
+  projectId?: string,
+  signal?: AbortSignal
 ): Promise<void> {
   const response = await authorizedFetch('/api/agent', {
     method: 'POST',
     body: JSON.stringify({ message, conversationId, projectId }),
+    signal,
   });
 
-  await consumeSseStream(response, onEvent);
+  await consumeSseStream(response, onEvent, signal);
 }
 
 export async function submitProposal(
@@ -581,14 +604,16 @@ export async function approveProposal(
   conversationId: string,
   proposalId: string,
   action: 'approve' | 'reject',
-  onEvent: (event: import('../types').AgentStreamEvent) => void
+  onEvent: (event: import('../types').AgentStreamEvent) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const response = await authorizedFetch('/api/agent/approve', {
     method: 'POST',
     body: JSON.stringify({ conversationId, proposalId, action }),
+    signal,
   });
 
-  await consumeSseStream(response, onEvent);
+  await consumeSseStream(response, onEvent, signal);
 }
 
 export { isTokenExpired, msUntilRefresh, REFRESH_LEAD_MS } from '../auth/session';

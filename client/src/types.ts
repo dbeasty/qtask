@@ -267,10 +267,12 @@ export type AgentStreamEvent =
   | { type: 'warning'; message: string }
   | { type: 'paused'; conversationId: string; pendingCount: number }
   | { type: 'error'; message: string }
+  | { type: 'aborted'; conversationId: string }
   | { type: 'done'; conversationId: string; content: string; paused?: boolean };
 
 export interface UiToolCall {
   name: string;
+  arguments?: Record<string, unknown>;
   success?: boolean;
   errorContent?: string;
   entityLinks?: ToolEntityLink[];
@@ -298,6 +300,7 @@ export interface UiMessage {
   warnings?: string[];
   paused?: boolean;
   streaming?: boolean;
+  stopped?: boolean;
   statusMessage?: string;
 }
 
