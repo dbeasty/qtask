@@ -19,6 +19,7 @@ export function clearStoredToken(): void {
 }
 
 export type ThemePreference = 'dark' | 'light';
+export type StartupViewPreference = 'auto' | 'agent' | 'projects' | 'tasks' | 'last';
 
 export interface UserPreferences {
   autoApproveProposals: boolean;
@@ -26,6 +27,7 @@ export interface UserPreferences {
   trackExpenses: boolean;
   completedDemoTour: boolean;
   theme: ThemePreference;
+  startupView: StartupViewPreference;
 }
 
 export interface AuthUser {
@@ -44,7 +46,16 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   trackExpenses: true,
   completedDemoTour: false,
   theme: 'light',
+  startupView: 'last',
 };
+
+const STARTUP_VIEW_VALUES: StartupViewPreference[] = ['auto', 'agent', 'projects', 'tasks', 'last'];
+
+function normalizeStartupView(value: unknown): StartupViewPreference {
+  return STARTUP_VIEW_VALUES.includes(value as StartupViewPreference)
+    ? (value as StartupViewPreference)
+    : 'last';
+}
 
 export function getUserPreferences(user: AuthUser | null | undefined): UserPreferences {
   return {
@@ -53,6 +64,7 @@ export function getUserPreferences(user: AuthUser | null | undefined): UserPrefe
     trackExpenses: user?.preferences?.trackExpenses !== false,
     completedDemoTour: user?.preferences?.completedDemoTour === true,
     theme: user?.preferences?.theme === 'dark' ? 'dark' : 'light',
+    startupView: normalizeStartupView(user?.preferences?.startupView),
   };
 }
 

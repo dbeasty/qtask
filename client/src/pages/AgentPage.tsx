@@ -18,6 +18,7 @@ import { CurrentProjectBar } from '../components/CurrentProjectBar';
 import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
 import { displayMessageContent, proposalDisplayLabel } from '../utils/agentContent';
 import { suggestProjectFromMessages } from '../utils/project';
+import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
 
 interface AgentPageProps {
   onTasksChanged: () => void;
@@ -28,6 +29,8 @@ interface AgentPageProps {
   demoPrompt?: string | null;
   demoPromptGeneration?: number;
   onDemoPromptConsumed?: () => void;
+  restoredConversationId?: string;
+  onSessionRestoreConsumed?: () => void;
 }
 
 type PendingConfirm =
@@ -328,6 +331,8 @@ export function AgentPage({
   demoPrompt,
   demoPromptGeneration = 0,
   onDemoPromptConsumed,
+  restoredConversationId,
+  onSessionRestoreConsumed,
 }: AgentPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
@@ -360,6 +365,13 @@ export function AgentPage({
   const lastExternalRefreshKey = useRef(externalRefreshKey);
   const conversationIdRef = useRef<string | undefined>(undefined);
   conversationIdRef.current = conversationId;
+  const sessionRestoreAppliedRef = useRef(false);
+
+  useEffect(() => {
+    mergeAppSessionStateDebounced({
+      agent: conversationId ? { conversationId } : {},
+    });
+  }, [conversationId]);
 
   useEffect(() => {
     if (!demoPrompt?.trim()) return;
@@ -367,6 +379,10 @@ export function AgentPage({
     onDemoPromptConsumed?.();
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [demoPrompt, demoPromptGeneration, onDemoPromptConsumed]);
+
+  useEffect(() => {
+    sessionRestoreAppliedRef.current = false;
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -406,6 +422,61 @@ export function AgentPage({
       void syncConversationFromServer(openId).catch((err: Error) => setError(err.message));
     }
   }, [externalRefreshKey, activeProjectId]);
+
+  useEffect(() => {
+    if (!restoredConversationId || sessionRestoreAppliedRef.current || !activeProjectId) return;
+    if (conversations.length === 0) return;
+
+    sessionRestoreAppliedRef.current = true;
+    onSessionRestoreConsumed?.();
+
+    const match = conversations.find((item) => item._id === restoredConversationId);
+    if (!match) return;
+
+    let cancelled = false;
+    setConversationId(restoredConversationId);
+    setError(null);
+    setEditingKey(null);
+    setEditError(null);
+
+    getConversation(restoredConversationId)
+      .then(({ conversation }) => {
+        if (cancelled) return;
+        const visibleStored = conversation.messages.filter(
+          (message: StoredMessage) => message.role === 'user' || message.role === 'assistant'
+        );
+        const messageProposals = conversation.messageProposals ?? {};
+        const uiMessages: UiMessage[] = visibleStored.map((message: StoredMessage, index: number) => {
+          const proposals = messageProposals[index];
+          const hasPending = proposals?.some((proposal) => proposal.status === 'pending');
+
+          return {
+            id: `${restoredConversationId}-${index}`,
+            role: message.role as 'user' | 'assistant',
+            content: message.content,
+            toolCalls: message.toolCalls?.map((call) => ({
+              name: call.function.name,
+            })),
+            proposals: proposals?.length ? proposals : undefined,
+            paused: Boolean(hasPending),
+          };
+        });
+        setMessages(uiMessages);
+        setSidebarOpen(false);
+      })
+      .catch((err: Error) => setError(err.message));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [restoredConversationId, activeProjectId, conversations, onSessionRestoreConsumed]);
+
+  useEffect(() => {
+    if (!onSessionRestoreConsumed || sessionRestoreAppliedRef.current) return;
+    if (restoredConversationId) return;
+    sessionRestoreAppliedRef.current = true;
+    onSessionRestoreConsumed();
+  }, [restoredConversationId, onSessionRestoreConsumed]);
 
   useEffect(() => {
     const suggested = suggestProjectFromMessages(messages, projects);

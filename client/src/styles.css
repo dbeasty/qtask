@@ -847,6 +847,22 @@ button {
   cursor: not-allowed;
 }
 
+.user-menu-select {
+  width: 100%;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-input);
+  color: var(--color-text);
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.user-menu-select:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .auth-page {
   min-height: 100vh;
   display: flex;

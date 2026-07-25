@@ -52,6 +52,7 @@ import {
   findSubtaskByPath,
   getMoveUpAction,
 } from '../utils/taskTree';
+import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
 
 interface TasksPageProps {
   suggestedProjectName?: string;
@@ -64,6 +65,9 @@ interface TasksPageProps {
   onPendingSelectionApplied?: () => void;
   pendingCreateForProjectId?: string | null;
   onPendingCreateApplied?: () => void;
+  restoredSelection?: Selection | null;
+  restoredTaskListExpanded?: boolean;
+  onSessionRestoreConsumed?: () => void;
 }
 
 type PendingConfirm = {
@@ -261,6 +265,9 @@ export function TasksPage({
   onPendingSelectionApplied,
   pendingCreateForProjectId = null,
   onPendingCreateApplied,
+  restoredSelection,
+  restoredTaskListExpanded,
+  onSessionRestoreConsumed,
 }: TasksPageProps) {
   const { user, updatePreferences, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
@@ -273,11 +280,25 @@ export function TasksPage({
   const [selection, setSelection] = useState<Selection | null>(null);
   const [creatingTaskForProjectId, setCreatingTaskForProjectId] = useState<string | null>(null);
   const [addingSubtask, setAddingSubtask] = useState(false);
-  const [taskListExpanded, setTaskListExpanded] = useState(true);
+  const [taskListExpanded, setTaskListExpanded] = useState(
+    restoredTaskListExpanded ?? true
+  );
+  const sessionRestoreAppliedRef = useRef(false);
   const [projectDialogTaskId, setProjectDialogTaskId] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const lastExternalRefreshKey = useRef(externalRefreshKey);
+
+  useEffect(() => {
+    mergeAppSessionStateDebounced({
+      tasks: { selection, taskListExpanded },
+    });
+  }, [selection, taskListExpanded]);
+
+  useEffect(() => {
+    if (restoredTaskListExpanded === undefined) return;
+    setTaskListExpanded(restoredTaskListExpanded);
+  }, [restoredTaskListExpanded]);
 
   useEffect(() => {
     if (creatingTaskForProjectId || addingSubtask) {
@@ -630,6 +651,44 @@ export function TasksPage({
       onPendingSelectionApplied?.();
     }
 
+    if (!sessionRestoreAppliedRef.current && restoredSelection !== undefined) {
+      sessionRestoreAppliedRef.current = true;
+      onSessionRestoreConsumed?.();
+
+      if (tasks.length === 0) {
+        setSelection(null);
+        return;
+      }
+
+      if (restoredSelection === null) {
+        setSelection(null);
+        return;
+      }
+
+      const restoredTask = tasks.find((item) => item._id === restoredSelection.taskId);
+      if (restoredTask && taskBelongsToProject(restoredTask, activeProjectId)) {
+        if (restoredSelection.kind === 'subtask') {
+          const subtask = findSubtaskByPath(restoredTask.subtasks, restoredSelection.path);
+          if (subtask) {
+            setSelection(restoredSelection);
+            return;
+          }
+        } else {
+          setSelection(restoredSelection);
+          return;
+        }
+      }
+    }
+
+    if (
+      !sessionRestoreAppliedRef.current &&
+      restoredSelection === undefined &&
+      restoredTaskListExpanded !== undefined
+    ) {
+      sessionRestoreAppliedRef.current = true;
+      onSessionRestoreConsumed?.();
+    }
+
     setSelection((current) => {
       if (!current) {
         const first = tasks.find((task) => taskBelongsToProject(task, activeProjectId));
@@ -642,7 +701,15 @@ export function TasksPage({
       }
       return current;
     });
-  }, [activeProjectId, tasks, pendingSelection, onPendingSelectionApplied]);
+  }, [
+    activeProjectId,
+    tasks,
+    pendingSelection,
+    onPendingSelectionApplied,
+    restoredSelection,
+    restoredTaskListExpanded,
+    onSessionRestoreConsumed,
+  ]);
 
   useEffect(() => {
     if (!pendingCreateForProjectId || loading) return;

@@ -71,6 +71,7 @@ describe('auth', () => {
       trackExpenses: true,
       completedDemoTour: false,
       theme: 'light',
+      startupView: 'last',
     });
   });
 
@@ -191,6 +192,7 @@ describe('auth', () => {
       trackExpenses: true,
       completedDemoTour: false,
       theme: 'light',
+      startupView: 'last',
     });
 
     const merged = await request(app)
@@ -205,6 +207,7 @@ describe('auth', () => {
       trackExpenses: false,
       completedDemoTour: false,
       theme: 'light',
+      startupView: 'last',
     });
 
     const me = await request(app)
@@ -218,6 +221,7 @@ describe('auth', () => {
       trackExpenses: false,
       completedDemoTour: false,
       theme: 'light',
+      startupView: 'last',
     });
 
     const disabled = await request(app)
@@ -238,7 +242,28 @@ describe('auth', () => {
       trackExpenses: true,
       completedDemoTour: false,
       theme: 'light',
+      startupView: 'last',
     });
+  });
+
+  it('persists startupView preference via PATCH /me', async () => {
+    const token = await registerAndVerify('startupview@example.com', 'password1234');
+
+    const updated = await request(app)
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ preferences: { startupView: 'tasks' } })
+      .expect(200);
+
+    assert.equal(updated.body.user.preferences.startupView, 'tasks');
+
+    const me = await request(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    assert.equal(me.body.user.preferences.startupView, 'tasks');
+    assert.equal(me.body.user.preferences.autoApproveProposals, false);
   });
 
   it('rejects invalid preference values on PATCH /me', async () => {
@@ -248,6 +273,12 @@ describe('auth', () => {
       .patch('/api/auth/me')
       .set('Authorization', `Bearer ${token}`)
       .send({ preferences: { autoApproveProposals: 'yes' } })
+      .expect(400);
+
+    await request(app)
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ preferences: { startupView: 'invalid' } })
       .expect(400);
   });
 

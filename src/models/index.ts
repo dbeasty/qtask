@@ -8,6 +8,11 @@ const userPreferencesSchema = new Schema(
     trackExpenses: { type: Boolean, default: true },
     completedDemoTour: { type: Boolean, default: false },
     theme: { type: String, enum: ['dark', 'light'], default: 'light' },
+    startupView: {
+      type: String,
+      enum: ['auto', 'agent', 'projects', 'tasks', 'last'],
+      default: 'last',
+    },
     /** @deprecated Legacy field; migrated to trackExpenses on read */
     enableHourlyTracking: { type: Boolean },
   },

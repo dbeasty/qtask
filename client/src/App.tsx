@@ -21,16 +21,40 @@ import { VerifyEmailPage } from './pages/VerifyEmailPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { NotificationBell } from './components/NotificationBell';
 import { InviteAcceptPage } from './pages/InviteAcceptPage';
-import { checkHealth, listInvites, listProjects, listTasks } from './api/client';
+import { checkHealth, listInvites, listProjects } from './api/client';
 import {
   getStoredActiveProjectId,
   setStoredActiveProjectId,
 } from './utils/projectTree';
-import { getDefaultProject, taskBelongsToProject } from './utils/project';
+import { getDefaultProject } from './utils/project';
+import {
+  getAppSessionState,
+  mergeAppSessionState,
+  resolveStartupView,
+  setSessionPersistEnabled,
+  type MainView,
+} from './utils/appSessionState';
 import '../../shared/theme-tokens.css';
 import './styles.css';
 
 type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about';
+
+interface SessionRestore {
+  tasks?: {
+    selection: Selection | null;
+    taskListExpanded?: boolean;
+  };
+  projects?: {
+    listExpanded?: boolean;
+  };
+  agent?: {
+    conversationId?: string;
+  };
+}
+
+function isMainView(value: View): value is MainView {
+  return value === 'agent' || value === 'projects' || value === 'tasks';
+}
 
 export function App() {
   const { user, loading, mustChangePassword, logout, updateProfile, updatePreferences } = useAuth();
@@ -65,8 +89,20 @@ export function App() {
     return getAuthPathname() === '/invites/accept' ? params.get('token') : null;
   });
   const defaultViewSetRef = useRef(false);
+  const [sessionRestore, setSessionRestore] = useState<SessionRestore | null>(null);
 
   const preferences = getUserPreferences(user);
+
+  const setAppView = useCallback((next: View) => {
+    setView(next);
+    if (isMainView(next)) {
+      mergeAppSessionState({ view: next });
+    }
+  }, []);
+
+  const handleSessionRestoreConsumed = useCallback(() => {
+    setSessionRestore(null);
+  }, []);
 
   const refreshPendingInvites = useCallback(() => {
     listInvites('pending')
@@ -83,7 +119,7 @@ export function App() {
   }, [updatePreferences]);
 
   const { startTour } = useDemoTour({
-    setView,
+    setView: setAppView,
     onSetDemoPrompt: (prompt) => {
       setDemoPrompt(prompt);
       if (prompt) {
@@ -96,7 +132,7 @@ export function App() {
     autoApproveProposals: preferences.autoApproveProposals,
     onPrepareStep: async (stepId) => {
       if (stepId === 'share-members') {
-        setView('projects');
+        setAppView('projects');
         const { projects } = await listProjects();
         if (projects.length > 0) {
           const next = projects[0]!;
@@ -151,30 +187,30 @@ export function App() {
   useEffect(() => {
     if (!user) {
       defaultViewSetRef.current = false;
+      setSessionPersistEnabled(false);
+      setSessionRestore(null);
       return;
     }
     if (defaultViewSetRef.current) return;
 
-    Promise.all([listProjects(), listTasks()])
-      .then(([{ projects }, { tasks }]) => {
-        if (defaultViewSetRef.current) return;
-        defaultViewSetRef.current = true;
+    const prefs = getUserPreferences(user);
+    const session = getAppSessionState();
+    const startupView = resolveStartupView(prefs.startupView, session);
 
-        if (projects.length === 0) {
-          setView('projects');
-          return;
-        }
+    defaultViewSetRef.current = true;
+    setView(startupView);
 
-        const storedId = getStoredActiveProjectId();
-        const matched = storedId ? projects.find((project) => project._id === storedId) : undefined;
-        const activeProject = matched ?? getDefaultProject(projects) ?? projects[0]!;
-        const taskCount = tasks.filter((task) => taskBelongsToProject(task, activeProject._id)).length;
-
-        setView(taskCount > 0 ? 'tasks' : 'agent');
-      })
-      .catch(() => {
-        defaultViewSetRef.current = true;
+    if (prefs.startupView === 'last' && session) {
+      setSessionRestore({
+        tasks: session.tasks,
+        projects: session.projects,
+        agent: session.agent,
       });
+    } else {
+      setSessionRestore(null);
+    }
+
+    setSessionPersistEnabled(true);
   }, [user]);
 
   useEffect(() => {
@@ -295,7 +331,7 @@ export function App() {
           setActiveProjectId(projectId);
           setInviteAcceptToken(null);
           window.history.replaceState(null, '', '/');
-          setView('projects');
+          setAppView('projects');
           handleProjectsChanged();
           refreshPendingInvites();
         }}
@@ -417,21 +453,21 @@ export function App() {
             <button
               type="button"
               className={view === 'agent' ? 'nav-active' : ''}
-              onClick={() => setView('agent')}
+              onClick={() => setAppView('agent')}
             >
               Agent
             </button>
             <button
               type="button"
               className={view === 'projects' ? 'nav-active' : ''}
-              onClick={() => setView('projects')}
+              onClick={() => setAppView('projects')}
             >
               Projects
             </button>
             <button
               type="button"
               className={view === 'tasks' ? 'nav-active' : ''}
-              onClick={() => setView('tasks')}
+              onClick={() => setAppView('tasks')}
             >
               Tasks
             </button>
@@ -461,25 +497,29 @@ export function App() {
                   ? { kind: 'task', taskId }
                   : { kind: 'subtask', taskId, path }
               );
-              setView('tasks');
+              setAppView('tasks');
             }}
             onAddTask={(projectId) => {
               setActiveProjectId(projectId);
               setPendingCreateForProjectId(projectId);
-              setView('tasks');
+              setAppView('tasks');
             }}
             externalRefreshKey={projectsVersion}
+            restoredListExpanded={sessionRestore?.projects?.listExpanded}
+            onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
           />
         ) : view === 'agent' ? (
           <AgentPage
             activeProjectId={activeProjectId}
             onTasksChanged={handleTasksChanged}
             onProjectSuggested={setSuggestedProjectName}
-            onNeedProject={() => setView('projects')}
+            onNeedProject={() => setAppView('projects')}
             externalRefreshKey={shellRefreshKey}
             demoPrompt={demoPrompt}
             onDemoPromptConsumed={() => setDemoPrompt(null)}
             demoPromptGeneration={demoPromptGeneration}
+            restoredConversationId={sessionRestore?.agent?.conversationId}
+            onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
           />
         ) : view === 'search' ? (
           <SearchPage
@@ -487,28 +527,31 @@ export function App() {
             refreshKey={shellRefreshKey}
             onOpenProject={(projectId) => {
               setActiveProjectId(projectId);
-              setView('projects');
+              setAppView('projects');
             }}
             onOpenTask={(taskId) => {
               setPendingTaskSelection({ kind: 'task', taskId });
-              setView('tasks');
+              setAppView('tasks');
             }}
           />
         ) : view === 'help' ? (
-          <HelpPage onBack={() => setView('projects')} onStartTour={handleStartTour} />
+          <HelpPage onBack={() => setAppView('projects')} onStartTour={handleStartTour} />
         ) : view === 'about' ? (
-          <AboutPage apiVersion={apiVersion} aiVersion={aiVersion} onBack={() => setView('projects')} />
+          <AboutPage apiVersion={apiVersion} aiVersion={aiVersion} onBack={() => setAppView('projects')} />
         ) : (
           <TasksPage
             activeProjectId={activeProjectId}
             onActiveProjectChange={setActiveProjectId}
             externalRefreshKey={tasksVersion}
             suggestedProjectName={suggestedProjectName}
-            onNeedProject={() => setView('projects')}
+            onNeedProject={() => setAppView('projects')}
             pendingSelection={pendingTaskSelection}
             onPendingSelectionApplied={() => setPendingTaskSelection(null)}
             pendingCreateForProjectId={pendingCreateForProjectId}
             onPendingCreateApplied={() => setPendingCreateForProjectId(null)}
+            restoredSelection={sessionRestore?.tasks?.selection ?? undefined}
+            restoredTaskListExpanded={sessionRestore?.tasks?.taskListExpanded}
+            onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
           />
         )}
       </main>

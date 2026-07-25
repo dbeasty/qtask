@@ -29,6 +29,7 @@ import { filterNonZeroExpenseNodes, formatMoney } from '../utils/costRollup';
 import { getDefaultProject } from '../utils/project';
 import { buildProjectTree } from '../utils/projectTree';
 import { shouldExpandProjectTrackingOnLoad } from '../utils/trackingExpand';
+import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
 
 interface ProjectsPageProps {
   activeProjectId: string | null;
@@ -36,6 +37,8 @@ interface ProjectsPageProps {
   onOpenTask?: (taskId: string, path: string[], projectId: string) => void;
   onAddTask?: (projectId: string) => void;
   externalRefreshKey?: number;
+  restoredListExpanded?: boolean;
+  onSessionRestoreConsumed?: () => void;
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -57,6 +60,8 @@ export function ProjectsPage({
   onOpenTask,
   onAddTask,
   externalRefreshKey = 0,
+  restoredListExpanded,
+  onSessionRestoreConsumed,
 }: ProjectsPageProps) {
   const { user, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
@@ -66,7 +71,8 @@ export function ProjectsPage({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [listExpanded, setListExpanded] = useState(true);
+  const [listExpanded, setListExpanded] = useState(restoredListExpanded ?? true);
+  const sessionRestoreAppliedRef = useRef(false);
   const [creatingRoot, setCreatingRoot] = useState(false);
   const [creatingChildOf, setCreatingChildOf] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
@@ -89,6 +95,19 @@ export function ProjectsPage({
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDirtyRef = useRef(false);
+
+  useEffect(() => {
+    mergeAppSessionStateDebounced({
+      projects: { listExpanded },
+    });
+  }, [listExpanded]);
+
+  useEffect(() => {
+    if (restoredListExpanded === undefined || sessionRestoreAppliedRef.current) return;
+    sessionRestoreAppliedRef.current = true;
+    setListExpanded(restoredListExpanded);
+    onSessionRestoreConsumed?.();
+  }, [restoredListExpanded, onSessionRestoreConsumed]);
 
   const clearDebounce = useCallback(() => {
     if (debounceTimerRef.current) {

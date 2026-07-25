@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { getUserPreferences, type AuthUser, type ThemePreference, type UserPreferences } from '../auth/storage';
+import { getUserPreferences, type AuthUser, type StartupViewPreference, type ThemePreference, type UserPreferences } from '../auth/storage';
 import { applyTheme } from '../theme';
 
 interface UserMenuProps {
@@ -127,6 +127,27 @@ export function UserMenu({
     }
   }
 
+  async function handleStartupViewChange(startupView: StartupViewPreference) {
+    if (startupView === preferences.startupView) return;
+    setPrefSaving(true);
+    setError(null);
+    try {
+      await onUpdatePreferences({ startupView });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update preferences');
+    } finally {
+      setPrefSaving(false);
+    }
+  }
+
+  const startupViewOptions: Array<{ value: StartupViewPreference; label: string }> = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'agent', label: 'Agent' },
+    { value: 'projects', label: 'Projects' },
+    { value: 'tasks', label: 'Tasks' },
+    { value: 'last', label: 'Last state' },
+  ];
+
   return createPortal(
     <div
       ref={menuRef}
@@ -236,6 +257,25 @@ export function UserMenu({
             Light
           </button>
         </div>
+      </div>
+
+      <div className="user-menu-theme">
+        <span className="user-menu-theme-label">Startup view</span>
+        <select
+          className="user-menu-select"
+          value={preferences.startupView}
+          disabled={prefSaving || saving}
+          aria-label="Startup view"
+          onChange={(event) =>
+            void handleStartupViewChange(event.target.value as StartupViewPreference)
+          }
+        >
+          {startupViewOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="user-menu-divider" role="separator" />

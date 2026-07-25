@@ -23,6 +23,7 @@ function isEmailVerified(user: { emailVerified?: boolean | null }): boolean {
 }
 
 export type ThemePreference = 'dark' | 'light';
+export type StartupViewPreference = 'auto' | 'agent' | 'projects' | 'tasks' | 'last';
 
 export interface UserPreferences {
   autoApproveProposals: boolean;
@@ -30,6 +31,15 @@ export interface UserPreferences {
   trackExpenses: boolean;
   completedDemoTour: boolean;
   theme: ThemePreference;
+  startupView: StartupViewPreference;
+}
+
+const STARTUP_VIEW_VALUES = ['auto', 'agent', 'projects', 'tasks', 'last'] as const;
+
+function normalizeStartupView(value: unknown): StartupViewPreference {
+  return STARTUP_VIEW_VALUES.includes(value as StartupViewPreference)
+    ? (value as StartupViewPreference)
+    : 'last';
 }
 
 function serializePreferences(preferences?: {
@@ -38,6 +48,7 @@ function serializePreferences(preferences?: {
   trackExpenses?: boolean | null;
   completedDemoTour?: boolean | null;
   theme?: ThemePreference | null;
+  startupView?: StartupViewPreference | null;
   enableHourlyTracking?: boolean | null;
 } | null): UserPreferences {
   const trackExpenses =
@@ -51,6 +62,7 @@ function serializePreferences(preferences?: {
     trackExpenses,
     completedDemoTour: preferences?.completedDemoTour === true,
     theme,
+    startupView: normalizeStartupView(preferences?.startupView),
   };
 }
 
@@ -67,6 +79,7 @@ function serializeUser(user: {
       trackExpenses?: boolean | null;
       completedDemoTour?: boolean | null;
       theme?: ThemePreference | null;
+      startupView?: StartupViewPreference | null;
       enableHourlyTracking?: boolean | null;
     } | null;
 }) {
@@ -278,6 +291,7 @@ export class AuthService {
         trackExpenses?: boolean;
         completedDemoTour?: boolean;
         theme?: ThemePreference;
+        startupView?: StartupViewPreference;
         enableHourlyTracking?: boolean;
       };
     }
@@ -304,6 +318,7 @@ export class AuthService {
           trackExpenses: true,
           completedDemoTour: false,
           theme: 'light',
+          startupView: 'last',
         };
       }
       if (input.preferences.autoApproveProposals !== undefined) {
@@ -322,6 +337,9 @@ export class AuthService {
       }
       if (input.preferences.theme !== undefined) {
         user.preferences.theme = input.preferences.theme;
+      }
+      if (input.preferences.startupView !== undefined) {
+        user.preferences.startupView = input.preferences.startupView;
       }
       user.markModified('preferences');
     }
