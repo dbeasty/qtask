@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateDedupedEntityLinks, aggregatedEntityLinkHeading, aggregatedEntityLinkHeadingForMessage, filterToolCallsEntityLinks, getApprovedProposalEntityLinks, getProposalEntityLink, getProposalEntityLinks, visibleProposals } from '../client/src/utils/agentEntityLink.ts';
+import { aggregateDedupedEntityLinks, aggregatedEntityLinkHeading, aggregatedEntityLinkHeadingForMessage, entityLinkSectionsFromToolCalls, filterToolCallsEntityLinks, getApprovedProposalEntityLinks, getProposalEntityLink, getProposalEntityLinks, isCreateTaskPreflightMessage, visibleProposals } from '../client/src/utils/agentEntityLink.ts';
 import type { UiProposal } from '../client/src/types.ts';
 
 const ACTIVE = 'proj-active-123';
@@ -381,24 +381,20 @@ describe('aggregatedEntityLinkHeading', () => {
 });
 
 describe('aggregatedEntityLinkHeadingForMessage', () => {
-  it('uses similar-project heading during pending create_project preflight', () => {
+  it('returns null for multi-section create preflight messages', () => {
     assert.equal(
       aggregatedEntityLinkHeadingForMessage(
         [
-          { kind: 'project', id: 'p1', label: 'Sell Airplane' },
-          { kind: 'project', id: 'p2', label: 'Sell the Motorcycle' },
+          { kind: 'task', id: 't-new', label: 'Vacuum the car' },
+          { kind: 'task', id: 't1', label: 'Wash the car' },
         ],
-        [{ name: 'create_project', success: true }, { name: 'list_projects', success: true }],
         [
-          proposal({
-            name: 'create_project',
-            status: 'pending',
-            stagedEntity: { kind: 'project', id: 'p-new' },
-            arguments: { name: 'Sell Boat' },
-          }),
-        ]
+          { name: 'create_task', success: true, entityLinks: [{ kind: 'task', id: 't-new', label: 'Vacuum the car' }] },
+          { name: 'find_tasks', success: true, entityLinks: [{ kind: 'task', id: 't1', label: 'Wash the car' }] },
+        ],
+        undefined
       ),
-      'Similar existing projects'
+      null
     );
   });
 
@@ -414,5 +410,99 @@ describe('aggregatedEntityLinkHeadingForMessage', () => {
       ),
       '2 projects found'
     );
+  });
+});
+
+describe('entityLinkSectionsFromToolCalls', () => {
+  it('detects create-task preflight from tool calls', () => {
+    assert.equal(
+      isCreateTaskPreflightMessage([
+        { name: 'create_task', success: true },
+        { name: 'find_tasks', success: true },
+      ]),
+      true
+    );
+    assert.equal(
+      isCreateTaskPreflightMessage([{ name: 'find_tasks', success: true }]),
+      false
+    );
+  });
+
+  it('splits create_task and find_tasks into New task and Similar existing tasks sections', () => {
+    const sections = entityLinkSectionsFromToolCalls([
+      {
+        name: 'create_task',
+        success: true,
+        entityLinks: [{ kind: 'task', id: 't-new', label: 'Vacuum the car', projectId: ACTIVE }],
+      },
+      {
+        name: 'find_tasks',
+        success: true,
+        entityLinks: [{ kind: 'task', id: 't1', label: 'Wash the car', projectId: ACTIVE }],
+      },
+    ]);
+
+    assert.equal(sections.length, 2);
+    assert.equal(sections[0]?.heading, 'New task');
+    assert.deepEqual(sections[0]?.links.map((link) => link.id), ['t-new']);
+    assert.equal(sections[1]?.heading, 'Similar existing task');
+    assert.deepEqual(sections[1]?.links.map((link) => link.id), ['t1']);
+  });
+
+  it('shows Similar existing tasks while create_task is still pending (no create links yet)', () => {
+    const sections = entityLinkSectionsFromToolCalls([
+      { name: 'create_task', success: true, entityLinks: [] },
+      {
+        name: 'find_tasks',
+        success: true,
+        entityLinks: [
+          { kind: 'task', id: 't1', label: 'Wash the car', projectId: ACTIVE },
+          { kind: 'task', id: 't2', label: 'Clean windshield from sop', projectId: ACTIVE },
+        ],
+      },
+    ]);
+
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0]?.heading, 'Similar existing tasks');
+    assert.equal(sections[0]?.links.length, 2);
+  });
+
+  it('uses similar-project sections for create_project preflight', () => {
+    const sections = entityLinkSectionsFromToolCalls([
+      {
+        name: 'create_project',
+        success: true,
+        entityLinks: [{ kind: 'project', id: 'p-new', label: 'Sell Boat' }],
+      },
+      {
+        name: 'list_projects',
+        success: true,
+        entityLinks: [
+          { kind: 'project', id: 'p1', label: 'Sell Airplane' },
+          { kind: 'project', id: 'p2', label: 'Sell the Motorcycle' },
+        ],
+      },
+    ]);
+
+    assert.equal(sections.length, 2);
+    assert.equal(sections[0]?.heading, 'New project');
+    assert.equal(sections[1]?.heading, 'Similar existing projects');
+  });
+
+  it('keeps a single section for plain find_tasks listings', () => {
+    const sections = entityLinkSectionsFromToolCalls([
+      {
+        name: 'find_tasks',
+        success: true,
+        entityLinks: [
+          { kind: 'task', id: 't1', label: 'Clean windshield from sop', projectId: ACTIVE },
+          { kind: 'task', id: 't2', label: 'Wash the car', projectId: ACTIVE },
+        ],
+      },
+    ]);
+
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0]?.heading, '2 tasks found');
+    assert.equal(sections[0]?.links.length, 2);
   });
 });

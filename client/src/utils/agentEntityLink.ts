@@ -283,51 +283,138 @@ export function aggregatedEntityLinkHeading(links: AgentEntityLink[]): string | 
   return `${projects.length} projects found`;
 }
 
-function hasPendingStagedCreate(
-  proposals: UiProposal[] | undefined,
-  toolName: 'create_project' | 'create_task'
-): boolean {
-  return (
-    proposals?.some(
-      (proposal) =>
-        proposal.status === 'pending' &&
-        proposal.name === toolName &&
-        Boolean(proposal.stagedEntity)
-    ) ?? false
+export interface EntityLinkSection {
+  heading: string | null;
+  links: AgentEntityLink[];
+}
+
+function dedupeEntityLinks(links: AgentEntityLink[]): AgentEntityLink[] {
+  const seen = new Set<string>();
+  const deduped: AgentEntityLink[] = [];
+
+  for (const link of links) {
+    const key = entityLinkKey(link);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(link);
+  }
+
+  return deduped;
+}
+
+function linksForToolNames(
+  toolCalls: Array<{ name: string; entityLinks?: AgentEntityLink[] }>,
+  names: Set<string>
+): AgentEntityLink[] {
+  return dedupeEntityLinks(
+    toolCalls
+      .filter((call) => names.has(call.name))
+      .flatMap((call) => call.entityLinks ?? [])
   );
+}
+
+function similarTasksHeading(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? 'Similar existing task' : 'Similar existing tasks';
+}
+
+function newTasksHeading(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? 'New task' : 'New tasks';
+}
+
+function similarProjectsHeading(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? 'Similar existing project' : 'Similar existing projects';
+}
+
+function newProjectsHeading(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? 'New project' : 'New projects';
+}
+
+export function isCreateTaskPreflightMessage(
+  toolCalls: Array<{ name: string; success?: boolean }> | undefined
+): boolean {
+  if (!toolCalls?.length) return false;
+  return (
+    toolCalls.some((call) => call.name === 'create_task' && call.success !== false) &&
+    toolCalls.some((call) => call.name === 'find_tasks' && call.success !== false)
+  );
+}
+
+export function isCreateProjectPreflightMessage(
+  toolCalls: Array<{ name: string; success?: boolean }> | undefined
+): boolean {
+  if (!toolCalls?.length) return false;
+  return (
+    toolCalls.some((call) => call.name === 'create_project' && call.success !== false) &&
+    toolCalls.some((call) => call.name === 'list_projects' && call.success !== false)
+  );
+}
+
+/** Split tool-call entity links into labeled sections for create preflight vs plain listings. */
+export function entityLinkSectionsFromToolCalls(
+  toolCalls: Array<{ name: string; success?: boolean; entityLinks?: AgentEntityLink[] }>
+): EntityLinkSection[] {
+  if (isCreateTaskPreflightMessage(toolCalls)) {
+    const createLinks = linksForToolNames(toolCalls, new Set(['create_task']));
+    const similarLinks = linksForToolNames(toolCalls, new Set(['find_tasks']));
+    const sections: EntityLinkSection[] = [];
+
+    if (createLinks.length > 0) {
+      sections.push({ heading: newTasksHeading(createLinks.length), links: createLinks });
+    }
+    if (similarLinks.length > 0) {
+      sections.push({ heading: similarTasksHeading(similarLinks.length), links: similarLinks });
+    }
+
+    return sections;
+  }
+
+  if (isCreateProjectPreflightMessage(toolCalls)) {
+    const createLinks = linksForToolNames(toolCalls, new Set(['create_project']));
+    const similarLinks = linksForToolNames(toolCalls, new Set(['list_projects']));
+    const sections: EntityLinkSection[] = [];
+
+    if (createLinks.length > 0) {
+      sections.push({ heading: newProjectsHeading(createLinks.length), links: createLinks });
+    }
+    if (similarLinks.length > 0) {
+      sections.push({
+        heading: similarProjectsHeading(similarLinks.length),
+        links: similarLinks,
+      });
+    }
+
+    return sections;
+  }
+
+  const links = aggregateDedupedEntityLinks(toolCalls);
+  if (links.length === 0) return [];
+
+  return [{ heading: aggregatedEntityLinkHeading(links), links }];
 }
 
 /** Heading for grouped entity links, with create-preflight context when similar items were shown. */
 export function aggregatedEntityLinkHeadingForMessage(
   links: AgentEntityLink[],
-  toolCalls: Array<{ name: string; success?: boolean }> | undefined,
-  proposals: UiProposal[] | undefined
+  toolCalls: Array<{ name: string; success?: boolean; entityLinks?: AgentEntityLink[] }> | undefined,
+  _proposals: UiProposal[] | undefined
 ): string | null {
-  const base = aggregatedEntityLinkHeading(links);
-  if (!base) return null;
-
-  const projects = links.filter((link) => link.kind === 'project');
-  const tasks = links.filter((link) => link.kind === 'task');
-
-  if (
-    projects.length > 0 &&
-    tasks.length === 0 &&
-    hasPendingStagedCreate(proposals, 'create_project') &&
-    toolCalls?.some((call) => call.name === 'list_projects' && call.success !== false)
-  ) {
-    return projects.length === 1 ? 'Similar existing project' : 'Similar existing projects';
+  if (!toolCalls?.length || links.length === 0) {
+    return aggregatedEntityLinkHeading(links);
   }
 
-  if (
-    tasks.length > 0 &&
-    projects.length === 0 &&
-    hasPendingStagedCreate(proposals, 'create_task') &&
-    toolCalls?.some((call) => call.name === 'find_tasks' && call.success !== false)
-  ) {
-    return tasks.length === 1 ? 'Similar existing task' : 'Similar existing tasks';
+  const sections = entityLinkSectionsFromToolCalls(toolCalls);
+  if (sections.length === 1) {
+    return sections[0]?.heading ?? aggregatedEntityLinkHeading(links);
+  }
+  if (sections.length === 0) {
+    return aggregatedEntityLinkHeading(links);
   }
 
-  return base;
+  return null;
 }
 
 export function visibleProposals(proposals: UiProposal[] | undefined): UiProposal[] {

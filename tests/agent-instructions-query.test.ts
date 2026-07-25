@@ -39,6 +39,7 @@ describe('agent instruction query matchers', () => {
           }
           break;
         case 'add-task':
+        case 'add-task-with-similar-existing':
           assert.equal(isCreateTaskQuery(instruction.example), true);
           assert.ok(extractCreateTaskTitle(instruction.example));
           break;

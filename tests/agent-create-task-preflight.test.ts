@@ -283,6 +283,58 @@ describe('create-task preflight', () => {
     );
   });
 
+  it('runs find_tasks for similar tasks in the active project after staging', async () => {
+    const { UserModel } = await import('../src/models/index.js');
+    const { agentService } = await import('../src/services/agentService.js');
+    const { taskService } = await import('../src/services/taskService.js');
+
+    const user = await UserModel.create({
+      email: `similar-${randomUUID()}@example.com`,
+      passwordHash: 'unused',
+      emailVerified: true,
+    });
+    const userId = String(user._id);
+    const projectId = await defaultProjectId(userId);
+
+    await taskService.createTask(userId, { title: 'Wash the car', projectId }, 'user');
+    await taskService.createTask(
+      userId,
+      { title: 'Clean windshield from sop', projectId },
+      'user'
+    );
+
+    mockOllamaAgent(() => ollamaTextResponse('Should not run.'));
+
+    const events: Array<{ type: string; [key: string]: unknown }> = [];
+    for await (const event of agentService.streamAgent(
+      userId,
+      'Add task vacuum the car',
+      undefined,
+      projectId
+    )) {
+      events.push(event as { type: string; [key: string]: unknown });
+    }
+
+    const createProposals = events.filter(
+      (event) => event.type === 'tool_proposal' && event.name === 'create_task'
+    );
+    assert.equal(createProposals.length, 1);
+    assert.equal(
+      (createProposals[0] as { arguments: { title: string } }).arguments.title,
+      'vacuum the car'
+    );
+
+    const findResults = events.filter(
+      (event) => event.type === 'tool_result' && event.name === 'find_tasks'
+    );
+    assert.ok(findResults.length >= 1);
+    const similarLabels = (
+      (findResults[0] as { entityLinks?: Array<{ label: string }> }).entityLinks ?? []
+    ).map((link) => link.label);
+    assert.ok(similarLabels.includes('Wash the car'));
+    assert.ok(!similarLabels.includes('vacuum the car'));
+  });
+
   it('does not run preflight for multi-create requests', async () => {
     const { UserModel } = await import('../src/models/index.js');
     const { agentService } = await import('../src/services/agentService.js');

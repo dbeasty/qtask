@@ -21,7 +21,7 @@ import type { AgentStreamEvent, ConversationSummary, Project, UiMessage, UiPropo
 import { displayMessageContent, proposalDisplayLabel, type DisplayMessageContentOptions } from '../utils/agentContent';
 import {
   aggregateDedupedEntityLinks,
-  aggregatedEntityLinkHeadingForMessage,
+  entityLinkSectionsFromToolCalls,
   filterToolCallsEntityLinks,
   getApprovedProposalEntityLinks,
   getProposalEntityLinks,
@@ -1324,11 +1324,7 @@ export function AgentPage({
           {visibleMessages(messages).map((message) => {
             const filteredToolCalls = filterToolCallsEntityLinks(message.toolCalls ?? []);
             const dedupedToolCallLinks = aggregateDedupedEntityLinks(filteredToolCalls);
-            const dedupedToolCallHeading = aggregatedEntityLinkHeadingForMessage(
-              dedupedToolCallLinks,
-              filteredToolCalls,
-              message.proposals
-            );
+            const entityLinkSections = entityLinkSectionsFromToolCalls(filteredToolCalls);
             const approvedProposalLinks = getApprovedProposalEntityLinks(
               message.proposals,
               activeProjectId,
@@ -1375,20 +1371,25 @@ export function AgentPage({
                   )
               )}
 
-              {dedupedToolCallLinks.length > 0 && (
-                <div className="agent-entity-link-list">
-                  {dedupedToolCallHeading && (
-                    <p className="agent-entity-link-list-heading muted">{dedupedToolCallHeading}</p>
-                  )}
-                  {dedupedToolCallLinks.map((link) => (
-                    <AgentEntityLink
-                      key={`${link.kind}-${link.id}`}
-                      link={link}
-                      onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
-                      onOpenProject={(projectId) => onOpenProject?.(projectId)}
-                    />
-                  ))}
-                </div>
+              {entityLinkSections.map((section, sectionIndex) =>
+                section.links.length > 0 ? (
+                  <div
+                    key={`entity-links-${sectionIndex}`}
+                    className="agent-entity-link-list"
+                  >
+                    {section.heading && (
+                      <p className="agent-entity-link-list-heading muted">{section.heading}</p>
+                    )}
+                    {section.links.map((link) => (
+                      <AgentEntityLink
+                        key={`${link.kind}-${link.id}`}
+                        link={link}
+                        onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
+                        onOpenProject={(projectId) => onOpenProject?.(projectId)}
+                      />
+                    ))}
+                  </div>
+                ) : null
               )}
 
               {approvedProposalLinks.length > 0 && (

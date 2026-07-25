@@ -332,6 +332,94 @@ describe('agent instruction integration — write preflight', () => {
       projectId
     );
   });
+
+  it('add-task-with-similar-existing lists project tasks then stages create with similar find_tasks', async () => {
+    const instruction = instructionById('add-task-with-similar-existing');
+    assert.ok(instruction.steps);
+    const userId = await createTestUser();
+    const projectId = await defaultProjectId(userId);
+    const { taskService } = await import('../src/services/taskService.js');
+    const { entityLinkSectionsFromToolCalls } = await import(
+      '../client/src/utils/agentEntityLink.ts'
+    );
+
+    await taskService.createTask(userId, { title: 'Wash the car', projectId }, 'user');
+    await taskService.createTask(
+      userId,
+      { title: 'Clean windshield from sop', projectId },
+      'user'
+    );
+
+    const getListLlmCalls = mockOllamaTextOnly();
+    const listEvents = await collectStream(userId, instruction.steps[0], undefined, projectId);
+    assert.equal(getListLlmCalls(), 1);
+    const listFind = listEvents.filter(
+      (event) => event.type === 'tool_result' && event.name === 'find_tasks'
+    );
+    assert.equal(listFind.length, 1);
+    const listedTasks = (listFind[0] as { entityLinks?: Array<{ label: string }> }).entityLinks ?? [];
+    assert.equal(listedTasks.length, 2);
+
+    const conversationId = String(
+      (listEvents.find((event) => event.type === 'done') as { conversationId: string })
+        .conversationId
+    );
+
+    const getCreateLlmCalls = mockOllamaTextOnly();
+    const createEvents = await collectStream(
+      userId,
+      instruction.steps[1],
+      conversationId,
+      projectId
+    );
+    assert.equal(getCreateLlmCalls(), 0);
+
+    const createProposals = createEvents.filter(
+      (event) => event.type === 'tool_proposal' && event.name === 'create_task'
+    );
+    assert.equal(createProposals.length, 1);
+    assert.equal(
+      (createProposals[0] as { arguments: { title: string } }).arguments.title,
+      'vacuum the car'
+    );
+
+    const createFindResults = createEvents.filter(
+      (event) => event.type === 'tool_result' && event.name === 'find_tasks'
+    );
+    assert.ok(createFindResults.length >= 1);
+    const similarLabels = (
+      (createFindResults[0] as { entityLinks?: Array<{ label: string }> }).entityLinks ?? []
+    ).map((link) => link.label);
+    assert.ok(similarLabels.includes('Wash the car'));
+    assert.ok(!similarLabels.includes('vacuum the car'));
+
+    const toolCalls: Array<{
+      name: string;
+      success?: boolean;
+      entityLinks?: Array<{ kind: 'task'; id: string; label: string }>;
+    }> = [];
+    for (const event of createEvents) {
+      if (event.type === 'tool_call') {
+        toolCalls.push({ name: String(event.name) });
+        continue;
+      }
+      if (event.type === 'tool_result') {
+        const pendingIndex = toolCalls.findIndex((call) => call.success === undefined);
+        if (pendingIndex >= 0) {
+          toolCalls[pendingIndex] = {
+            ...toolCalls[pendingIndex]!,
+            success: event.success !== false,
+            entityLinks: (event as { entityLinks?: Array<{ kind: 'task'; id: string; label: string }> })
+              .entityLinks,
+          };
+        }
+      }
+    }
+
+    const sections = entityLinkSectionsFromToolCalls(toolCalls);
+    assert.ok(sections.some((section) => section.heading === 'Similar existing task'));
+    assert.ok(!sections.some((section) => section.heading === '2 tasks found'));
+  });
 });
 
 describe('agent instruction integration — modify task', () => {

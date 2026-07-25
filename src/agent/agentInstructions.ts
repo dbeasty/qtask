@@ -68,6 +68,14 @@ export const AGENT_INSTRUCTIONS: AgentInstruction[] = [
     expectedTool: 'create_task',
   },
   {
+    id: 'add-task-with-similar-existing',
+    goal: 'Add a task when similar tasks already exist in the project',
+    example: 'add task vacuum the car',
+    route: 'preflight',
+    expectedTool: 'create_task',
+    steps: ['get me tasks for current project', 'add task vacuum the car'],
+  },
+  {
     id: 'modify-task',
     goal: 'Modify a task',
     example: 'Mark Schedule inspection as done',

@@ -242,6 +242,7 @@ In the Agent message box, type **`/`** for a command list. Create and add comman
 | Create a project | `create project Kitchen Reno` | Stages a new root project | Yes |
 | Create a sub-project | `create sub-project Electrical` | Stages a sub-project under the active project | Yes |
 | Add a new task | `add a task to Schedule inspection` | Stages a task in the active project | Yes |
+| Add a task (similar tasks exist) | `add task vacuum the car` | Stages the new task and shows **Similar existing tasks** for reference (not a full project listing) | Yes |
 | Modify a task | `Mark Schedule inspection as done` | Proposes an update to the matching task | Yes |
 | List the current project | `show me the current project` | Shows the active project (also works: `list current project`) | No |
 | Get all projects | `get me all the projects` | Lists every project you can access | No |
@@ -261,6 +262,11 @@ The agent may stage both projects in one turn. Review and approve each proposal.
 
 1. `create project Boat` — approve the new project, then confirm the switch prompt.
 2. `create sub-project Engine work` — approve the sub-project, then confirm switching to it if prompted.
+
+**Step by step — list tasks then add one**
+
+1. `get me tasks for current project` — shows every task in the active project.
+2. `add task vacuum the car` — stages the new task. If similar tasks already exist (e.g. “Wash the car”), the agent shows them under **Similar existing tasks**, not as a refreshed full list.
 
 **One message — project and tasks**
 
