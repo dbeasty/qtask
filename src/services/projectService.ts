@@ -579,18 +579,18 @@ export class ProjectService {
       .lean();
     const byId = new Map(users.map((u) => [String(u._id), u]));
 
-    const contacts: ShareContact[] = contactIds
-      .map((id) => {
-        const user = byId.get(id);
-        if (!user) return null;
-        return {
+    const contacts: ShareContact[] = contactIds.flatMap((id) => {
+      const user = byId.get(id);
+      if (!user) return [];
+      return [
+        {
           userId: id,
           email: user.email,
-          displayName: user.displayName ?? undefined,
+          ...(user.displayName ? { displayName: user.displayName } : {}),
           lastSharedAt: (lastSharedAt.get(id) ?? new Date()).toISOString(),
-        };
-      })
-      .filter((c): c is ShareContact => c !== null);
+        },
+      ];
+    });
 
     contacts.sort(
       (a, b) => new Date(b.lastSharedAt).getTime() - new Date(a.lastSharedAt).getTime()
