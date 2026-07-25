@@ -5,15 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex, nofollow" />
     <title>QTask Admin</title>
-    <script>
-      (function () {
-        try {
-          var theme = localStorage.getItem('qtask_admin_theme');
-          document.documentElement.dataset.theme =
-            theme === 'light' || theme === 'dark' ? theme : 'light';
-        } catch (e) {}
-      })();
-    </script>
+    <script src="/theme-bootstrap.js" data-theme-key="qtask_admin_theme"></script>
   </head>
   <body>
     <div id="root"></div>

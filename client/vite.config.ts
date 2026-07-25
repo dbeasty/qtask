@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { themeBootstrapPlugin } from '../shared/vite-theme-bootstrap-plugin';
 
 const clientRoot = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = path.resolve(clientRoot, '..');
@@ -12,7 +13,7 @@ const clientPackage = JSON.parse(
 ) as { version: string };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), themeBootstrapPlugin()],
   define: {
     __APP_VERSION__: JSON.stringify(clientPackage.version),
   },

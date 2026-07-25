@@ -4,15 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>QTask</title>
-    <script>
-      (function () {
-        try {
-          var theme = localStorage.getItem('qtask_theme');
-          document.documentElement.dataset.theme =
-            theme === 'light' || theme === 'dark' ? theme : 'light';
-        } catch (e) {}
-      })();
-    </script>
+    <script src="/theme-bootstrap.js" data-theme-key="qtask_theme"></script>
   </head>
   <body>
     <div id="root"></div>
