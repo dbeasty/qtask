@@ -296,7 +296,7 @@ export function ProjectsPage({
         clearSavedFade();
         savedFadeTimerRef.current = setTimeout(() => {
           setSaveStatus('idle');
-        }, 2000);
+        }, 3500);
       } catch (err) {
         if (generation !== saveGenerationRef.current) return;
         setSaveStatus('error');
@@ -371,7 +371,7 @@ export function ProjectsPage({
       clearSavedFade();
       savedFadeTimerRef.current = setTimeout(() => {
         setSaveStatus('idle');
-      }, 2000);
+      }, 3500);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to update project split');
     } finally {

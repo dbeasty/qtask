@@ -74,6 +74,24 @@ describe('normalizeToolArgs create_task subtasks', () => {
 
     assert.deepEqual(normalized.subtasks, [{ title: 'Keep me', description: 'Details' }]);
   });
+
+  it('normalizes steps and drops empty text entries', () => {
+    const normalized = normalizeToolArgs('create_task', {
+      title: 'Campaign',
+      steps: [{ text: '  Define audience  ' }, { text: '' }, { text: 'Set budget', done: false }],
+    });
+
+    assert.deepEqual(normalized.steps, [
+      { text: 'Define audience' },
+      { text: 'Set budget', done: false },
+    ]);
+
+    const validation = validateToolProposal('create_task', {
+      title: 'Campaign',
+      steps: [{ text: 'Define audience' }, { text: 'Set budget' }],
+    });
+    assert.equal(validation.success, true);
+  });
 });
 
 describe('validateToolProposal id validation', () => {

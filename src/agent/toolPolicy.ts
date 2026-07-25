@@ -2,6 +2,7 @@ const WRITE_TOOLS = new Set([
   'create_task',
   'update_task',
   'create_project',
+  'update_project',
   'assign_task',
   'share_project',
   'share_task',
@@ -30,6 +31,7 @@ export const KNOWN_TOOL_NAMES = [
   'summarize_project',
   'add_task_link',
   'create_project',
+  'update_project',
   'get_project',
   'list_projects',
 ] as const;

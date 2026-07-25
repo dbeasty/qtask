@@ -129,33 +129,58 @@ function taskBelongsToActiveProject(
   return projectId === activeProjectId;
 }
 
-function resolveCreateEntityLink(
-  proposal: UiProposal,
+function resolveProjectId(
+  args: Record<string, unknown>,
   activeProjectId: string | null
-): AgentEntityLink | null {
-  if (proposal.status !== 'approved' || !proposal.stagedEntity) return null;
+): string | null {
+  return stringArg(args, 'projectId') ?? activeProjectId;
+}
+
+function resolveCreateEntityLinks(
+  proposal: UiProposal,
+  activeProjectId: string | null,
+  resolveProjectLabel?: (projectId: string) => string | undefined
+): AgentEntityLink[] {
+  if (proposal.status !== 'approved' || !proposal.stagedEntity) return [];
 
   const { kind, id } = proposal.stagedEntity;
   if (kind === 'task') {
-    if (!taskBelongsToActiveProject(proposal.arguments, activeProjectId)) return null;
-    return {
-      kind: 'task',
-      id,
-      label: proposalLabel(proposal),
-      status: taskStatusArg(proposal.arguments) ?? 'todo',
-      percentComplete: percentCompleteArg(proposal.arguments) ?? 0,
-    };
+    if (!taskBelongsToActiveProject(proposal.arguments, activeProjectId)) return [];
+
+    const projectId = resolveProjectId(proposal.arguments, activeProjectId);
+    const links: AgentEntityLink[] = [
+      {
+        kind: 'task',
+        id,
+        label: proposalLabel(proposal),
+        status: taskStatusArg(proposal.arguments) ?? 'todo',
+        percentComplete: percentCompleteArg(proposal.arguments) ?? 0,
+        ...(projectId ? { projectId } : {}),
+      },
+    ];
+
+    if (projectId) {
+      links.push({
+        kind: 'project',
+        id: projectId,
+        label: resolveProjectLabel?.(projectId) ?? projectId,
+      });
+    }
+
+    return links;
   }
 
   if (kind === 'project') {
-    return {
-      kind: 'project',
-      id,
-      label: proposalLabel(proposal),
-    };
+    return [
+      {
+        kind: 'project',
+        id,
+        label: proposalLabel(proposal),
+      },
+    ];
   }
 
-  return null;
+  return [];
 }
 
 function resolveUpdateTaskLink(
@@ -191,19 +216,142 @@ function resolveUpdateProjectLink(
   };
 }
 
-export function getProposalEntityLink(
+export function getProposalEntityLinks(
   proposal: UiProposal,
-  activeProjectId: string | null
-): AgentEntityLink | null {
+  activeProjectId: string | null,
+  resolveProjectLabel?: (projectId: string) => string | undefined
+): AgentEntityLink[] {
   switch (proposal.name) {
     case 'create_task':
     case 'create_project':
-      return resolveCreateEntityLink(proposal, activeProjectId);
-    case 'update_task':
-      return resolveUpdateTaskLink(proposal, activeProjectId);
-    case 'update_project':
-      return resolveUpdateProjectLink(proposal, activeProjectId);
+      return resolveCreateEntityLinks(proposal, activeProjectId, resolveProjectLabel);
+    case 'update_task': {
+      const link = resolveUpdateTaskLink(proposal, activeProjectId);
+      return link ? [link] : [];
+    }
+    case 'update_project': {
+      const link = resolveUpdateProjectLink(proposal, activeProjectId);
+      return link ? [link] : [];
+    }
     default:
-      return null;
+      return [];
   }
+}
+
+export function getProposalEntityLink(
+  proposal: UiProposal,
+  activeProjectId: string | null,
+  resolveProjectLabel?: (projectId: string) => string | undefined
+): AgentEntityLink | null {
+  return getProposalEntityLinks(proposal, activeProjectId, resolveProjectLabel)[0] ?? null;
+}
+
+function entityLinkKey(link: AgentEntityLink): string {
+  return `${link.kind}:${link.id}`;
+}
+
+export function aggregateDedupedEntityLinks(
+  toolCalls: Array<{ entityLinks?: AgentEntityLink[] }>
+): AgentEntityLink[] {
+  const seen = new Set<string>();
+  const links: AgentEntityLink[] = [];
+
+  for (const call of toolCalls) {
+    for (const link of call.entityLinks ?? []) {
+      const key = entityLinkKey(link);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      links.push(link);
+    }
+  }
+
+  return links;
+}
+
+export function aggregatedEntityLinkHeading(links: AgentEntityLink[]): string | null {
+  if (links.length === 0) return null;
+
+  const tasks = links.filter((link) => link.kind === 'task');
+  const projects = links.filter((link) => link.kind === 'project');
+
+  if (tasks.length === 0 && projects.length === 1) return null;
+  if (tasks.length === 1 && projects.length === 0) return '1 task found';
+  if (tasks.length > 1 && projects.length === 0) return `${tasks.length} tasks found`;
+  if (tasks.length === 0 && projects.length > 1) return `${projects.length} projects found`;
+  if (tasks.length === 1 && projects.length === 1) return '1 task found';
+  if (tasks.length > 0) return `${tasks.length} tasks found`;
+  return `${projects.length} projects found`;
+}
+
+function hasPendingStagedCreate(
+  proposals: UiProposal[] | undefined,
+  toolName: 'create_project' | 'create_task'
+): boolean {
+  return (
+    proposals?.some(
+      (proposal) =>
+        proposal.status === 'pending' &&
+        proposal.name === toolName &&
+        Boolean(proposal.stagedEntity)
+    ) ?? false
+  );
+}
+
+/** Heading for grouped entity links, with create-preflight context when similar items were shown. */
+export function aggregatedEntityLinkHeadingForMessage(
+  links: AgentEntityLink[],
+  toolCalls: Array<{ name: string; success?: boolean }> | undefined,
+  proposals: UiProposal[] | undefined
+): string | null {
+  const base = aggregatedEntityLinkHeading(links);
+  if (!base) return null;
+
+  const projects = links.filter((link) => link.kind === 'project');
+  const tasks = links.filter((link) => link.kind === 'task');
+
+  if (
+    projects.length > 0 &&
+    tasks.length === 0 &&
+    hasPendingStagedCreate(proposals, 'create_project') &&
+    toolCalls?.some((call) => call.name === 'list_projects' && call.success !== false)
+  ) {
+    return projects.length === 1 ? 'Similar existing project' : 'Similar existing projects';
+  }
+
+  if (
+    tasks.length > 0 &&
+    projects.length === 0 &&
+    hasPendingStagedCreate(proposals, 'create_task') &&
+    toolCalls?.some((call) => call.name === 'find_tasks' && call.success !== false)
+  ) {
+    return tasks.length === 1 ? 'Similar existing task' : 'Similar existing tasks';
+  }
+
+  return base;
+}
+
+export function visibleProposals(proposals: UiProposal[] | undefined): UiProposal[] {
+  return (proposals ?? []).filter((proposal) => proposal.status !== 'approved');
+}
+
+export function getApprovedProposalEntityLinks(
+  proposals: UiProposal[] | undefined,
+  activeProjectId: string | null,
+  resolveProjectLabel?: (projectId: string) => string | undefined,
+  existingLinks?: AgentEntityLink[]
+): AgentEntityLink[] {
+  const seen = new Set((existingLinks ?? []).map(entityLinkKey));
+  const links: AgentEntityLink[] = [];
+
+  for (const proposal of proposals ?? []) {
+    if (proposal.status !== 'approved') continue;
+    for (const link of getProposalEntityLinks(proposal, activeProjectId, resolveProjectLabel)) {
+      const key = entityLinkKey(link);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      links.push(link);
+    }
+  }
+
+  return links;
 }

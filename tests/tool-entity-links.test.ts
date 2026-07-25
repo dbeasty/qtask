@@ -4,6 +4,7 @@ import { slimProjectForTool, slimTaskForTool } from '../src/utils/serialization.
 import {
   buildMessageToolResults,
   entityLinksFromToolResult,
+  entityLinkSourceForStagedCreate,
   filterTaskLinksByProject,
   updateHighlightedProjectId,
 } from '../src/utils/toolEntityLinks.ts';
@@ -161,6 +162,109 @@ describe('entityLinksFromToolResult', () => {
 
   it('returns undefined for unsupported tools', () => {
     assert.equal(entityLinksFromToolResult('update_task', '{"ok":true}', true), undefined);
+  });
+
+  it('does not map staged create_project or create_task results', () => {
+    const stagedProject = `${JSON.stringify({
+      _id: 'proj-new',
+      name: 'Volvo',
+      status: 'todo',
+      percentComplete: 0,
+    })}\n\nSTAGED: pending approval`;
+
+    assert.equal(entityLinksFromToolResult('create_project', stagedProject, true), undefined);
+    assert.equal(
+      entityLinksFromToolResult(
+        'create_task',
+        `${JSON.stringify({
+          _id: 'task-new',
+          title: 'Wash car',
+          status: 'todo',
+          percentComplete: 0,
+          projectId: 'proj-active',
+        })}\n\nSTAGED: pending approval`,
+        true
+      ),
+      undefined
+    );
+  });
+
+  it('maps committed create_project and create_task results', () => {
+    assert.deepEqual(
+      entityLinksFromToolResult(
+        'create_project',
+        JSON.stringify({ _id: 'proj-new', name: 'Volvo', status: 'todo', percentComplete: 0 }),
+        true
+      ),
+      [
+        {
+          kind: 'project',
+          id: 'proj-new',
+          label: 'Volvo',
+          status: 'todo',
+          percentComplete: 0,
+        },
+      ]
+    );
+    assert.deepEqual(
+      entityLinksFromToolResult(
+        'create_task',
+        JSON.stringify({
+          _id: 'task-new',
+          title: 'Wash car',
+          status: 'todo',
+          percentComplete: 0,
+          projectId: 'proj-active',
+        }),
+        true
+      ),
+      [
+        {
+          kind: 'task',
+          id: 'task-new',
+          label: 'Wash car',
+          status: 'todo',
+          percentComplete: 0,
+          projectId: 'proj-active',
+        },
+      ]
+    );
+  });
+
+  it('builds entityLinkSourceForStagedCreate from slim staged JSON and args', () => {
+    const source = entityLinkSourceForStagedCreate(
+      'create_task',
+      { title: 'Wash car', projectId: 'proj-active', status: 'todo', percentComplete: 0 },
+      JSON.stringify({ _id: 'task-new', staged: true })
+    );
+    assert.ok(source);
+    assert.deepEqual(entityLinksFromToolResult('create_task', source!, true), [
+      {
+        kind: 'task',
+        id: 'task-new',
+        label: 'Wash car',
+        status: 'todo',
+        percentComplete: 0,
+        projectId: 'proj-active',
+      },
+    ]);
+  });
+
+  it('prefers staged tool content over entityLinkSource when rebuilding UI links', () => {
+    const enrichments = buildMessageToolResults([
+      {
+        role: 'assistant',
+        toolCalls: [{ function: { name: 'create_project', arguments: { name: 'Volvo' } } }],
+      },
+      {
+        role: 'tool',
+        toolName: 'create_project',
+        content: `${JSON.stringify({ _id: 'proj-new', name: 'Volvo' })}\n\nSTAGED: pending`,
+        entityLinkSource: JSON.stringify({ _id: 'proj-new', name: 'Volvo' }),
+      },
+    ]);
+
+    assert.equal(enrichments[0]?.[0]?.entityLinks, undefined);
   });
 
   it('parses JSON before recovery guidance suffix', () => {

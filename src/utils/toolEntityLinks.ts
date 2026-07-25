@@ -1,4 +1,5 @@
 import type { TaskStatus } from '../types/task.js';
+import { isStagedPendingToolContent } from './stagedCreateCommit.js';
 
 export interface ToolEntityLink {
   kind: 'task' | 'project';
@@ -191,11 +192,57 @@ export function entityLinksFromToolResult(
       links = link ? [link] : [];
       break;
     }
+    case 'create_task': {
+      if (isStagedPendingToolContent(content)) return undefined;
+      const link = taskToEntityLink(parsed as Record<string, unknown>);
+      links = link ? [link] : [];
+      break;
+    }
+    case 'create_project': {
+      if (isStagedPendingToolContent(content)) return undefined;
+      const link = projectToEntityLink(parsed as Record<string, unknown>);
+      links = link ? [link] : [];
+      break;
+    }
     default:
       return undefined;
   }
 
   return applyScopeToEntityLinks(toolName, links, scopeProjectId);
+}
+
+export function entityLinkSourceForStagedCreate(
+  name: string,
+  args: Record<string, unknown>,
+  resultText: string
+): string | undefined {
+  const parsed = parseToolResultJson(resultText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+
+  const record = parsed as Record<string, unknown>;
+  if (name === 'create_task') {
+    if (taskToEntityLink(record)) return resultText;
+    const id = record._id ? String(record._id) : null;
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    if (!id || !title) return undefined;
+    return JSON.stringify({
+      _id: id,
+      title,
+      ...(typeof args.projectId === 'string' ? { projectId: args.projectId } : {}),
+      status: typeof args.status === 'string' ? args.status : 'todo',
+      percentComplete: typeof args.percentComplete === 'number' ? args.percentComplete : 0,
+    });
+  }
+
+  if (name === 'create_project') {
+    if (projectToEntityLink(record)) return resultText;
+    const id = record._id ? String(record._id) : null;
+    const projectName = typeof args.name === 'string' ? args.name.trim() : '';
+    if (!id || !projectName) return undefined;
+    return JSON.stringify({ _id: id, name: projectName });
+  }
+
+  return undefined;
 }
 
 export function resolveHighlightedProjectFromMessages(
@@ -255,6 +302,19 @@ export interface UiToolCallEnrichment {
   entityLinks?: ToolEntityLink[];
 }
 
+function entityLinkInputForToolMessage(
+  toolName: string,
+  toolMessage: { content: string; entityLinkSource?: string }
+): string {
+  if (
+    (toolName === 'create_project' || toolName === 'create_task') &&
+    isStagedPendingToolContent(toolMessage.content)
+  ) {
+    return toolMessage.content;
+  }
+  return toolMessage.entityLinkSource ?? toolMessage.content;
+}
+
 export function buildMessageToolResults(
   messages: Array<{
     role: string;
@@ -295,7 +355,7 @@ export function buildMessageToolResults(
         const toolSuccess = isSuccessfulToolResult(call.function.name, toolMessage.content);
         const entityLinks = entityLinksFromToolResult(
           call.function.name,
-          toolMessage.entityLinkSource ?? toolMessage.content,
+          entityLinkInputForToolMessage(call.function.name, toolMessage),
           toolSuccess,
           highlightedProjectId
         );

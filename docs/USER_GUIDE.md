@@ -225,18 +225,58 @@ Agent is the AI assistant for QTask.
 
 - **Write** actions (create/update tasks, share tasks, create top-level projects, etc.) appear as **proposals**.
 - Review the **Pending approval** bar and click **Approve** or **Reject** before changes are applied.
+- When you approve a **new project**, the app prompts you to **switch the active project** to it so Agent and Tasks work in that project right away.
 - **Read** actions (search, get task, list projects, summarize) run without approval.
 - If **Auto-approve agent actions** is enabled in your account menu, write actions apply automatically (you can still reject).
 
 ### Project nesting
 
-Nesting projects (parent/child) is managed in the **Projects** UI. The agent can create **top-level** projects and work with tasks; use Projects to build and rearrange the hierarchy.
+The agent can create **top-level projects** and **sub-projects** under your active project. Use the Projects view to drag, reparent, or rearrange the hierarchy after creation.
 
-### Example prompts
+### Supported instructions
+
+Create and add commands need a **name or title** — saying only "create a project" or "add a new task" is not enough. Use the examples below as templates and swap in your own names.
+
+| Goal | Say this | What happens | Approval needed? |
+|------|----------|--------------|------------------|
+| Create a project | `create project Kitchen Reno` | Stages a new root project | Yes |
+| Create a sub-project | `create sub-project Electrical` | Stages a sub-project under the active project | Yes |
+| Add a new task | `add a task to Schedule inspection` | Stages a task in the active project | Yes |
+| Modify a task | `Mark Schedule inspection as done` | Proposes an update to the matching task | Yes |
+| List the current project | `show me the current project` | Shows the active project (also works: `list current project`) | No |
+| Get all projects | `get me all the projects` | Lists every project you can access | No |
+| Get tasks for current project | `get me tasks for current project` | Lists tasks in the active project | No |
+
+### Compound requests
+
+Some goals can be done in **one message** or **step by step**. Both work; step-by-step gives you more control over approvals.
+
+**One message — project and sub-project**
+
+`Create project Boat and sub-project Engine work`
+
+The agent may stage both projects in one turn. Review and approve each proposal.
+
+**Step by step — project and sub-project**
+
+1. `create project Boat` — approve the new project, then confirm the switch prompt.
+2. `create sub-project Engine work` — approve the sub-project, then confirm switching to it if prompted.
+
+**One message — project and tasks**
+
+`Create project Garden and add tasks: Plan layout, Buy soil, Plant herbs`
+
+The agent may stage the project and multiple tasks together.
+
+**Step by step — project and tasks**
+
+1. `create project Garden` — approve the new project, then confirm the switch prompt.
+2. `Add tasks: Plan layout, Buy soil, Plant herbs` — approve the task proposals.
+
+### Other example prompts
 
 | Goal | Example prompt |
 |------|----------------|
-| Create tasks | *Add tasks for ordering materials, scheduling the crew, and final inspection.* |
 | Update work | *Mark “Install cabinets” as done and set “Wire lighting” to in progress.* |
 | Find work | *What tasks are still in progress in this project?* |
 | Summarize | *Summarize what is left to do before we can close out this project.* |
@@ -341,7 +381,7 @@ See also [Members](#members) under Projects.
 - **Subtasks** are nested work items in the task tree with their own status and detail panel. **Steps** are checklist lines on a single task/subtask. See [Checklist steps](#7-checklist-steps-not-subtasks).
 
 **Can the agent create nested projects?**
-- Not directly — use the Projects view to add sub-projects and move them in the tree. The agent can create top-level projects and manage tasks.
+- Yes. With a parent project selected as active, say `create sub-project Electrical` to add a child project. You can also ask for both in one message, for example `Create project Boat and sub-project Engine work`. Use the Projects view to move or reparent projects afterward.
 
 **How do I restart the guided tour?**
 - Account menu → **Take a tour** (or **Help** → **Take a guided tour**).

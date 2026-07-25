@@ -355,7 +355,7 @@ export function TaskForm(props: TaskFormProps) {
           clearSavedFade();
           savedFadeTimerRef.current = setTimeout(() => {
             setSaveStatus('idle');
-          }, 2000);
+          }, 3500);
         } else {
           setSaveStatus('idle');
         }

@@ -370,9 +370,17 @@ export class ProjectService {
     let inheritedCollaborators: Array<{ userId: string; role: CollaboratorRole }> = [];
 
     if (parentId) {
-      const parentAccess = await this.assertProjectAccess(userId, parentId, 'manager');
-      ownerUserId = parentAccess.project.userId;
-      inheritedCollaborators = (parentAccess.project.collaborators ?? []).map((c) => ({
+      if (staging) {
+        await this.assertProjectAccessForStaging(userId, parentId, staging);
+      } else {
+        await this.assertProjectAccess(userId, parentId, 'manager');
+      }
+      const parentDoc = await ProjectModel.findById(parentId).lean();
+      if (!parentDoc) {
+        throw new HttpError(404, 'Project not found');
+      }
+      ownerUserId = String(parentDoc.userId);
+      inheritedCollaborators = (parentDoc.collaborators ?? []).map((c) => ({
         userId: c.userId,
         role: c.role,
       }));

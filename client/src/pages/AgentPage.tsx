@@ -16,22 +16,33 @@ import { AgentEntityLink } from '../components/AgentEntityLink';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
 import { CurrentProjectBar } from '../components/CurrentProjectBar';
-import type { AgentStreamEvent, ConversationSummary, Project, UiMessage, UiProposal, UiToolCall } from '../types';
-import { displayMessageContent, proposalDisplayLabel } from '../utils/agentContent';
-import { filterToolCallsEntityLinks, getProposalEntityLink } from '../utils/agentEntityLink';
+import type { AgentStreamEvent, ConversationSummary, Project, UiMessage, UiProposal } from '../types';
+import { displayMessageContent, proposalDisplayLabel, type DisplayMessageContentOptions } from '../utils/agentContent';
+import {
+  aggregateDedupedEntityLinks,
+  aggregatedEntityLinkHeadingForMessage,
+  filterToolCallsEntityLinks,
+  getApprovedProposalEntityLinks,
+  getProposalEntityLinks,
+  visibleProposals,
+} from '../utils/agentEntityLink';
 import { buildUiMessagesFromConversation } from '../utils/mergeAssistantTurns';
 import { suggestProjectFromMessages } from '../utils/project';
 import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
 import { handleAgentInputKeyDown } from '../utils/agentInputKeyboard';
+import { findProjectByName, parseActiveProjectSwitchCommand, projectForSwitchPrompt, projectNameFromProposal, shouldOfferSwitchAfterCreateProject } from '../utils/agentProjectSwitch';
 
 interface AgentPageProps {
   onTasksChanged: () => void;
+  onProjectsChanged?: () => void;
   onProjectSuggested?: (name: string) => void;
   activeProjectId: string | null;
+  onActiveProjectChange?: (projectId: string) => void;
   onOpenTask?: (taskId: string, projectId?: string) => void;
   onOpenProject?: (projectId: string) => void;
   onNeedProject?: () => void;
   externalRefreshKey?: number;
+  projectsRefreshKey?: number;
   demoPrompt?: string | null;
   demoPromptGeneration?: number;
   onDemoPromptConsumed?: () => void;
@@ -43,7 +54,14 @@ interface AgentPageProps {
 
 type PendingConfirm =
   | { kind: 'delete'; conversation: ConversationSummary }
-  | { kind: 'reset'; conversation: ConversationSummary };
+  | { kind: 'reset'; conversation: ConversationSummary }
+  | {
+      kind: 'switchProject';
+      targetProject: Project;
+      currentProjectName?: string;
+      hasPendingProposals?: boolean;
+      reason?: 'afterCreate';
+    };
 
 function visibleMessages(messages: UiMessage[]) {
   return messages.filter((message) => message.role === 'user' || message.role === 'assistant');
@@ -80,6 +98,25 @@ const APPROVAL_PHRASES = /^(approve|approved|yes|go ahead|looks good|do it|confi
 interface PendingProposalRef {
   messageId: string;
   proposal: UiProposal;
+}
+
+function findPendingStagedProjectByName(
+  name: string,
+  messages: UiMessage[]
+): UiProposal | undefined {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return undefined;
+
+  for (const message of messages) {
+    for (const proposal of message.proposals ?? []) {
+      if (proposal.status !== 'pending' || proposal.name !== 'create_project') continue;
+      const projectName =
+        typeof proposal.arguments.name === 'string' ? proposal.arguments.name.trim().toLowerCase() : '';
+      if (projectName === normalized) return proposal;
+    }
+  }
+
+  return undefined;
 }
 
 function getPendingProposals(messages: UiMessage[]): PendingProposalRef[] {
@@ -210,33 +247,33 @@ function toggleAssistantExpanded(
   });
 }
 
-function messageHasStructuredResults(message: UiMessage, activeProjectId: string | null): boolean {
+function messageHasStructuredResults(
+  message: UiMessage,
+  options: DisplayMessageContentOptions
+): boolean {
   if (message.toolCalls?.some((call) => call.entityLinks && call.entityLinks.length > 0)) {
     return true;
   }
   return (
-    message.proposals?.some((proposal) => getProposalEntityLink(proposal, activeProjectId) !== null) ??
-    false
+    message.proposals?.some(
+      (proposal) =>
+        getProposalEntityLinks(
+          proposal,
+          options.activeProjectId ?? null,
+          options.resolveProjectLabel
+        ).length > 0
+    ) ?? false
   );
 }
 
-function shouldCollapseAssistantBody(message: UiMessage, activeProjectId: string | null): boolean {
+function shouldCollapseAssistantBody(
+  message: UiMessage,
+  options: DisplayMessageContentOptions
+): boolean {
   if (message.role !== 'assistant' || message.streaming) return false;
-  const content = displayMessageContent(message);
+  const content = displayMessageContent(message, options);
   if (!content) return false;
-  return messageHasStructuredResults(message, activeProjectId);
-}
-
-function entityLinkListHeading(call: UiToolCall): string | null {
-  const count = call.entityLinks?.length ?? 0;
-  if (count === 0) return null;
-  if (count === 1 && call.name === 'get_project') return null;
-  if (count === 1) {
-    const kind = call.entityLinks![0]!.kind;
-    return kind === 'project' ? '1 project found' : '1 task found';
-  }
-  const kind = call.entityLinks![0]!.kind;
-  return kind === 'project' ? `${count} projects found` : `${count} tasks found`;
+  return messageHasStructuredResults(message, options);
 }
 
 function handleStreamEvent(
@@ -393,12 +430,15 @@ function handleStreamEvent(
 
 export function AgentPage({
   onTasksChanged,
+  onProjectsChanged,
   onProjectSuggested,
   activeProjectId,
+  onActiveProjectChange,
   onOpenTask,
   onOpenProject,
   onNeedProject,
   externalRefreshKey = 0,
+  projectsRefreshKey = 0,
   demoPrompt,
   demoPromptGeneration = 0,
   onDemoPromptConsumed,
@@ -437,10 +477,21 @@ export function AgentPage({
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const autoApproveInFlightRef = useRef(false);
   const lastExternalRefreshKey = useRef(externalRefreshKey);
+  const lastProjectsRefreshKey = useRef(projectsRefreshKey);
   const conversationIdRef = useRef<string | undefined>(undefined);
   conversationIdRef.current = conversationId;
   const sessionRestoreAppliedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+
+  const resolveProjectLabel = useMemo(
+    () => (projectId: string) => projects.find((project) => project._id === projectId)?.name,
+    [projects]
+  );
+
+  const displayContentOptions = useMemo<DisplayMessageContentOptions>(
+    () => ({ activeProjectId, resolveProjectLabel }),
+    [activeProjectId, resolveProjectLabel]
+  );
 
   function abortActiveStream() {
     streamAbortRef.current?.abort();
@@ -506,6 +557,18 @@ export function AgentPage({
       void syncConversationFromServer(openId).catch((err: Error) => setError(err.message));
     }
   }, [externalRefreshKey, activeProjectId]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    if (projectsRefreshKey === lastProjectsRefreshKey.current) return;
+    lastProjectsRefreshKey.current = projectsRefreshKey;
+
+    listProjects()
+      .then(({ projects: items }) => setProjects(items))
+      .catch(() => {
+        // optional for project suggestion
+      });
+  }, [projectsRefreshKey, activeProjectId]);
 
   useEffect(() => {
     if (!restoredConversationId || sessionRestoreAppliedRef.current || !activeProjectId) return;
@@ -698,6 +761,42 @@ export function AgentPage({
       return;
     }
 
+    const switchProjectName = parseActiveProjectSwitchCommand(text);
+    if (switchProjectName) {
+      setInput('');
+      const targetProject = findProjectByName(switchProjectName, projects);
+      if (!targetProject) {
+        const stagedProject = findPendingStagedProjectByName(switchProjectName, messages);
+        if (stagedProject) {
+          setError(
+            `Project "${switchProjectName}" is staged and awaiting approval. Commit it first, then switch.`
+          );
+        } else {
+          setError(`No project named "${switchProjectName}" found.`);
+        }
+        return;
+      }
+      if (targetProject._id === activeProjectId) {
+        setError(`Already on project "${targetProject.name}".`);
+        return;
+      }
+      if (!onActiveProjectChange) {
+        setError('Project switching is unavailable.');
+        return;
+      }
+      if (sending || approvingId) {
+        abortActiveStream();
+      }
+      setError(null);
+      setPendingConfirm({
+        kind: 'switchProject',
+        targetProject,
+        currentProjectName: projects.find((project) => project._id === activeProjectId)?.name,
+        hasPendingProposals: pending.length > 0,
+      });
+      return;
+    }
+
     setInput('');
     setSending(true);
     setError(null);
@@ -882,6 +981,34 @@ export function AgentPage({
 
       if (action === 'approve' && toolsTouched && !aborted) {
         onTasksChanged();
+        onProjectsChanged?.();
+
+        const switchProjectId = shouldOfferSwitchAfterCreateProject(
+          proposal,
+          activeProjectId,
+          action
+        );
+        if (switchProjectId && onActiveProjectChange) {
+          let refreshedProjects = projects;
+          try {
+            const { projects: items } = await listProjects();
+            refreshedProjects = items;
+            setProjects(items);
+          } catch {
+            // keep local list
+          }
+
+          const name = projectNameFromProposal(proposal) ?? 'New project';
+          const targetProject = projectForSwitchPrompt(switchProjectId, name, refreshedProjects);
+          setPendingConfirm({
+            kind: 'switchProject',
+            reason: 'afterCreate',
+            targetProject,
+            currentProjectName: refreshedProjects.find((project) => project._id === activeProjectId)
+              ?.name,
+            hasPendingProposals: false,
+          });
+        }
       }
     } catch (err) {
       if (!abortController.signal.aborted) {
@@ -1007,12 +1134,19 @@ export function AgentPage({
     if (!pendingConfirm) return;
     setConfirmBusy(true);
     try {
+      if (pendingConfirm.kind === 'switchProject') {
+        abortActiveStream();
+        onActiveProjectChange?.(pendingConfirm.targetProject._id);
+        setPendingConfirm(null);
+        setError(null);
+        return;
+      }
       if (dontAskAgain && !preferences.skipConfirmations) {
         await updatePreferences({ skipConfirmations: true });
       }
       if (pendingConfirm.kind === 'delete') {
         await performDeleteConversation(pendingConfirm.conversation);
-      } else {
+      } else if (pendingConfirm.kind === 'reset') {
         await performResetConversation(pendingConfirm.conversation);
       }
       setPendingConfirm(null);
@@ -1021,6 +1155,24 @@ export function AgentPage({
     } finally {
       setConfirmBusy(false);
     }
+  }
+
+  function switchProjectConfirmMessage(confirm: Extract<PendingConfirm, { kind: 'switchProject' }>): string {
+    const fromLabel = confirm.currentProjectName ?? 'the current project';
+    const lines =
+      confirm.reason === 'afterCreate'
+        ? [
+            `${confirm.targetProject.name} was created. Switch active project from ${fromLabel} to ${confirm.targetProject.name}?`,
+          ]
+        : [`Switch active project from ${fromLabel} to ${confirm.targetProject.name}?`];
+    lines.push(
+      '',
+      `Your current chat stays saved under ${fromLabel}. The agent will show ${confirm.targetProject.name}'s conversations with a fresh chat.`
+    );
+    if (confirm.hasPendingProposals) {
+      lines.push('', 'Unapproved drafts remain in the current session.');
+    }
+    return lines.join('\n');
   }
 
   const pendingProposals = getPendingProposals(messages);
@@ -1131,7 +1283,23 @@ export function AgentPage({
             </div>
           )}
 
-          {visibleMessages(messages).map((message) => (
+          {visibleMessages(messages).map((message) => {
+            const filteredToolCalls = filterToolCallsEntityLinks(message.toolCalls ?? []);
+            const dedupedToolCallLinks = aggregateDedupedEntityLinks(filteredToolCalls);
+            const dedupedToolCallHeading = aggregatedEntityLinkHeadingForMessage(
+              dedupedToolCallLinks,
+              filteredToolCalls,
+              message.proposals
+            );
+            const approvedProposalLinks = getApprovedProposalEntityLinks(
+              message.proposals,
+              activeProjectId,
+              resolveProjectLabel,
+              dedupedToolCallLinks
+            );
+            const actionableProposals = visibleProposals(message.proposals);
+
+            return (
             <article key={message.id} className={`message message-${message.role}`}>
               <header className="message-header">
                 <span>{message.role === 'user' ? 'You' : 'QTask'}</span>
@@ -1169,25 +1337,34 @@ export function AgentPage({
                   )
               )}
 
-              {filterToolCallsEntityLinks(message.toolCalls ?? []).map((call, callIndex) => {
-                if (!call.entityLinks || call.entityLinks.length === 0) return null;
-                const heading = entityLinkListHeading(call);
-                return (
-                  <div key={`entity-links-${callIndex}`} className="agent-entity-link-list">
-                    {heading && (
-                      <p className="agent-entity-link-list-heading muted">{heading}</p>
-                    )}
-                    {call.entityLinks.map((link) => (
-                      <AgentEntityLink
-                        key={link.id}
-                        link={link}
-                        onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
-                        onOpenProject={(projectId) => onOpenProject?.(projectId)}
-                      />
-                    ))}
-                  </div>
-                );
-              })}
+              {dedupedToolCallLinks.length > 0 && (
+                <div className="agent-entity-link-list">
+                  {dedupedToolCallHeading && (
+                    <p className="agent-entity-link-list-heading muted">{dedupedToolCallHeading}</p>
+                  )}
+                  {dedupedToolCallLinks.map((link) => (
+                    <AgentEntityLink
+                      key={`${link.kind}-${link.id}`}
+                      link={link}
+                      onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
+                      onOpenProject={(projectId) => onOpenProject?.(projectId)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {approvedProposalLinks.length > 0 && (
+                <div className="agent-entity-link-list">
+                  {approvedProposalLinks.map((link) => (
+                    <AgentEntityLink
+                      key={`approved-${link.kind}-${link.id}`}
+                      link={link}
+                      onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
+                      onOpenProject={(projectId) => onOpenProject?.(projectId)}
+                    />
+                  ))}
+                </div>
+              )}
 
               {message.warnings?.map((warning, index) => (
                 <p key={`warn-${index}`} className="warning-banner">
@@ -1208,9 +1385,9 @@ export function AgentPage({
                 <p className="agent-stopped-indicator muted">Stopped</p>
               )}
 
-              {message.proposals && message.proposals.length > 0 && (
+              {actionableProposals.length > 0 && (
                 <div className="tool-proposals">
-                  {message.proposals.map((proposal) => {
+                  {actionableProposals.map((proposal) => {
                     const editKey = `${message.id}:${proposal.id}`;
                     const isEditing = editingKey === editKey;
                     const isExpanded = expandedProposalKeys.has(editKey);
@@ -1230,27 +1407,16 @@ export function AgentPage({
                               {sourceLabel}
                             </span>
                           )}
-                          {(proposal.staged || proposal.stagedEntity) && proposal.status === 'pending' && (
-                            <span className="tool-proposal-source">Awaiting commit</span>
-                          )}
+                          {(proposal.staged || proposal.stagedEntity) &&
+                            proposal.status === 'pending' && (
+                              <span className="tool-proposal-source">Awaiting commit</span>
+                            )}
                           {proposal.status !== 'pending' && (
                             <span className={`tool-proposal-status ${proposal.status}`}>
                               {proposal.status}
                             </span>
                           )}
                         </div>
-
-                        {(() => {
-                          const entityLink = getProposalEntityLink(proposal, activeProjectId);
-                          if (!entityLink) return null;
-                          return (
-                            <AgentEntityLink
-                              link={entityLink}
-                              onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
-                              onOpenProject={(projectId) => onOpenProject?.(projectId)}
-                            />
-                          );
-                        })()}
 
                         {isEditing ? (
                           <>
@@ -1384,7 +1550,7 @@ export function AgentPage({
                 )}
 
               {(() => {
-                const displayContent = displayMessageContent(message);
+                const displayContent = displayMessageContent(message, displayContentOptions);
                 const activeApprovalProgress =
                   approvingId && message.proposals?.some((p) => p.id === approvingId)
                     ? approvalProgress?.proposalId === approvingId
@@ -1408,7 +1574,7 @@ export function AgentPage({
                   );
                 }
                 if (displayContent) {
-                  const collapsible = shouldCollapseAssistantBody(message, activeProjectId);
+                  const collapsible = shouldCollapseAssistantBody(message, displayContentOptions);
                   const isExpanded = expandedAssistantKeys.has(message.id);
                   if (!collapsible) {
                     return <p className="message-body">{displayContent}</p>;
@@ -1440,7 +1606,8 @@ export function AgentPage({
                 return null;
               })()}
             </article>
-          ))}
+            );
+          })}
           <div ref={bottomRef} />
         </div>
 
@@ -1553,13 +1720,27 @@ export function AgentPage({
 
       {pendingConfirm && (
         <ConfirmDialog
-          title={pendingConfirm.kind === 'delete' ? 'Delete session' : 'Reset session'}
-          message={
-            pendingConfirm.kind === 'delete'
-              ? `Delete "${pendingConfirm.conversation.title}"?\n\nThis removes the session history. Existing tasks stay, but unapproved drafts from this session will be discarded.`
-              : `Reset "${pendingConfirm.conversation.title}"?\n\nThis clears the session history so you can reuse this session. The original prompt is kept when available. Existing tasks stay, but unapproved drafts from this session will be discarded.`
+          title={
+            pendingConfirm.kind === 'switchProject'
+              ? 'Switch project'
+              : pendingConfirm.kind === 'delete'
+                ? 'Delete session'
+                : 'Reset session'
           }
-          confirmLabel={pendingConfirm.kind === 'delete' ? 'Delete' : 'Reset'}
+          message={
+            pendingConfirm.kind === 'switchProject'
+              ? switchProjectConfirmMessage(pendingConfirm)
+              : pendingConfirm.kind === 'delete'
+                ? `Delete "${pendingConfirm.conversation.title}"?\n\nThis removes the session history. Existing tasks stay, but unapproved drafts from this session will be discarded.`
+                : `Reset "${pendingConfirm.conversation.title}"?\n\nThis clears the session history so you can reuse this session. The original prompt is kept when available. Existing tasks stay, but unapproved drafts from this session will be discarded.`
+          }
+          confirmLabel={
+            pendingConfirm.kind === 'switchProject'
+              ? 'Switch'
+              : pendingConfirm.kind === 'delete'
+                ? 'Delete'
+                : 'Reset'
+          }
           busy={confirmBusy}
           onCancel={() => {
             if (!confirmBusy) setPendingConfirm(null);

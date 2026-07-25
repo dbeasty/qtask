@@ -92,4 +92,57 @@ All five projects are owned by you at **msft_davja@hotmail.com**. Your Boat proj
 
     assert.equal(displayMessageContent(message), '');
   });
+
+  it('strips create_task confirmation prose when approved proposal links exist', () => {
+    const message: UiMessage = {
+      id: 'a4',
+      role: 'assistant',
+      content:
+        'Task **`6a6512273f09106f6a8f4c69`: "Put advertisement on Barnstormers"** has been created and committed to your Sell Airplane project.',
+      proposals: [
+        {
+          id: 'p1',
+          name: 'create_task',
+          arguments: { title: 'Put advertisement on Barnstormers', projectId: 'proj-active' },
+          source: 'native',
+          status: 'approved',
+          stagedEntity: { kind: 'task', id: '6a6512273f09106f6a8f4c69' },
+        },
+      ],
+    };
+
+    const content = displayMessageContent(message, {
+      activeProjectId: 'proj-active',
+      resolveProjectLabel: (id) => (id === 'proj-active' ? 'Sell Airplane' : undefined),
+    });
+    assert.equal(content, '');
+  });
+
+  it('strips superseded not-found prose when create_project entity links exist', () => {
+    const message: UiMessage = {
+      id: 'a5',
+      role: 'assistant',
+      content: 'No project named "sell boxster" found.',
+      toolCalls: [
+        {
+          name: 'create_project',
+          success: true,
+          entityLinks: [{ kind: 'project', id: 'proj-new', label: 'sell boxster' }],
+        },
+      ],
+      proposals: [
+        {
+          id: 'p1',
+          name: 'create_project',
+          arguments: { name: 'sell boxster' },
+          source: 'native',
+          status: 'pending',
+          staged: true,
+          stagedEntity: { kind: 'project', id: 'proj-new' },
+        },
+      ],
+    };
+
+    assert.equal(displayMessageContent(message), '');
+  });
 });

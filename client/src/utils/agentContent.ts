@@ -1,4 +1,5 @@
 import type { ToolEntityLink, UiMessage } from '../types';
+import { getProposalEntityLinks } from './agentEntityLink';
 
 const toolNamePattern =
   'find_tasks|get_task|get_workload|summarize_project|get_project|list_projects|create_task|update_task|create_project|assign_task|share_project|share_task|add_task_link';
@@ -125,12 +126,43 @@ export function isBoilerplateAssistantContent(content: string): boolean {
   return BOILERPLATE_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
-function messageEntityLinks(message: UiMessage): ToolEntityLink[] {
+export interface DisplayMessageContentOptions {
+  activeProjectId?: string | null;
+  resolveProjectLabel?: (projectId: string) => string | undefined;
+}
+
+function messageEntityLinks(
+  message: UiMessage,
+  options?: DisplayMessageContentOptions
+): ToolEntityLink[] {
   const links: ToolEntityLink[] = [];
   for (const call of message.toolCalls ?? []) {
     if (call.entityLinks?.length) {
       links.push(...call.entityLinks);
     }
+  }
+  for (const proposal of message.proposals ?? []) {
+    links.push(
+      ...getProposalEntityLinks(
+        proposal,
+        options?.activeProjectId ?? null,
+        options?.resolveProjectLabel
+      )
+    );
+    if (proposal.status !== 'pending' || !proposal.stagedEntity) continue;
+    if (proposal.name !== 'create_project' && proposal.name !== 'create_task') continue;
+    const label =
+      typeof proposal.arguments.name === 'string'
+        ? proposal.arguments.name.trim()
+        : typeof proposal.arguments.title === 'string'
+          ? proposal.arguments.title.trim()
+          : '';
+    if (!label) continue;
+    links.push({
+      kind: proposal.stagedEntity.kind,
+      id: proposal.stagedEntity.id,
+      label,
+    });
   }
   return links;
 }
@@ -237,9 +269,102 @@ function stripReadToolDetailBlocks(content: string, entityLinks: ToolEntityLink[
   return result;
 }
 
-export function displayMessageContent(message: UiMessage): string {
+function stripCreateConfirmationBlocks(content: string, entityLinks: ToolEntityLink[]): string {
+  if (entityLinks.length === 0) return content;
+
+  let result = content;
+
+  for (const link of entityLinks) {
+    const label = escapeRegExp(link.label);
+    const id = escapeRegExp(link.id);
+
+    if (link.kind === 'task') {
+      result = result.replace(
+        new RegExp(
+          `(?:^|\\n)\\s*\\*{0,2}Task\\*{0,2}\\s*\\*{0,2}\`${id}\`\\*{0,2}\\s*:\\s*["']?${label}["']?\\*{0,2}[^\\n]*`,
+          'gim'
+        ),
+        '\n'
+      );
+      result = result.replace(
+        new RegExp(
+          `(?:^|\\n)\\s*Task\\s+\`${id}\`[^\\n]*${label}[^\\n]*has been created[^\\n]*`,
+          'gim'
+        ),
+        '\n'
+      );
+    }
+
+    if (link.kind === 'project') {
+      result = result.replace(
+        new RegExp(
+          `(?:^|\\n)\\s*\\*{0,2}Project\\*{0,2}\\s+\\*{0,2}${label}\\*{0,2}[^\\n]*has been created[^\\n]*`,
+          'gim'
+        ),
+        '\n'
+      );
+      result = result.replace(
+        new RegExp(`committed to your\\s+\\*{0,2}${label}\\*{0,2}\\s+project\\.?`, 'gim'),
+        ''
+      );
+    }
+  }
+
+  result = result.replace(
+    /(?:^|\n)\s*Task\s+\*{0,2}`[0-9a-f]{24}`\*{0,2}[^.\n]*has been created and committed[^.\n]*\.?\s*/gim,
+    '\n'
+  );
+  result = result.replace(
+    /(?:^|\n)\s*Project\s+\*{0,2}[^*\n]+\*{0,2}\s+has been created[^.\n]*\.?\s*/gim,
+    '\n'
+  );
+
+  return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function stripSupersededNotFoundMessages(content: string, entityLinks: ToolEntityLink[]): string {
+  if (entityLinks.length === 0) return content;
+
+  let result = content;
+
+  for (const link of entityLinks) {
+    const label = escapeRegExp(link.label);
+    if (link.kind === 'project') {
+      result = result.replace(
+        new RegExp(`No project named ["']?${label}["']? found\\.?`, 'gim'),
+        ''
+      );
+      result = result.replace(
+        new RegExp(
+          `(?:^|\\n)\\s*[^\\n]*(?:no project (?:named|called|with (?:the )?name)|project not found|could not find (?:a )?project)[^\\n]*${label}[^\\n]*`,
+          'gim'
+        ),
+        '\n'
+      );
+    } else {
+      result = result.replace(
+        new RegExp(`No task (?:named|called|with (?:the )?title) ["']?${label}["']? found\\.?`, 'gim'),
+        ''
+      );
+      result = result.replace(
+        new RegExp(
+          `(?:^|\\n)\\s*[^\\n]*(?:no task (?:named|called|with (?:the )?title)|task not found|could not find (?:a )?task)[^\\n]*${label}[^\\n]*`,
+          'gim'
+        ),
+        '\n'
+      );
+    }
+  }
+
+  return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export function displayMessageContent(
+  message: UiMessage,
+  options?: DisplayMessageContentOptions
+): string {
   let content = message.content;
-  const entityLinks = messageEntityLinks(message);
+  const entityLinks = messageEntityLinks(message, options);
 
   if ((message.proposals?.length ?? 0) > 0) {
     content = stripToolArtifactsFromContent(content);
@@ -250,6 +375,8 @@ export function displayMessageContent(message: UiMessage): string {
 
   if (entityLinks.length > 0) {
     content = stripReadToolDetailBlocks(content, entityLinks);
+    content = stripCreateConfirmationBlocks(content, entityLinks);
+    content = stripSupersededNotFoundMessages(content, entityLinks);
     content = stripToolArtifactsFromContent(content);
   }
 

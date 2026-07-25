@@ -8,6 +8,13 @@ describe('isCurrentProjectQuery', () => {
     assert.equal(isCurrentProjectQuery('what project am I on?'), true);
     assert.equal(isCurrentProjectQuery('show me this project'), true);
     assert.equal(isCurrentProjectQuery('show me the project'), true);
+    assert.equal(isCurrentProjectQuery('list current project'), true);
+    assert.equal(isCurrentProjectQuery('get me the current project'), true);
+  });
+
+  it('does not match task-list phrasing', () => {
+    assert.equal(isCurrentProjectQuery('show me the current tasks on this project'), false);
+    assert.equal(isCurrentProjectQuery('what tasks are in this project'), false);
   });
 
   it('does not match list-all phrasing', () => {

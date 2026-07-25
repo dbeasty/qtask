@@ -487,7 +487,9 @@ export function App() {
         <div className={view === 'agent' ? 'view-panel' : 'view-panel view-panel--hidden'}>
           <AgentPage
             activeProjectId={activeProjectId}
+            onActiveProjectChange={setActiveProjectId}
             onTasksChanged={handleTasksChanged}
+            onProjectsChanged={handleProjectsChanged}
             onProjectSuggested={setSuggestedProjectName}
             onOpenTask={(taskId, projectId) => {
               if (projectId) setActiveProjectId(projectId);
@@ -500,6 +502,7 @@ export function App() {
             }}
             onNeedProject={() => setAppView('projects')}
             externalRefreshKey={shellRefreshKey}
+            projectsRefreshKey={projectsVersion}
             demoPrompt={demoPrompt}
             onDemoPromptConsumed={() => setDemoPrompt(null)}
             demoPromptGeneration={demoPromptGeneration}

@@ -26,6 +26,11 @@ const materialLineSchema = z.object({
   unitPrice: z.number().min(0),
 });
 
+const taskStepInputSchema = z.object({
+  text: z.string().min(1),
+  done: z.boolean().optional(),
+});
+
 const subtaskInputSchema: z.ZodType<{
   title: string;
   description?: string;
@@ -121,6 +126,18 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         hourlyRate: { type: 'number', minimum: 0 },
         projectId: { type: 'string' },
+        steps: {
+          type: 'array',
+          description: 'Checklist steps (not nested tasks). Use for TBD items or action items.',
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              done: { type: 'boolean' },
+            },
+            required: ['text'],
+          },
+        },
         subtasks: {
           type: 'array',
           description: 'Nested subtasks. Each item MUST have a "title".',
@@ -154,6 +171,7 @@ export const toolDefinitions: ToolDefinition[] = [
       materials: z.array(materialLineSchema).optional(),
       hourlyRate: z.number().min(0).optional(),
       projectId: objectIdSchema.optional(),
+      steps: z.array(taskStepInputSchema).optional().describe('Checklist steps'),
       subtasks: z.array(subtaskInputSchema).optional().describe('Nested subtasks'),
     },
     async execute(userId, input, context) {
@@ -533,25 +551,31 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'create_project',
-    description: 'Create a new project workspace.',
+    description: 'Create a new project workspace. Use parentId for a sub-project under the active project.',
     parameters: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Project name' },
         description: { type: 'string', description: 'Project description' },
+        parentId: {
+          type: 'string',
+          description: 'Optional parent project id for a sub-project under the active project',
+        },
       },
       required: ['name'],
     },
     zodShape: {
       name: z.string().min(1).describe('Project name'),
       description: z.string().optional().describe('Project description'),
+      parentId: objectIdSchema.optional(),
     },
     async execute(userId, input, context) {
       const project = await projectService.createProject(
         userId,
         String(input.name),
         input.description as string | undefined,
-        stagingContext(context)
+        stagingContext(context),
+        input.parentId ? String(input.parentId) : null
       );
       return ok(JSON.stringify(project, null, 2));
     },
@@ -721,6 +745,21 @@ export function normalizeToolArgs(
       delete normalized.subtasks;
     } else {
       normalized.subtasks = subtasks;
+    }
+  }
+
+  if (name === 'create_task' && Array.isArray(normalized.steps)) {
+    const steps = normalized.steps
+      .filter((step): step is Record<string, unknown> => step && typeof step === 'object')
+      .map((step) => ({
+        ...step,
+        text: typeof step.text === 'string' ? step.text.trim() : '',
+      }))
+      .filter((step) => step.text.length > 0);
+    if (steps.length === 0) {
+      delete normalized.steps;
+    } else {
+      normalized.steps = steps;
     }
   }
 

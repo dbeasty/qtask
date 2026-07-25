@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { loadAgentContext } from '../agent/loadContext.js';
 import { estimateRequestedCreateCount, hasProposedAllRequestedCreates } from '../agent/multiCreateHeuristic.js';
 import {
@@ -8,6 +7,12 @@ import {
   sameStagedCreateIntent,
   stripToolArtifactsFromContent,
 } from '../agent/parseTextToolCall.js';
+import {
+  createProposal,
+  hasDuplicateStagedCreate,
+  stagedToolContent,
+  stageCreateTool,
+} from '../agent/stageCreateProposal.js';
 import {
   buildFindTasksRecoveryArgs,
   needsUpdateTaskIdRecovery,
@@ -26,10 +31,25 @@ import type {
 } from '../types/conversation.js';
 import { createLogger } from '../utils/logger.js';
 import { isCurrentProjectQuery } from '../utils/currentProjectQuery.js';
+import { extractCreateTaskTitle, isCreateTaskQuery, isMultiCreateTaskQuery } from '../utils/createTaskQuery.js';
+import {
+  extractCreateProjectName,
+  isCreateProjectQuery,
+  resolveProjectCreateScope,
+} from '../utils/createProjectQuery.js';
 import { isListProjectsQuery } from '../utils/listProjectsQuery.js';
+import { isListProjectTasksQuery } from '../utils/listProjectTasksQuery.js';
+import { runCreateProjectPreflight } from '../utils/runCreateProjectPreflight.js';
+import { runCreateTaskPreflight } from '../utils/runCreateTaskPreflight.js';
 import { runGetProjectPreflight } from '../utils/runGetProjectPreflight.js';
 import { runListProjectsPreflight } from '../utils/runListProjectsPreflight.js';
+import { runListProjectTasksPreflight } from '../utils/runListProjectTasksPreflight.js';
 import { buildMessageToolResults, entityLinksFromToolResult, resolveHighlightedProjectFromMessages, updateHighlightedProjectId } from '../utils/toolEntityLinks.js';
+import {
+  buildCommittedCreateEntityLinkSource,
+  clearStagedCreateAssistantSummaries,
+  patchMessagesAfterStagedCreateCommit,
+} from '../utils/stagedCreateCommit.js';
 import { AbortError, throwIfAborted } from '../utils/abortSignal.js';
 import { conversationService } from './conversationService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
@@ -108,107 +128,6 @@ function parseToolArguments(raw: unknown): Record<string, unknown> {
     return raw as Record<string, unknown>;
   }
   return {};
-}
-
-function createProposal(
-  name: string,
-  args: Record<string, unknown>,
-  source: PendingProposal['source'],
-  toolCallIndex?: number
-): PendingProposal {
-  return {
-    id: randomUUID(),
-    name,
-    arguments: normalizeToolArgs(name, args),
-    source,
-    status: 'pending',
-    toolCallIndex,
-  };
-}
-
-function stagedToolContent(resultText: string): string {
-  return `${resultText}\n\nSTAGED: This entity exists with a real id but is hidden pending user approval. You may use this id in subsequent tool calls.`;
-}
-
-function stagedEntityId(resultText: string): string | null {
-  try {
-    const parsed = JSON.parse(resultText) as { _id?: unknown };
-    return typeof parsed._id === 'string' ? parsed._id : null;
-  } catch {
-    return null;
-  }
-}
-
-function sameProposalArguments(
-  proposal: PendingProposal,
-  name: string,
-  args: Record<string, unknown>
-): boolean {
-  if (proposal.status !== 'pending' || proposal.name !== name) return false;
-  if (name === 'create_task' || name === 'create_project') {
-    return sameStagedCreateIntent(proposal, name, args);
-  }
-  return JSON.stringify(proposal.arguments) === JSON.stringify(args);
-}
-
-function hasDuplicateStagedCreate(
-  proposals: PendingProposal[],
-  name: string,
-  args: Record<string, unknown>
-): boolean {
-  return proposals.some(
-    (proposal) => proposal.stagedEntity && sameStagedCreateIntent(proposal, name, args)
-  );
-}
-
-async function stageCreateTool(
-  userId: string,
-  conversationId: string,
-  name: string,
-  args: Record<string, unknown>,
-  source: PendingProposal['source'],
-  existingProposals: PendingProposal[],
-  toolCallIndex?: number
-): Promise<{
-  proposal: PendingProposal | null;
-  result: { success: boolean; text: string };
-  isNew: boolean;
-}> {
-  const duplicate = existingProposals.find((proposal) =>
-    sameProposalArguments(proposal, name, args)
-  );
-  if (duplicate?.stagedEntity) {
-    return {
-      proposal: duplicate,
-      result: {
-        success: true,
-        text: JSON.stringify({ _id: duplicate.stagedEntity.id, staged: true }, null, 2),
-      },
-      isNew: false,
-    };
-  }
-
-  const proposal = createProposal(name, args, source, toolCallIndex);
-  const result = await executeTool(name, args, userId, {
-    conversationId,
-    proposalId: proposal.id,
-    staged: true,
-  });
-  if (!result.success) return { proposal: null, result, isNew: false };
-
-  const id = stagedEntityId(result.text);
-  if (!id) {
-    return {
-      proposal: null,
-      result: { success: false, text: 'Staged create returned no entity id' },
-      isNew: false,
-    };
-  }
-  proposal.stagedEntity = {
-    kind: name === 'create_task' ? 'task' : 'project',
-    id,
-  };
-  return { proposal, result, isNew: true };
 }
 
 async function* runUpdateTaskIdRecovery(
@@ -710,10 +629,22 @@ function buildMessageProposals(conversation: Conversation): Record<number, Pendi
           return;
         }
 
+        const normalizedArgs = normalizeToolArgs(call.function.name, call.function.arguments ?? {});
+        const intentMatch = allProposals.find(
+          (proposal) =>
+            !assigned.has(proposal.id) &&
+            sameStagedCreateIntent(proposal, call.function.name, normalizedArgs)
+        );
+        if (intentMatch) {
+          proposals.push(intentMatch);
+          assigned.add(intentMatch.id);
+          return;
+        }
+
         proposals.push({
           id: `hist-${visibleIndex}-${toolIndex}`,
           name: call.function.name,
-          arguments: normalizeToolArgs(call.function.name, call.function.arguments ?? {}),
+          arguments: normalizedArgs,
           source: 'native',
           status: 'approved',
           toolCallIndex: toolIndex,
@@ -1103,12 +1034,19 @@ export class AgentService {
             proposals,
             i
           );
-          yield toolResultEvent(name, staged.result.success, staged.result.text);
+          const stagedContent = staged.result.success
+            ? stagedToolContent(staged.result.text)
+            : staged.result.text;
+          yield toolResultEvent(
+            name,
+            staged.result.success,
+            stagedContent,
+            undefined,
+            highlightedProjectId
+          );
           workingMessages.push({
             role: 'tool',
-            content: staged.result.success
-              ? stagedToolContent(staged.result.text)
-              : staged.result.text,
+            content: stagedContent,
             toolName: name,
           });
 
@@ -1365,7 +1303,12 @@ export class AgentService {
     log.info('Agent stream started', { userId, conversationId: conversation._id });
 
     const activeProjectId = conversation.projectId ?? projectId;
-    if (activeProjectId && isCurrentProjectQuery(message)) {
+    if (activeProjectId && isListProjectTasksQuery(message)) {
+      throwIfAborted(signal);
+      yield* runListProjectTasksPreflight(userId, activeProjectId, workingMessages);
+      throwIfAborted(signal);
+      await conversationService.setMessages(userId, conversation._id, workingMessages);
+    } else if (activeProjectId && isCurrentProjectQuery(message)) {
       throwIfAborted(signal);
       yield* runGetProjectPreflight(userId, activeProjectId, workingMessages);
       throwIfAborted(signal);
@@ -1375,6 +1318,83 @@ export class AgentService {
       yield* runListProjectsPreflight(userId, workingMessages);
       throwIfAborted(signal);
       await conversationService.setMessages(userId, conversation._id, workingMessages);
+    } else {
+      const createProjectName = extractCreateProjectName(message);
+      const projectScope = resolveProjectCreateScope(message, activeProjectId);
+      const createTitle = extractCreateTaskTitle(message);
+
+      if (
+        createProjectName &&
+        isCreateProjectQuery(message) &&
+        (!projectScope.isSubProject || activeProjectId)
+      ) {
+        throwIfAborted(signal);
+        const projectResult = yield* runCreateProjectPreflight(
+          userId,
+          conversation._id,
+          activeProjectId,
+          createProjectName,
+          projectScope,
+          workingMessages
+        );
+        throwIfAborted(signal);
+        if (projectResult.pauseImmediately) {
+          yield {
+            type: 'paused',
+            conversationId: conversation._id,
+            pendingCount: projectResult.pendingCount,
+          };
+          yield {
+            type: 'done',
+            conversationId: conversation._id,
+            content: '',
+            paused: projectResult.pendingCount > 0,
+          };
+          return;
+        }
+      } else if (
+        createTitle &&
+        isCreateTaskQuery(message) &&
+        !isMultiCreateTaskQuery(message)
+      ) {
+        if (!activeProjectId) {
+          workingMessages.push({
+            role: 'system',
+            content:
+              'The user asked to create a task but no active project is set. Ask them to select a project first.',
+          });
+          await conversationService.savePauseState(userId, conversation._id, {
+            messages: workingMessages,
+            pendingProposals: conversation.pendingProposals ?? [],
+            pausedBatch: null,
+            ...(title ? { title } : {}),
+          });
+        } else {
+          throwIfAborted(signal);
+          const taskResult = yield* runCreateTaskPreflight(
+            userId,
+            conversation._id,
+            activeProjectId,
+            createTitle,
+            workingMessages
+          );
+          throwIfAborted(signal);
+          if (taskResult.pauseImmediately) {
+            yield {
+              type: 'paused',
+              conversationId: conversation._id,
+              pendingCount: taskResult.pendingCount,
+            };
+            yield {
+              type: 'done',
+              conversationId: conversation._id,
+              content: '',
+              paused: taskResult.pendingCount > 0,
+            };
+            return;
+          }
+        }
+      }
     }
 
     yield* this.runAgentLoop(userId, conversation._id, workingMessages, 0, signal);
@@ -1403,6 +1423,7 @@ export class AgentService {
 
     const extraMessages: StoredMessage[] = [];
     let ranIdRecovery = false;
+    let committedEntityLinkSource: string | undefined;
 
     if (proposal.stagedEntity) {
       yield { type: 'tool_call', name: proposal.name, arguments: proposal.arguments };
@@ -1411,7 +1432,16 @@ export class AgentService {
           action === 'approve'
             ? await stagingService.commitProposal(userId, conversationId, proposal)
             : await stagingService.rollbackProposal(userId, conversationId, proposal);
-        yield toolResultEvent(proposal.name, true, content);
+        if (action === 'approve') {
+          committedEntityLinkSource = await buildCommittedCreateEntityLinkSource(userId, proposal);
+        }
+        yield toolResultEvent(
+          proposal.name,
+          true,
+          content,
+          committedEntityLinkSource,
+          conversation.projectId
+        );
         extraMessages.push({
           role: 'tool',
           content:
@@ -1419,6 +1449,7 @@ export class AgentService {
               ? `${content}. The staged write is now visible.`
               : `${content}. The staged id is now invalid.`,
           toolName: proposal.name,
+          ...(committedEntityLinkSource ? { entityLinkSource: committedEntityLinkSource } : {}),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to resolve staged write';
@@ -1498,16 +1529,34 @@ export class AgentService {
     const workingMessages: StoredMessage[] = [...updated.messages];
     const remainingPending = (updated.pendingProposals ?? []).filter((p) => p.status === 'pending');
 
+    let messagesForSave = workingMessages;
+    if (action === 'approve' && committedEntityLinkSource && proposal.stagedEntity) {
+      messagesForSave = patchMessagesAfterStagedCreateCommit(
+        messagesForSave,
+        proposal,
+        committedEntityLinkSource
+      );
+      if (remainingPending.length === 0) {
+        messagesForSave = clearStagedCreateAssistantSummaries(messagesForSave);
+      }
+    }
+
+    const shouldStopAfterStagedCreate =
+      proposal.stagedEntity &&
+      isStagedCreateTool(proposal.name) &&
+      !ranIdRecovery &&
+      !updated.pausedBatch;
+
     // After id recovery, clear the paused write batch and let the model propose a
     // corrected update_task (new approval card) from the find_tasks results.
     if (ranIdRecovery) {
       await savePausePreservingResolved(userId, conversationId, {
-        messages: workingMessages,
+        messages: messagesForSave,
         pendingProposals: updated.pendingProposals ?? [],
         pausedBatch: null,
       });
       yield { type: 'status', message: 'Reviewing tool results…' };
-      yield* this.runAgentLoop(userId, conversationId, workingMessages, 0, signal);
+      yield* this.runAgentLoop(userId, conversationId, messagesForSave, 0, signal);
       return;
     }
 
@@ -1517,7 +1566,7 @@ export class AgentService {
       const paused = yield* this.processToolCallBatch(
         userId,
         conversationId,
-        workingMessages,
+        messagesForSave,
         updated.pausedBatch.assistantContent,
         toolCalls,
         nextToolIndex + 1,
@@ -1530,7 +1579,7 @@ export class AgentService {
       }
     } else if (remainingPending.length > 0) {
       await savePausePreservingResolved(userId, conversationId, {
-        messages: workingMessages,
+        messages: messagesForSave,
         pendingProposals: updated.pendingProposals ?? [],
         pausedBatch: null,
       });
@@ -1539,8 +1588,18 @@ export class AgentService {
       return;
     }
 
+    if (shouldStopAfterStagedCreate) {
+      await savePausePreservingResolved(userId, conversationId, {
+        messages: messagesForSave,
+        pendingProposals: updated.pendingProposals ?? [],
+        pausedBatch: null,
+      });
+      yield { type: 'done', conversationId, content: '' };
+      return;
+    }
+
     yield { type: 'status', message: 'Reviewing tool results…' };
-    yield* this.runAgentLoop(userId, conversationId, workingMessages, 0, signal);
+    yield* this.runAgentLoop(userId, conversationId, messagesForSave, 0, signal);
   }
 }
 
