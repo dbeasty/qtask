@@ -25,6 +25,9 @@ import type {
   StoredMessage,
 } from '../types/conversation.js';
 import { createLogger } from '../utils/logger.js';
+import { isCurrentProjectQuery } from '../utils/currentProjectQuery.js';
+import { runGetProjectPreflight } from '../utils/runGetProjectPreflight.js';
+import { buildMessageToolResults, entityLinksFromToolResult } from '../utils/toolEntityLinks.js';
 import { conversationService } from './conversationService.js';
 import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 import { stagingService } from './stagingService.js';
@@ -219,7 +222,7 @@ async function* runUpdateTaskIdRecovery(
   yield { type: 'tool_call', name: 'find_tasks', arguments: findArgs };
   const result = await executeTool('find_tasks', findArgs, userId);
   const content = wrapFindTasksRecoveryResult(result.text);
-  yield { type: 'tool_result', name: 'find_tasks', success: result.success, content };
+  yield toolResultEvent('find_tasks', result.success, content, result.text);
 
   return {
     role: 'tool',
@@ -249,6 +252,60 @@ async function savePausePreservingResolved(
     pendingProposals: [...resolved, ...data.pendingProposals],
     pausedBatch: data.pausedBatch ?? null,
   });
+}
+
+function toolResultEvent(
+  name: string,
+  success: boolean,
+  content: string,
+  entityLinkSource?: string
+) {
+  const entityLinks = entityLinksFromToolResult(name, entityLinkSource ?? content, success);
+  return {
+    type: 'tool_result' as const,
+    name,
+    success,
+    content,
+    ...(entityLinks !== undefined ? { entityLinks } : {}),
+  };
+}
+
+async function entityLinkSourceForToolResult(
+  userId: string,
+  name: string,
+  args: Record<string, unknown>,
+  success: boolean
+): Promise<string | undefined> {
+  if (!success || name !== 'summarize_project' || !args.projectId) return undefined;
+
+  const { projectService } = await import('./projectService.js');
+  const { slimProjectForTool } = await import('../utils/serialization.js');
+  const project = await projectService.getProject(userId, String(args.projectId));
+  if (!project) return undefined;
+
+  return JSON.stringify(slimProjectForTool(project as unknown as Record<string, unknown>));
+}
+
+async function buildOllamaMessagesWithContext(
+  userId: string,
+  conversationId: string,
+  workingMessages: StoredMessage[]
+): Promise<OllamaChatMessage[]> {
+  const ollamaMessages = toOllamaMessages(workingMessages);
+  const conversation = await conversationService.getConversation(userId, conversationId);
+  if (!conversation?.projectId) return ollamaMessages;
+
+  const { projectService } = await import('./projectService.js');
+  const project = await projectService.getProject(userId, conversation.projectId);
+  if (!project) return ollamaMessages;
+
+  return [
+    {
+      role: 'system',
+      content: `Active project: "${project.name}" (projectId: ${conversation.projectId}). When the user asks about the "current project", "this project", or similar, use get_project or summarize_project with this projectId — do not call list_projects.`,
+    },
+    ...ollamaMessages,
+  ];
 }
 
 interface TextFallbackOutcome {
@@ -322,12 +379,7 @@ async function* processTextFallbackProposals(
         name: parsed.name,
         error: validation.error,
       });
-      yield {
-        type: 'tool_result',
-        name: parsed.name,
-        success: false,
-        content: errorText,
-      };
+      yield toolResultEvent(parsed.name, false, errorText);
       workingMessages.push({
         role: 'tool',
         content: errorText,
@@ -363,12 +415,7 @@ async function* processTextFallbackProposals(
         'text_fallback',
         proposals
       );
-      yield {
-        type: 'tool_result',
-        name: parsed.name,
-        success: staged.result.success,
-        content: staged.result.text,
-      };
+      yield toolResultEvent(parsed.name, staged.result.success, staged.result.text);
       workingMessages.push({
         role: 'tool',
         content: staged.result.success ? stagedToolContent(staged.result.text) : staged.result.text,
@@ -384,6 +431,7 @@ async function* processTextFallbackProposals(
           arguments: staged.proposal.arguments,
           source: staged.proposal.source,
           staged: true,
+          stagedEntity: staged.proposal.stagedEntity,
         };
       }
       outcome.stagedCreateRan = outcome.stagedCreateRan || staged.result.success;
@@ -708,7 +756,7 @@ export class AgentService {
       yield { type: 'status', message: 'Working…' };
 
       for await (const part of streamOllamaAgent(
-        toOllamaMessages(workingMessages),
+        await buildOllamaMessagesWithContext(userId, conversationId, workingMessages),
         iteration,
         userId,
         conversationId
@@ -981,7 +1029,7 @@ export class AgentService {
             index: i,
           });
           yield { type: 'tool_call', name, arguments: args };
-          yield { type: 'tool_result', name, success: false, content: errorText };
+          yield toolResultEvent(name, false, errorText);
           workingMessages.push({
             role: 'tool',
             content: errorText,
@@ -1005,12 +1053,7 @@ export class AgentService {
             proposals,
             i
           );
-          yield {
-            type: 'tool_result',
-            name,
-            success: staged.result.success,
-            content: staged.result.text,
-          };
+          yield toolResultEvent(name, staged.result.success, staged.result.text);
           workingMessages.push({
             role: 'tool',
             content: staged.result.success
@@ -1028,6 +1071,7 @@ export class AgentService {
               arguments: staged.proposal.arguments,
               source: staged.proposal.source,
               staged: true,
+              stagedEntity: staged.proposal.stagedEntity,
             };
           }
 
@@ -1067,12 +1111,19 @@ export class AgentService {
 
       yield { type: 'tool_call', name, arguments: args };
       const result = await executeTool(name, args, userId);
-      yield { type: 'tool_result', name, success: result.success, content: result.text };
+      const entityLinkSource = await entityLinkSourceForToolResult(
+        userId,
+        name,
+        args,
+        result.success
+      );
+      yield toolResultEvent(name, result.success, result.text, entityLinkSource);
 
       workingMessages.push({
         role: 'tool',
         content: result.text,
         toolName: name,
+        ...(entityLinkSource ? { entityLinkSource } : {}),
       });
     }
 
@@ -1138,6 +1189,7 @@ export class AgentService {
       pendingProposals,
       resolvedProposals,
       messageProposals: buildMessageProposals(conversation),
+      messageToolResults: buildMessageToolResults(conversation.messages),
     };
   }
 
@@ -1247,6 +1299,12 @@ export class AgentService {
 
     log.info('Agent stream started', { userId, conversationId: conversation._id });
 
+    const activeProjectId = conversation.projectId ?? projectId;
+    if (activeProjectId && isCurrentProjectQuery(message)) {
+      yield* runGetProjectPreflight(userId, activeProjectId, workingMessages);
+      await conversationService.setMessages(userId, conversation._id, workingMessages);
+    }
+
     yield* this.runAgentLoop(userId, conversation._id, workingMessages);
   }
 
@@ -1280,12 +1338,7 @@ export class AgentService {
           action === 'approve'
             ? await stagingService.commitProposal(userId, conversationId, proposal)
             : await stagingService.rollbackProposal(userId, conversationId, proposal);
-        yield {
-          type: 'tool_result',
-          name: proposal.name,
-          success: true,
-          content,
-        };
+        yield toolResultEvent(proposal.name, true, content);
         extraMessages.push({
           role: 'tool',
           content:
@@ -1296,12 +1349,7 @@ export class AgentService {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to resolve staged write';
-        yield {
-          type: 'tool_result',
-          name: proposal.name,
-          success: false,
-          content: message,
-        };
+        yield toolResultEvent(proposal.name, false, message);
         yield { type: 'error', message };
         return;
       }
@@ -1316,7 +1364,7 @@ export class AgentService {
           error: validation.error,
         });
         yield { type: 'tool_call', name: proposal.name, arguments: proposal.arguments };
-        yield { type: 'tool_result', name: proposal.name, success: false, content: errorText };
+        yield toolResultEvent(proposal.name, false, errorText);
         extraMessages.push({
           role: 'tool',
           content: errorText,
@@ -1336,12 +1384,7 @@ export class AgentService {
       } else {
         yield { type: 'tool_call', name: proposal.name, arguments: validation.data };
         const result = await executeTool(proposal.name, validation.data, userId);
-        yield {
-          type: 'tool_result',
-          name: proposal.name,
-          success: result.success,
-          content: result.text,
-        };
+        yield toolResultEvent(proposal.name, result.success, result.text);
         extraMessages.push({
           role: 'tool',
           content: result.text,

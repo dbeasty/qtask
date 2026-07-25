@@ -30,5 +30,6 @@ export const KNOWN_TOOL_NAMES = [
   'summarize_project',
   'add_task_link',
   'create_project',
+  'get_project',
   'list_projects',
 ] as const;

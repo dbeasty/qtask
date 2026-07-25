@@ -178,3 +178,76 @@ function serializeSubtask(subtask: Record<string, unknown>): Record<string, unkn
     subtasks: ((subtask.subtasks as Record<string, unknown>[]) ?? []).map(serializeSubtask),
   };
 }
+
+export interface SlimTaskForTool {
+  _id: string;
+  title: string;
+  status: string;
+  priority: string;
+  percentComplete: number;
+  projectIds: string[];
+  projectId?: string;
+  description?: string;
+  dueDate?: string;
+  tags?: string[];
+  assigneeId?: string;
+  subtaskCount?: number;
+}
+
+export interface SlimProjectForTool {
+  _id: string;
+  name: string;
+  status: string;
+  percentComplete: number;
+  description?: string;
+  ownerEmail?: string;
+}
+
+function countSubtasks(subtasks: unknown): number {
+  if (!Array.isArray(subtasks)) return 0;
+  return subtasks.reduce((sum, item) => {
+    const subtask = item as Record<string, unknown>;
+    return sum + 1 + countSubtasks(subtask.subtasks);
+  }, 0);
+}
+
+/** Strip embeddings and heavy nested fields before sending tasks to the agent/MCP. */
+export function slimTaskForTool(task: Record<string, unknown>): SlimTaskForTool {
+  const projectIds = normalizeTaskProjectIds(task);
+  const slim: SlimTaskForTool = {
+    _id: String(task._id),
+    title: String(task.title ?? ''),
+    status: String(task.status ?? 'todo'),
+    priority: String(task.priority ?? 'medium'),
+    percentComplete: Number(task.percentComplete ?? 0),
+    projectIds,
+    projectId: projectIds[0],
+  };
+
+  if (task.description) slim.description = String(task.description);
+  if (task.dueDate) slim.dueDate = new Date(task.dueDate as string).toISOString();
+  if (Array.isArray(task.tags) && task.tags.length > 0) {
+    slim.tags = task.tags.map(String);
+  }
+  if (task.assigneeId) slim.assigneeId = String(task.assigneeId);
+
+  const subtaskCount = countSubtasks(task.subtasks);
+  if (subtaskCount > 0) slim.subtaskCount = subtaskCount;
+
+  return slim;
+}
+
+/** Strip permission flags and rollup noise before sending projects to the agent/MCP. */
+export function slimProjectForTool(project: Record<string, unknown>): SlimProjectForTool {
+  const slim: SlimProjectForTool = {
+    _id: String(project._id),
+    name: String(project.name ?? ''),
+    status: String(project.status ?? 'todo'),
+    percentComplete: Number(project.percentComplete ?? 0),
+  };
+
+  if (project.description) slim.description = String(project.description);
+  if (project.ownerEmail) slim.ownerEmail = String(project.ownerEmail);
+
+  return slim;
+}

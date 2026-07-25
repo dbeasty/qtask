@@ -206,6 +206,17 @@ export function UserMenu({
       <label className="user-menu-toggle">
         <input
           type="checkbox"
+          checked={preferences.agentEnterToSend}
+          disabled={prefSaving || saving}
+          onChange={(event) =>
+            void handleTogglePreference('agentEnterToSend', event.target.checked)
+          }
+        />
+        <span>Enter to send in agent</span>
+      </label>
+      <label className="user-menu-toggle">
+        <input
+          type="checkbox"
           checked={preferences.autoApproveProposals}
           disabled={prefSaving || saving}
           onChange={(event) =>

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { inviteService } from '../services/inviteService.js';
 import { projectService } from '../services/projectService.js';
 import { taskService } from '../services/taskService.js';
+import { slimProjectForTool, slimTaskForTool } from '../utils/serialization.js';
 import { createLogger } from '../utils/logger.js';
 import type { StagingContext } from '../types/staging.js';
 
@@ -261,7 +262,8 @@ export const toolDefinitions: ToolDefinition[] = [
     async execute(userId, input) {
       const { limit, ...filters } = input;
       const tasks = await taskService.findTasks(userId, filters, (limit as number) ?? 20);
-      return ok(JSON.stringify({ count: tasks.length, tasks }, null, 2));
+      const slimTasks = tasks.map((task) => slimTaskForTool(task as Record<string, unknown>));
+      return ok(JSON.stringify({ count: slimTasks.length, tasks: slimTasks }, null, 2));
     },
   },
   {
@@ -283,7 +285,7 @@ export const toolDefinitions: ToolDefinition[] = [
     async execute(userId, input) {
       const task = await taskService.getTask(userId, String(input.taskId));
       if (!task) return err('Task not found');
-      return ok(JSON.stringify(task, null, 2));
+      return ok(JSON.stringify(slimTaskForTool(task as Record<string, unknown>), null, 2));
     },
   },
   {
@@ -555,6 +557,25 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'get_project',
+    description: 'Fetch one project by id (use for the active/current project).',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+      },
+      required: ['projectId'],
+    },
+    zodShape: {
+      projectId: objectIdSchema,
+    },
+    async execute(userId, input) {
+      const project = await projectService.getProject(userId, String(input.projectId));
+      if (!project) return err('Project not found');
+      return ok(JSON.stringify(slimProjectForTool(project as unknown as Record<string, unknown>), null, 2));
+    },
+  },
+  {
     name: 'list_projects',
     description: 'List all projects for the user.',
     parameters: {
@@ -564,7 +585,10 @@ export const toolDefinitions: ToolDefinition[] = [
     zodShape: {},
     async execute(userId) {
       const projects = await projectService.listProjects(userId);
-      return ok(JSON.stringify({ count: projects.length, projects }, null, 2));
+      const slimProjects = projects.map((project) =>
+        slimProjectForTool(project as unknown as Record<string, unknown>)
+      );
+      return ok(JSON.stringify({ count: slimProjects.length, projects: slimProjects }, null, 2));
     },
   },
   {

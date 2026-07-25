@@ -513,6 +513,15 @@ export function App() {
             activeProjectId={activeProjectId}
             onTasksChanged={handleTasksChanged}
             onProjectSuggested={setSuggestedProjectName}
+            onOpenTask={(taskId, projectId) => {
+              if (projectId) setActiveProjectId(projectId);
+              setPendingTaskSelection({ kind: 'task', taskId });
+              setAppView('tasks');
+            }}
+            onOpenProject={(projectId) => {
+              setActiveProjectId(projectId);
+              setAppView('projects');
+            }}
             onNeedProject={() => setAppView('projects')}
             externalRefreshKey={shellRefreshKey}
             demoPrompt={demoPrompt}

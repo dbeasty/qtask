@@ -1458,6 +1458,19 @@ main {
   color: var(--color-on-primary);
 }
 
+.message-user .message-action-button {
+  border-color: rgba(255, 255, 255, 0.45);
+  color: var(--color-on-primary);
+}
+
+.message-user .message-action-button:hover,
+.message-user .message-action-button:focus-visible,
+.message-user .message-action-button:active {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.65);
+  color: var(--color-on-primary);
+}
+
 .message p {
   margin: 0;
   white-space: pre-wrap;
@@ -1531,6 +1544,64 @@ main {
   gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
+.agent-entity-link-list {
+  margin-bottom: 0.75rem;
+}
+
+.agent-entity-link-list-heading {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+}
+
+.agent-entity-link {
+  margin-bottom: 0.5rem;
+}
+
+.agent-entity-link .project-task-row {
+  margin-bottom: 0;
+}
+
+.message-body-collapsible {
+  margin-top: 0.15rem;
+}
+
+.message-body-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.message-body-toggle:hover {
+  color: var(--color-text-secondary);
+}
+
+.message-body-chevron {
+  display: inline-block;
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.message-body-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.message-body-toggle-label {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.message-body {
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+}
+
 
 .tool-proposal-source {
   font-size: 0.7rem;

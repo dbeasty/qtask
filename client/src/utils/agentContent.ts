@@ -1,7 +1,7 @@
-import type { UiMessage } from '../types';
+import type { ToolEntityLink, UiMessage } from '../types';
 
 const toolNamePattern =
-  'find_tasks|get_task|get_workload|summarize_project|list_projects|create_task|update_task|create_project|assign_task|share_project|share_task|add_task_link';
+  'find_tasks|get_task|get_workload|summarize_project|get_project|list_projects|create_task|update_task|create_project|assign_task|share_project|share_task|add_task_link';
 
 function tryParseJsonObject(text: string): Record<string, unknown> | null {
   try {
@@ -125,14 +125,89 @@ export function isBoilerplateAssistantContent(content: string): boolean {
   return BOILERPLATE_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
+function messageEntityLinks(message: UiMessage): ToolEntityLink[] {
+  const links: ToolEntityLink[] = [];
+  for (const call of message.toolCalls ?? []) {
+    if (call.entityLinks?.length) {
+      links.push(...call.entityLinks);
+    }
+  }
+  return links;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripReadToolDetailBlocks(content: string, entityLinks: ToolEntityLink[]): string {
+  if (entityLinks.length === 0) return content;
+
+  let result = content;
+
+  for (const link of entityLinks) {
+    const label = escapeRegExp(link.label);
+    const kind = link.kind === 'project' ? 'Project' : 'Task';
+
+    result = result.replace(
+      new RegExp(
+        `(?:^|\\n)\\s*\\*{0,2}${kind}:\\*{0,2}\\s*${label}[^\\n]*(?:\\n(?:\\s*[-*][^\\n]*|\\s*\\*{0,2}[^:\\n]+:\\*{0,2}[^\\n]*)*)*`,
+        'gim'
+      ),
+      '\n'
+    );
+
+    result = result.replace(
+      new RegExp(`(?:^|\\n)\\s*\\*{0,2}${label}\\*{0,2}\\s*\\(ID:\\s*\`[^\`]+\`\\)`, 'gim'),
+      '\n'
+    );
+  }
+
+  const lines = result.split('\n');
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return true;
+    if (/^\d+\.\s+\*\*/.test(trimmed) && entityLinks.some((link) => trimmed.includes(link.label))) {
+      return false;
+    }
+    if (
+      /^[-*]\s+/.test(trimmed) &&
+      /(\*\*Status:\*\*|\*\*Percent Complete:\*\*|\*\*Description:\*\*|\*\*Owner Email:\*\*|\*\*Project:\*\*|\*\*Task:\*\*)/i.test(
+        trimmed
+      )
+    ) {
+      return false;
+    }
+    if (/^\*\*Status:\*\*/i.test(trimmed)) return false;
+    if (/^\*\*Percent Complete:\*\*/i.test(trimmed)) return false;
+    if (/^\*\*Description:\*\*/i.test(trimmed)) return false;
+    if (/^\*\*Owner Email:\*\*/i.test(trimmed)) return false;
+    if (/^\*\*Project:\*\*/i.test(trimmed) && entityLinks.some((link) => trimmed.includes(link.label))) {
+      return false;
+    }
+    return true;
+  });
+
+  result = filtered.join('\n');
+  result = result.replace(/\n{3,}/g, '\n\n').trim();
+  return result;
+}
+
 export function displayMessageContent(message: UiMessage): string {
   let content = message.content;
+  const entityLinks = messageEntityLinks(message);
+
   if ((message.proposals?.length ?? 0) > 0) {
     content = stripToolArtifactsFromContent(content);
     if (isBoilerplateAssistantContent(content)) {
       return '';
     }
   }
+
+  if (entityLinks.length > 0) {
+    content = stripReadToolDetailBlocks(content, entityLinks);
+    content = stripToolArtifactsFromContent(content);
+  }
+
   return content.trim();
 }
 

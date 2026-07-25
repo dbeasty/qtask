@@ -25,6 +25,7 @@ export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
   trackExpenses: boolean;
+  agentEnterToSend: boolean;
   completedDemoTour: boolean;
   theme: ThemePreference;
   startupView: StartupViewPreference;
@@ -44,6 +45,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   autoApproveProposals: false,
   skipConfirmations: false,
   trackExpenses: true,
+  agentEnterToSend: true,
   completedDemoTour: false,
   theme: 'light',
   startupView: 'last',
@@ -62,6 +64,7 @@ export function getUserPreferences(user: AuthUser | null | undefined): UserPrefe
     autoApproveProposals: user?.preferences?.autoApproveProposals === true,
     skipConfirmations: user?.preferences?.skipConfirmations === true,
     trackExpenses: user?.preferences?.trackExpenses !== false,
+    agentEnterToSend: user?.preferences?.agentEnterToSend !== false,
     completedDemoTour: user?.preferences?.completedDemoTour === true,
     theme: user?.preferences?.theme === 'dark' ? 'dark' : 'light',
     startupView: normalizeStartupView(user?.preferences?.startupView),

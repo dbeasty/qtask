@@ -12,18 +12,24 @@ import {
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { getUserPreferences } from '../auth/storage';
+import { AgentEntityLink } from '../components/AgentEntityLink';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
 import { CurrentProjectBar } from '../components/CurrentProjectBar';
-import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
+import type { AgentStreamEvent, ConversationSummary, Project, UiMessage, UiProposal, UiToolCall } from '../types';
 import { displayMessageContent, proposalDisplayLabel } from '../utils/agentContent';
+import { getProposalEntityLink } from '../utils/agentEntityLink';
+import { buildUiMessagesFromConversation } from '../utils/mergeAssistantTurns';
 import { suggestProjectFromMessages } from '../utils/project';
 import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
+import { handleAgentInputKeyDown } from '../utils/agentInputKeyboard';
 
 interface AgentPageProps {
   onTasksChanged: () => void;
   onProjectSuggested?: (name: string) => void;
   activeProjectId: string | null;
+  onOpenTask?: (taskId: string, projectId?: string) => void;
+  onOpenProject?: (projectId: string) => void;
   onNeedProject?: () => void;
   externalRefreshKey?: number;
   demoPrompt?: string | null;
@@ -187,6 +193,50 @@ function toggleProposalExpanded(
   });
 }
 
+function toggleAssistantExpanded(
+  setExpandedAssistantKeys: React.Dispatch<React.SetStateAction<Set<string>>>,
+  messageId: string
+) {
+  setExpandedAssistantKeys((prev) => {
+    const next = new Set(prev);
+    if (next.has(messageId)) {
+      next.delete(messageId);
+    } else {
+      next.add(messageId);
+    }
+    return next;
+  });
+}
+
+function messageHasStructuredResults(message: UiMessage, activeProjectId: string | null): boolean {
+  if (message.toolCalls?.some((call) => call.entityLinks && call.entityLinks.length > 0)) {
+    return true;
+  }
+  return (
+    message.proposals?.some((proposal) => getProposalEntityLink(proposal, activeProjectId) !== null) ??
+    false
+  );
+}
+
+function shouldCollapseAssistantBody(message: UiMessage, activeProjectId: string | null): boolean {
+  if (message.role !== 'assistant' || message.streaming) return false;
+  const content = displayMessageContent(message);
+  if (!content) return false;
+  return messageHasStructuredResults(message, activeProjectId);
+}
+
+function entityLinkListHeading(call: UiToolCall): string | null {
+  const count = call.entityLinks?.length ?? 0;
+  if (count === 0) return null;
+  if (count === 1 && call.name === 'get_project') return null;
+  if (count === 1) {
+    const kind = call.entityLinks![0]!.kind;
+    return kind === 'project' ? '1 project found' : '1 task found';
+  }
+  const kind = call.entityLinks![0]!.kind;
+  return kind === 'project' ? `${count} projects found` : `${count} tasks found`;
+}
+
 function handleStreamEvent(
   event: AgentStreamEvent,
   assistantId: string,
@@ -236,22 +286,22 @@ function handleStreamEvent(
   if (event.type === 'tool_result') {
     toolsTouched = true;
     setMessages((prev) =>
-      prev.map((message) =>
-        message.id === assistantId
-          ? {
-              ...message,
-              toolCalls: (message.toolCalls ?? []).map((call) =>
-                call.name === event.name
-                  ? {
-                      ...call,
-                      success: event.success,
-                      errorContent: event.success ? undefined : event.content,
-                    }
-                  : call
-              ),
-            }
-          : message
-      )
+      prev.map((message) => {
+        if (message.id !== assistantId) return message;
+
+        const toolCalls = [...(message.toolCalls ?? [])];
+        const pendingIndex = toolCalls.findIndex((call) => call.success === undefined);
+        if (pendingIndex >= 0) {
+          toolCalls[pendingIndex] = {
+            ...toolCalls[pendingIndex]!,
+            success: event.success,
+            errorContent: event.success ? undefined : event.content,
+            entityLinks: event.entityLinks,
+          };
+        }
+
+        return { ...message, toolCalls };
+      })
     );
   }
 
@@ -270,6 +320,7 @@ function handleStreamEvent(
                   source: event.source,
                   status: 'pending' as const,
                   staged: event.staged,
+                  stagedEntity: event.stagedEntity,
                 },
               ],
             }
@@ -326,6 +377,8 @@ export function AgentPage({
   onTasksChanged,
   onProjectSuggested,
   activeProjectId,
+  onOpenTask,
+  onOpenProject,
   onNeedProject,
   externalRefreshKey = 0,
   demoPrompt,
@@ -358,6 +411,7 @@ export function AgentPage({
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [expandedProposalKeys, setExpandedProposalKeys] = useState<Set<string>>(() => new Set());
+  const [expandedAssistantKeys, setExpandedAssistantKeys] = useState<Set<string>>(() => new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
@@ -443,24 +497,14 @@ export function AgentPage({
       .then(({ conversation }) => {
         if (cancelled) return;
         const visibleStored = conversation.messages.filter(
-          (message: StoredMessage) => message.role === 'user' || message.role === 'assistant'
+          (message) => message.role === 'user' || message.role === 'assistant'
         );
-        const messageProposals = conversation.messageProposals ?? {};
-        const uiMessages: UiMessage[] = visibleStored.map((message: StoredMessage, index: number) => {
-          const proposals = messageProposals[index];
-          const hasPending = proposals?.some((proposal) => proposal.status === 'pending');
-
-          return {
-            id: `${restoredConversationId}-${index}`,
-            role: message.role as 'user' | 'assistant',
-            content: message.content,
-            toolCalls: message.toolCalls?.map((call) => ({
-              name: call.function.name,
-            })),
-            proposals: proposals?.length ? proposals : undefined,
-            paused: Boolean(hasPending),
-          };
-        });
+        const uiMessages = buildUiMessagesFromConversation(
+          restoredConversationId,
+          visibleStored,
+          conversation.messageProposals ?? {},
+          conversation.messageToolResults ?? {}
+        );
         setMessages(uiMessages);
         setSidebarOpen(false);
       })
@@ -492,27 +536,17 @@ export function AgentPage({
   async function syncConversationFromServer(id: string, keepStreaming = false) {
     const { conversation } = await getConversation(id);
     const visibleStored = conversation.messages.filter(
-      (message: StoredMessage) => message.role === 'user' || message.role === 'assistant'
+      (message) => message.role === 'user' || message.role === 'assistant'
     );
-    const messageProposals = conversation.messageProposals ?? {};
 
     setMessages((prev) => {
       const streaming = keepStreaming ? prev.filter((message) => message.streaming) : [];
-      const uiMessages: UiMessage[] = visibleStored.map((message: StoredMessage, index: number) => {
-        const proposals = messageProposals[index];
-        const hasPending = proposals?.some((proposal) => proposal.status === 'pending');
-
-        return {
-          id: `${id}-${index}`,
-          role: message.role as 'user' | 'assistant',
-          content: message.content,
-          toolCalls: message.toolCalls?.map((call) => ({
-            name: call.function.name,
-          })),
-          proposals: proposals?.length ? proposals : undefined,
-          paused: Boolean(hasPending),
-        };
-      });
+      const uiMessages = buildUiMessagesFromConversation(
+        id,
+        visibleStored,
+        conversation.messageProposals ?? {},
+        conversation.messageToolResults ?? {}
+      );
       return [...uiMessages, ...streaming];
     });
   }
@@ -525,25 +559,15 @@ export function AgentPage({
 
     const { conversation } = await getConversation(id);
     const visibleStored = conversation.messages.filter(
-      (message: StoredMessage) => message.role === 'user' || message.role === 'assistant'
+      (message) => message.role === 'user' || message.role === 'assistant'
     );
-    const messageProposals = conversation.messageProposals ?? {};
 
-    const uiMessages: UiMessage[] = visibleStored.map((message: StoredMessage, index: number) => {
-      const proposals = messageProposals[index];
-      const hasPending = proposals?.some((proposal) => proposal.status === 'pending');
-
-      return {
-        id: `${id}-${index}`,
-        role: message.role as 'user' | 'assistant',
-        content: message.content,
-        toolCalls: message.toolCalls?.map((call) => ({
-          name: call.function.name,
-        })),
-        proposals: proposals?.length ? proposals : undefined,
-        paused: Boolean(hasPending),
-      };
-    });
+    const uiMessages = buildUiMessagesFromConversation(
+      id,
+      visibleStored,
+      conversation.messageProposals ?? {},
+      conversation.messageToolResults ?? {}
+    );
     setMessages(uiMessages);
     setSidebarOpen(false);
   }
@@ -1056,6 +1080,26 @@ export function AgentPage({
                   )
               )}
 
+              {message.toolCalls?.map((call, callIndex) => {
+                if (!call.entityLinks || call.entityLinks.length === 0) return null;
+                const heading = entityLinkListHeading(call);
+                return (
+                  <div key={`entity-links-${callIndex}`} className="agent-entity-link-list">
+                    {heading && (
+                      <p className="agent-entity-link-list-heading muted">{heading}</p>
+                    )}
+                    {call.entityLinks.map((link) => (
+                      <AgentEntityLink
+                        key={link.id}
+                        link={link}
+                        onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
+                        onOpenProject={(projectId) => onOpenProject?.(projectId)}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+
               {message.warnings?.map((warning, index) => (
                 <p key={`warn-${index}`} className="warning-banner">
                   {warning}
@@ -1102,6 +1146,18 @@ export function AgentPage({
                             </span>
                           )}
                         </div>
+
+                        {(() => {
+                          const entityLink = getProposalEntityLink(proposal, activeProjectId);
+                          if (!entityLink) return null;
+                          return (
+                            <AgentEntityLink
+                              link={entityLink}
+                              onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
+                              onOpenProject={(projectId) => onOpenProject?.(projectId)}
+                            />
+                          );
+                        })()}
 
                         {isEditing ? (
                           <>
@@ -1259,7 +1315,34 @@ export function AgentPage({
                   );
                 }
                 if (displayContent) {
-                  return <p>{displayContent}</p>;
+                  const collapsible = shouldCollapseAssistantBody(message, activeProjectId);
+                  const isExpanded = expandedAssistantKeys.has(message.id);
+                  if (!collapsible) {
+                    return <p className="message-body">{displayContent}</p>;
+                  }
+                  return (
+                    <div className="message-body-collapsible">
+                      <button
+                        type="button"
+                        className="message-body-toggle"
+                        aria-expanded={isExpanded}
+                        onClick={() =>
+                          toggleAssistantExpanded(setExpandedAssistantKeys, message.id)
+                        }
+                      >
+                        <span
+                          className={`message-body-chevron ${isExpanded ? 'expanded' : ''}`}
+                          aria-hidden="true"
+                        >
+                          ›
+                        </span>
+                        <span className="message-body-toggle-label">
+                          {isExpanded ? 'Hide response' : 'Show response'}
+                        </span>
+                      </button>
+                      {isExpanded && <div className="message-body">{displayContent}</div>}
+                    </div>
+                  );
                 }
                 return null;
               })()}
@@ -1345,6 +1428,13 @@ export function AgentPage({
             ref={inputRef}
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) =>
+              handleAgentInputKeyDown(event, {
+                enterToSend: preferences.agentEnterToSend,
+                canSend: !sending && !!input.trim(),
+                onSend: () => event.currentTarget.form?.requestSubmit(),
+              })
+            }
             placeholder={
               pendingProposals.length > 0
                 ? preferences.autoApproveProposals

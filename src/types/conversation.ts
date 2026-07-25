@@ -10,6 +10,8 @@ export interface StoredMessage {
   content: string;
   toolCalls?: OllamaToolCall[];
   toolName?: string;
+  /** Slim JSON for UI entity links (e.g. summarize_project); not sent to the LLM. */
+  entityLinkSource?: string;
 }
 
 export interface PendingProposal {
@@ -40,19 +42,30 @@ export interface ConversationSummary {
   updatedAt: string;
 }
 
+import type { ToolEntityLink, UiToolCallEnrichment } from '../utils/toolEntityLinks.js';
+
+export type { ToolEntityLink, UiToolCallEnrichment };
+
 export interface Conversation extends ConversationSummary {
   messages: StoredMessage[];
   pendingProposals?: PendingProposal[];
   pausedBatch?: PausedBatchState | null;
   resolvedProposals?: PendingProposal[];
   messageProposals?: Record<number, PendingProposal[]>;
+  messageToolResults?: Record<number, UiToolCallEnrichment[]>;
 }
 
 export type AgentStreamEvent =
   | { type: 'token'; content: string }
   | { type: 'status'; message: string }
   | { type: 'tool_call'; name: string; arguments: Record<string, unknown> }
-  | { type: 'tool_result'; name: string; success: boolean; content: string }
+  | {
+      type: 'tool_result';
+      name: string;
+      success: boolean;
+      content: string;
+      entityLinks?: ToolEntityLink[];
+    }
   | {
       type: 'tool_proposal';
       id: string;
@@ -60,6 +73,10 @@ export type AgentStreamEvent =
       arguments: Record<string, unknown>;
       source: 'native' | 'text_fallback' | 'manual';
       staged?: boolean;
+      stagedEntity?: {
+        kind: 'task' | 'project';
+        id: string;
+      };
     }
   | { type: 'warning'; message: string }
   | { type: 'paused'; conversationId: string; pendingCount: number }

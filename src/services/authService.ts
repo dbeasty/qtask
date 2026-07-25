@@ -29,6 +29,7 @@ export interface UserPreferences {
   autoApproveProposals: boolean;
   skipConfirmations: boolean;
   trackExpenses: boolean;
+  agentEnterToSend: boolean;
   completedDemoTour: boolean;
   theme: ThemePreference;
   startupView: StartupViewPreference;
@@ -46,6 +47,7 @@ function serializePreferences(preferences?: {
   autoApproveProposals?: boolean | null;
   skipConfirmations?: boolean | null;
   trackExpenses?: boolean | null;
+  agentEnterToSend?: boolean | null;
   completedDemoTour?: boolean | null;
   theme?: ThemePreference | null;
   startupView?: StartupViewPreference | null;
@@ -60,6 +62,7 @@ function serializePreferences(preferences?: {
     autoApproveProposals: preferences?.autoApproveProposals === true,
     skipConfirmations: preferences?.skipConfirmations === true,
     trackExpenses,
+    agentEnterToSend: preferences?.agentEnterToSend !== false,
     completedDemoTour: preferences?.completedDemoTour === true,
     theme,
     startupView: normalizeStartupView(preferences?.startupView),
@@ -77,6 +80,7 @@ function serializeUser(user: {
       autoApproveProposals?: boolean | null;
       skipConfirmations?: boolean | null;
       trackExpenses?: boolean | null;
+      agentEnterToSend?: boolean | null;
       completedDemoTour?: boolean | null;
       theme?: ThemePreference | null;
       startupView?: StartupViewPreference | null;
@@ -289,6 +293,7 @@ export class AuthService {
         autoApproveProposals?: boolean;
         skipConfirmations?: boolean;
         trackExpenses?: boolean;
+        agentEnterToSend?: boolean;
         completedDemoTour?: boolean;
         theme?: ThemePreference;
         startupView?: StartupViewPreference;
@@ -316,6 +321,7 @@ export class AuthService {
           autoApproveProposals: false,
           skipConfirmations: false,
           trackExpenses: true,
+          agentEnterToSend: true,
           completedDemoTour: false,
           theme: 'light',
           startupView: 'last',
@@ -331,6 +337,9 @@ export class AuthService {
         user.preferences.trackExpenses = input.preferences.trackExpenses;
       } else if (input.preferences.enableHourlyTracking !== undefined) {
         user.preferences.trackExpenses = input.preferences.enableHourlyTracking;
+      }
+      if (input.preferences.agentEnterToSend !== undefined) {
+        user.preferences.agentEnterToSend = input.preferences.agentEnterToSend;
       }
       if (input.preferences.completedDemoTour !== undefined) {
         user.preferences.completedDemoTour = input.preferences.completedDemoTour;

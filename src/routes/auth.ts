@@ -50,6 +50,7 @@ const updateProfileSchema = z.object({
       autoApproveProposals: z.boolean().optional(),
       skipConfirmations: z.boolean().optional(),
       trackExpenses: z.boolean().optional(),
+      agentEnterToSend: z.boolean().optional(),
       completedDemoTour: z.boolean().optional(),
       theme: z.enum(['dark', 'light']).optional(),
       startupView: z.enum(['auto', 'agent', 'projects', 'tasks', 'last']).optional(),
