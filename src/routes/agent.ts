@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
+import { config } from '../config/index.js';
 import { getUserId } from '../middleware/index.js';
 import { agentService } from '../services/agentService.js';
 import { conversationService } from '../services/conversationService.js';
@@ -9,6 +11,14 @@ import { AbortError } from '../utils/abortSignal.js';
 const log = createLogger('agentRoute');
 
 export const agentRouter = Router();
+
+const agentChatLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.nodeEnv === 'production' ? 60 : 500,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many agent requests, please try again later' },
+});
 
 function createRequestAbortSignal(req: import('express').Request): AbortSignal {
   const controller = new AbortController();
@@ -136,7 +146,7 @@ agentRouter.post('/conversations/:id/duplicate', async (req, res, next) => {
   }
 });
 
-agentRouter.post('/agent', async (req, res, next) => {
+agentRouter.post('/agent', agentChatLimiter, async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { message, conversationId, projectId } = req.body as {
@@ -203,7 +213,7 @@ agentRouter.post('/agent/proposals', async (req, res, next) => {
   }
 });
 
-agentRouter.post('/agent/approve', async (req, res, next) => {
+agentRouter.post('/agent/approve', agentChatLimiter, async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { conversationId, proposalId, action } = req.body as {

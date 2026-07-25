@@ -12,6 +12,7 @@ import {
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { getUserPreferences } from '../auth/storage';
+import { AgentCommandPalette } from '../components/AgentCommandPalette';
 import { AgentEntityLink } from '../components/AgentEntityLink';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
@@ -30,6 +31,17 @@ import { buildUiMessagesFromConversation } from '../utils/mergeAssistantTurns';
 import { suggestProjectFromMessages } from '../utils/project';
 import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
 import { handleAgentInputKeyDown } from '../utils/agentInputKeyboard';
+import {
+  AGENT_INPUT_IDLE_PLACEHOLDER,
+  applyInstructionSelection,
+  buildAgentCommandPaletteItems,
+  clampPaletteHighlightIndex,
+  filterAgentCommandPaletteItems,
+  isCommandPaletteOpen,
+  parseSlashCommand,
+  resolveCommandPaletteKeyDown,
+  type AgentCommandPaletteItem,
+} from '../utils/agentCommandPalette';
 import { findProjectByName, parseActiveProjectSwitchCommand, projectForSwitchPrompt, projectNameFromProposal, shouldOfferSwitchAfterCreateProject } from '../utils/agentProjectSwitch';
 
 interface AgentPageProps {
@@ -454,6 +466,8 @@ export function AgentPage({
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState('');
+  const [paletteDismissed, setPaletteDismissed] = useState(false);
+  const [paletteHighlightIndex, setPaletteHighlightIndex] = useState(0);
   const [sending, setSending] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approvalProgress, setApprovalProgress] = useState<ApprovalProgress | null>(null);
@@ -482,6 +496,30 @@ export function AgentPage({
   conversationIdRef.current = conversationId;
   const sessionRestoreAppliedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+
+  const paletteItems = useMemo(() => buildAgentCommandPaletteItems(), []);
+  const slashCommand = parseSlashCommand(input);
+  const filteredPaletteItems = useMemo(() => {
+    if (!slashCommand) return [];
+    return filterAgentCommandPaletteItems(paletteItems, slashCommand.query);
+  }, [paletteItems, slashCommand]);
+  const paletteOpen = isCommandPaletteOpen(input) && !paletteDismissed;
+
+  useEffect(() => {
+    if (!isCommandPaletteOpen(input)) {
+      setPaletteDismissed(false);
+    }
+  }, [input]);
+
+  useEffect(() => {
+    setPaletteHighlightIndex(0);
+  }, [slashCommand?.query, paletteDismissed]);
+
+  function selectPaletteItem(item: AgentCommandPaletteItem) {
+    setInput(applyInstructionSelection(item));
+    setPaletteDismissed(false);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
 
   const resolveProjectLabel = useMemo(
     () => (projectId: string) => projects.find((project) => project._id === projectId)?.name,
@@ -1684,28 +1722,68 @@ export function AgentPage({
         )}
 
         <form className="agent-input" onSubmit={handleSend} data-demo-step="agent-input">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) =>
-              handleAgentInputKeyDown(event, {
-                enterToSend: preferences.agentEnterToSend,
-                canSend: !!input.trim(),
-                onSend: () => event.currentTarget.form?.requestSubmit(),
-              })
-            }
-            placeholder={
-              pendingProposals.length > 0
-                ? preferences.autoApproveProposals
-                  ? 'Pending actions will be approved automatically…'
-                  : 'Type a message, or "approve" to confirm the pending action…'
-                : agentWorking
-                  ? 'Type to queue another message, or click Stop…'
-                  : 'Create tasks, search work, summarize a project…'
-            }
-            rows={3}
-          />
+          <div className="agent-input-compose">
+            <AgentCommandPalette
+              open={paletteOpen}
+              items={filteredPaletteItems}
+              highlightIndex={paletteHighlightIndex}
+              onHighlight={setPaletteHighlightIndex}
+              onSelect={selectPaletteItem}
+            />
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(event) => {
+                setPaletteDismissed(false);
+                setInput(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                const paletteAction = resolveCommandPaletteKeyDown(event.key, {
+                  paletteOpen,
+                  hasItems: filteredPaletteItems.length > 0,
+                  hasHighlight: filteredPaletteItems.length > 0,
+                });
+
+                if (paletteAction.type === 'move') {
+                  event.preventDefault();
+                  setPaletteHighlightIndex((index) =>
+                    clampPaletteHighlightIndex(
+                      index + paletteAction.delta,
+                      filteredPaletteItems.length
+                    )
+                  );
+                  return;
+                }
+                if (paletteAction.type === 'accept') {
+                  event.preventDefault();
+                  const item = filteredPaletteItems[paletteHighlightIndex];
+                  if (item) selectPaletteItem(item);
+                  return;
+                }
+                if (paletteAction.type === 'close') {
+                  event.preventDefault();
+                  setPaletteDismissed(true);
+                  return;
+                }
+
+                handleAgentInputKeyDown(event, {
+                  enterToSend: preferences.agentEnterToSend,
+                  canSend: !!input.trim(),
+                  onSend: () => event.currentTarget.form?.requestSubmit(),
+                });
+              }}
+              placeholder={
+                pendingProposals.length > 0
+                  ? preferences.autoApproveProposals
+                    ? 'Pending actions will be approved automatically…'
+                    : 'Type a message, or "approve" to confirm the pending action…'
+                  : agentWorking
+                    ? 'Type to queue another message, or click Stop…'
+                    : AGENT_INPUT_IDLE_PLACEHOLDER
+              }
+              rows={3}
+            />
+          </div>
           {agentWorking ? (
             <button type="button" className="primary-button" onClick={() => void handleStop()}>
               Stop

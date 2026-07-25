@@ -76,14 +76,6 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     message: { error: 'Too many authentication attempts, please try again later' },
   });
 
-  const agentLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 60,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: 'Too many agent requests, please try again later' },
-  });
-
   app.get('/health', async (_req, res) => {
     const checks: Record<string, string> = { service: 'ok' };
 
@@ -113,7 +105,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   app.use('/api/invites', requireAuth, invitesRouter);
   app.use('/api/notifications', requireAuth, notificationsRouter);
   app.use('/api/search', requireAuth, searchRouter);
-  app.use('/api', requireAuth, agentLimiter, agentRouter);
+  app.use('/api', requireAuth, agentRouter);
 
   if (config.serveClient && config.nodeEnv === 'production') {
     const clientDist = path.resolve(__dirname, '../client/dist');

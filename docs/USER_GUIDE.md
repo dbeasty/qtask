@@ -235,7 +235,7 @@ The agent can create **top-level projects** and **sub-projects** under your acti
 
 ### Supported instructions
 
-Create and add commands need a **name or title** — saying only "create a project" or "add a new task" is not enough. Use the examples below as templates and swap in your own names.
+In the Agent message box, type **`/`** for a command list. Create and add commands need a **name or title** — saying only "create a project" or "add a new task" is not enough. Use the examples below as templates and swap in your own names.
 
 | Goal | Say this | What happens | Approval needed? |
 |------|----------|--------------|------------------|
