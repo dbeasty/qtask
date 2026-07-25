@@ -848,6 +848,99 @@ export class ProjectService {
     };
   }
 
+  async getDescendantProjectIds(projectId: string): Promise<string[]> {
+    const descendants: string[] = [];
+    let frontier = [projectId];
+
+    while (frontier.length > 0) {
+      const children = await ProjectModel.find({
+        parentId: { $in: frontier },
+        staging: { $exists: false },
+      })
+        .select('_id')
+        .lean();
+
+      const childIds = children.map((child) => String(child._id));
+      descendants.push(...childIds);
+      frontier = childIds;
+    }
+
+    return descendants;
+  }
+
+  async grantCollaboratorAccess(
+    rootProjectId: string,
+    targetUserId: string,
+    role: CollaboratorRole
+  ): Promise<void> {
+    const projectIds = [rootProjectId, ...(await this.getDescendantProjectIds(rootProjectId))];
+
+    for (const pid of projectIds) {
+      const project = await ProjectModel.findById(pid);
+      if (!project) continue;
+      if (project.userId === targetUserId) continue;
+
+      const collaborators = (project.collaborators ?? []).map((c) => ({
+        userId: c.userId,
+        role: c.role,
+      }));
+      const existing = collaborators.find((c) => c.userId === targetUserId);
+      if (existing) {
+        existing.role = role;
+      } else {
+        collaborators.push({ userId: targetUserId, role });
+      }
+      project.set('collaborators', collaborators);
+      await project.save();
+    }
+  }
+
+  private async removeCollaboratorFromTree(
+    rootProjectId: string,
+    collaboratorUserId: string
+  ): Promise<void> {
+    const projectIds = [rootProjectId, ...(await this.getDescendantProjectIds(rootProjectId))];
+
+    for (const pid of projectIds) {
+      const project = await ProjectModel.findById(pid);
+      if (!project) continue;
+
+      const before = project.collaborators.length;
+      const remaining = project.collaborators
+        .filter((c) => c.userId !== collaboratorUserId)
+        .map((c) => ({ userId: c.userId, role: c.role }));
+      if (remaining.length === before) continue;
+
+      project.set('collaborators', remaining);
+      await project.save();
+    }
+  }
+
+  async getProjectShareSummary(userId: string, projectId: string) {
+    await this.assertProjectAccess(userId, projectId, 'owner');
+
+    const descendantIds = await this.getDescendantProjectIds(projectId);
+    const directTaskCount = await TaskModel.countDocuments({
+      staging: { $exists: false },
+      $or: [{ projectIds: projectId }, { projectId }],
+    });
+
+    let descendantTaskCount = 0;
+    for (const childId of descendantIds) {
+      descendantTaskCount += await TaskModel.countDocuments({
+        staging: { $exists: false },
+        $or: [{ projectIds: childId }, { projectId: childId }],
+      });
+    }
+
+    return {
+      directTaskCount,
+      descendantProjectCount: descendantIds.length,
+      descendantTaskCount,
+      totalTaskCount: directTaskCount + descendantTaskCount,
+    };
+  }
+
   async addCollaborator(
     userId: string,
     projectId: string,
@@ -890,9 +983,12 @@ export class ProjectService {
       throw new HttpError(409, 'User is already a collaborator');
     }
 
-    project.collaborators.push({ userId: targetId, role });
-    await project.save();
-    return serializeProject(project.toObject() as LeanProject, userId);
+    await this.grantCollaboratorAccess(projectId, targetId, role);
+    const refreshed = await ProjectModel.findById(projectId);
+    if (!refreshed) {
+      throw new HttpError(404, 'Project not found');
+    }
+    return serializeProject(refreshed.toObject() as LeanProject, userId);
   }
 
   async updateCollaboratorRole(
@@ -942,16 +1038,17 @@ export class ProjectService {
       throw new HttpError(404, 'Project not found');
     }
 
-    const before = project.collaborators.length;
-    const remaining = project.collaborators
-      .filter((c) => c.userId !== collaboratorUserId)
-      .map((c) => ({ userId: c.userId, role: c.role }));
-    if (remaining.length === before) {
+    const onRoot = (project.collaborators ?? []).some((c) => c.userId === collaboratorUserId);
+    if (!onRoot) {
       throw new HttpError(404, 'Collaborator not found');
     }
-    project.set('collaborators', remaining);
 
-    await project.save();
+    await this.removeCollaboratorFromTree(projectId, collaboratorUserId);
+
+    const refreshed = await ProjectModel.findById(projectId);
+    if (!refreshed) {
+      throw new HttpError(404, 'Project not found');
+    }
 
     if (isSelf && access.role !== 'owner') {
       return { left: true as const, project: null };
@@ -959,7 +1056,7 @@ export class ProjectService {
 
     return {
       left: false as const,
-      project: await serializeProject(project.toObject() as LeanProject, userId),
+      project: await serializeProject(refreshed.toObject() as LeanProject, userId),
     };
   }
 

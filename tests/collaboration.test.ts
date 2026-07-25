@@ -54,6 +54,27 @@ async function registerAndVerify(email: string, password = 'password1234') {
   return { token: login.body.token as string, userId: me.body.user.id as string, email };
 }
 
+async function inviteCollaborator(
+  ownerToken: string,
+  invitee: { token: string; email: string },
+  projectId: string,
+  role: 'editor' | 'executor' | 'viewer' = 'editor'
+) {
+  const inviteRes = await request(app)
+    .post(`/api/projects/${projectId}/collaborators`)
+    .set('Authorization', `Bearer ${ownerToken}`)
+    .send({ email: invitee.email, role })
+    .expect(201);
+
+  const inviteId = inviteRes.body.invite._id as string;
+  await request(app)
+    .post(`/api/invites/${inviteId}/accept`)
+    .set('Authorization', `Bearer ${invitee.token}`)
+    .expect(200);
+
+  return inviteRes.body.invite;
+}
+
 describe('project collaboration', () => {
   it('keeps non-members isolated from projects and tasks', async () => {
     const alice = await registerAndVerify('collab-alice@example.com');
@@ -117,15 +138,17 @@ describe('project collaboration', () => {
       .expect(201);
     const taskId = taskRes.body.task._id as string;
 
-    const added = await request(app)
-      .post(`/api/projects/${projectId}/collaborators`)
-      .set('Authorization', `Bearer ${alice.token}`)
-      .send({ email: bob.email, role: 'editor' })
-      .expect(201);
+    const added = await inviteCollaborator(alice.token, bob, projectId, 'editor');
 
-    assert.equal(added.body.project.collaborators.length, 1);
-    assert.equal(added.body.project.collaborators[0].email, bob.email);
-    assert.equal(added.body.project.collaborators[0].role, 'editor');
+    assert.equal(added.inviteeEmail, bob.email);
+    assert.equal(added.role, 'editor');
+
+    const aliceProject = await request(app)
+      .get(`/api/projects/${projectId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+    assert.equal(aliceProject.body.project.collaborators.length, 1);
+    assert.equal(aliceProject.body.project.collaborators[0].email, bob.email);
 
     const bobProjects = await request(app)
       .get('/api/projects')
@@ -187,11 +210,7 @@ describe('project collaboration', () => {
       .expect(201);
     const taskId = taskRes.body.task._id as string;
 
-    await request(app)
-      .post(`/api/projects/${projectId}/collaborators`)
-      .set('Authorization', `Bearer ${alice.token}`)
-      .send({ email: bob.email, role: 'viewer' })
-      .expect(201);
+    await inviteCollaborator(alice.token, bob, projectId, 'viewer');
 
     await request(app)
       .get(`/api/tasks/${taskId}`)
@@ -233,11 +252,7 @@ describe('project collaboration', () => {
       .expect(201);
     const projectId = projectRes.body.project._id as string;
 
-    await request(app)
-      .post(`/api/projects/${projectId}/collaborators`)
-      .set('Authorization', `Bearer ${alice.token}`)
-      .send({ email: 'Leave-Bob@example.com', role: 'executor' })
-      .expect(201);
+    await inviteCollaborator(alice.token, bob, projectId, 'executor');
 
     const roleUpdated = await request(app)
       .patch(`/api/projects/${projectId}/collaborators/${bob.userId}`)
@@ -276,11 +291,7 @@ describe('project collaboration', () => {
       .expect(201);
     const taskId = taskRes.body.task._id as string;
 
-    await request(app)
-      .post(`/api/projects/${projectId}/collaborators`)
-      .set('Authorization', `Bearer ${alice.token}`)
-      .send({ email: bob.email, role: 'executor' })
-      .expect(201);
+    await inviteCollaborator(alice.token, bob, projectId, 'executor');
 
     const bobProjects = await request(app)
       .get('/api/projects')
@@ -341,11 +352,7 @@ describe('project collaboration', () => {
       .expect(201);
     const taskId = taskRes.body.task._id as string;
 
-    await request(app)
-      .post(`/api/projects/${projectId}/collaborators`)
-      .set('Authorization', `Bearer ${alice.token}`)
-      .send({ email: bob.email, role: 'viewer' })
-      .expect(201);
+    await inviteCollaborator(alice.token, bob, projectId, 'viewer');
 
     const bobProjects = await request(app)
       .get(`/api/projects/${projectId}`)
@@ -380,5 +387,54 @@ describe('project collaboration', () => {
       .delete(`/api/projects/${projectId}/collaborators/${alice.userId}`)
       .set('Authorization', `Bearer ${alice.token}`)
       .expect(400);
+  });
+
+  it('cascades collaborator access to descendant sub-projects and their tasks', async () => {
+    const alice = await registerAndVerify('nested-alice@example.com');
+    const bob = await registerAndVerify('nested-bob@example.com');
+
+    const parentRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Parent Shared' })
+      .expect(201);
+    const parentId = parentRes.body.project._id as string;
+
+    const childRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Child Work', parentId })
+      .expect(201);
+    const childId = childRes.body.project._id as string;
+
+    const taskRes = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ title: 'Task in child', projectId: childId })
+      .expect(201);
+    const taskId = taskRes.body.task._id as string;
+
+    await inviteCollaborator(alice.token, bob, parentId, 'editor');
+
+    const bobProjects = await request(app)
+      .get('/api/projects')
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
+
+    assert.ok(bobProjects.body.projects.some((p: { _id: string }) => p._id === parentId));
+    assert.ok(bobProjects.body.projects.some((p: { _id: string }) => p._id === childId));
+
+    const bobTask = await request(app)
+      .get(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
+    assert.equal(bobTask.body.task.title, 'Task in child');
+
+    const childTasks = await request(app)
+      .get('/api/tasks')
+      .query({ projectId: childId })
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
+    assert.equal(childTasks.body.tasks.length, 1);
   });
 });

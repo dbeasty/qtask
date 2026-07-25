@@ -1,5 +1,9 @@
 import type { ExpenseTreeNode, Project } from '../types';
 
+export function shouldExpandDescriptionOnLoad(description: string): boolean {
+  return description.trim().length > 0;
+}
+
 export function shouldExpandTrackingSection(input: {
   status?: string;
   priorityNotMedium?: boolean;

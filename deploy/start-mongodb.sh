@@ -6,6 +6,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ensure-run-dir.sh
+source "${SCRIPT_DIR}/lib/ensure-run-dir.sh"
 APP_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${QTASK_ENV_FILE:-${APP_ROOT}/.env}"
 # Under APP_ROOT so the qtask user can write without root (deploy-app.sh runs as qtask).
@@ -26,8 +28,7 @@ MONGO_ENCRYPT_MOUNT="${MONGO_ENCRYPT_MOUNT:-/var/lib/qtask/mongo-data}"
 VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"
 VAULT_SECRET_PATH="${VAULT_SECRET_PATH:-secret/data/qtask/production}"
 
-mkdir -p "${RUN_DIR}"
-chmod 700 "${RUN_DIR}"
+ensure_qtask_run_dir "${RUN_DIR}"
 COMPOSE_ENV="${RUN_DIR}/mongo.env"
 : > "${COMPOSE_ENV}"
 chmod 600 "${COMPOSE_ENV}"

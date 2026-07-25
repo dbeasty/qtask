@@ -290,11 +290,16 @@ describe('delete keep children', () => {
       })
       .expect(201);
 
-    await request(app)
+    const inviteRes = await request(app)
       .post(`/api/projects/${projectId}/collaborators`)
       .set('Authorization', `Bearer ${alice.token}`)
       .send({ email: bob.email, role: 'viewer' })
       .expect(201);
+
+    await request(app)
+      .post(`/api/invites/${inviteRes.body.invite._id}/accept`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
 
     await request(app)
       .delete(`/api/tasks/${task.body.task._id}?keepChildren=true`)

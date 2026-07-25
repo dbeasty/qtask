@@ -196,7 +196,9 @@ Operators can also set `REGISTRATION_ENABLED=false` to close signup for capacity
 
 All `/api/tasks`, `/api/projects`, `/api/agent`, and `/api/conversations` routes require a valid JWT.
 
-Each user has their own projects by default. Project owners can share a project with other existing accounts (roles: editor, executor, viewer). Email invites for users without an account are not yet implemented.
+Each user has their own projects by default. Project owners can invite other existing accounts to collaborate (roles: editor, executor, viewer). Invites must be accepted before access is granted; sub-project access cascades from the invited parent project. Email invites for users without an account are not yet implemented.
+
+Use `scripts/diagnose-project-share.ts` against production MongoDB to investigate empty shared projects (tasks in sub-projects, wrong project links, or staged tasks).
 
 ---
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './auth/AuthContext';
+import { getAuthPathname, isAuthPath } from './auth/session';
 import { getUserPreferences } from './auth/storage';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { DemoTourPrompt, useDemoTour } from './components/DemoTour';
@@ -18,7 +19,9 @@ import type { Selection } from './components/TaskHierarchyTree';
 import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
 import { WelcomePage } from './pages/WelcomePage';
-import { checkHealth, listProjects, listTasks } from './api/client';
+import { NotificationBell } from './components/NotificationBell';
+import { InviteAcceptPage } from './pages/InviteAcceptPage';
+import { checkHealth, listInvites, listProjects, listTasks } from './api/client';
 import {
   getStoredActiveProjectId,
   setStoredActiveProjectId,
@@ -28,12 +31,6 @@ import '../../shared/theme-tokens.css';
 import './styles.css';
 
 type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about';
-
-const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
-
-function getAuthPathname(): string {
-  return window.location.pathname.replace(/\/+$/, '') || '/';
-}
 
 export function App() {
   const { user, loading, mustChangePassword, logout, updateProfile, updatePreferences } = useAuth();
@@ -49,6 +46,7 @@ export function App() {
     getStoredActiveProjectId()
   );
   const [pendingTaskSelection, setPendingTaskSelection] = useState<Selection | null>(null);
+  const [pendingCreateForProjectId, setPendingCreateForProjectId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
@@ -61,9 +59,22 @@ export function App() {
   const previousViewRef = useRef<View>('projects');
   const viewRef = useRef(view);
   viewRef.current = view;
+  const [pendingInviteCount, setPendingInviteCount] = useState(0);
+  const [inviteAcceptToken, setInviteAcceptToken] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return getAuthPathname() === '/invites/accept' ? params.get('token') : null;
+  });
   const defaultViewSetRef = useRef(false);
 
   const preferences = getUserPreferences(user);
+
+  const refreshPendingInvites = useCallback(() => {
+    listInvites('pending')
+      .then(({ invites }) => setPendingInviteCount(invites.length))
+      .catch(() => {
+        // optional shell chrome
+      });
+  }, []);
 
   const handleTourComplete = useCallback(async () => {
     setShowTourPrompt(false);
@@ -117,7 +128,12 @@ export function App() {
 
   useEffect(() => {
     if (!user) return;
-    if (AUTH_PATHS.has(getAuthPathname())) {
+    refreshPendingInvites();
+  }, [user, projectsVersion, refreshPendingInvites]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (isAuthPath(getAuthPathname())) {
       window.history.replaceState(null, '', '/');
     }
   }, [user]);
@@ -261,6 +277,26 @@ export function App() {
     );
   }
 
+  if (inviteAcceptToken) {
+    return (
+      <InviteAcceptPage
+        token={inviteAcceptToken}
+        onAccepted={(projectId) => {
+          setActiveProjectId(projectId);
+          setInviteAcceptToken(null);
+          window.history.replaceState(null, '', '/');
+          setView('projects');
+          handleProjectsChanged();
+          refreshPendingInvites();
+        }}
+        onBack={() => {
+          setInviteAcceptToken(null);
+          window.history.replaceState(null, '', '/');
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -327,6 +363,12 @@ export function App() {
             />
           </div>
           <div className="header-user">
+            <NotificationBell
+              onInvitesChanged={() => {
+                refreshPendingInvites();
+                handleProjectsChanged();
+              }}
+            />
             <button
               ref={userMenuTriggerRef}
               type="button"
@@ -387,6 +429,13 @@ export function App() {
         </div>
       </header>
 
+      {pendingInviteCount > 0 ? (
+        <div className="invite-banner" role="status">
+          You have {pendingInviteCount} pending project invite{pendingInviteCount === 1 ? '' : 's'}.
+          Open notifications to accept or decline.
+        </div>
+      ) : null}
+
       <main>
         {view === 'projects' ? (
           <ProjectsPage
@@ -395,13 +444,18 @@ export function App() {
               setActiveProjectId(projectId);
               handleProjectsChanged();
             }}
-            onOpenTasks={() => setView('tasks')}
-            onOpenTask={(taskId, path) => {
+            onOpenTask={(taskId, path, projectId) => {
+              setActiveProjectId(projectId);
               setPendingTaskSelection(
                 path.length === 0
                   ? { kind: 'task', taskId }
                   : { kind: 'subtask', taskId, path }
               );
+              setView('tasks');
+            }}
+            onAddTask={(projectId) => {
+              setActiveProjectId(projectId);
+              setPendingCreateForProjectId(projectId);
               setView('tasks');
             }}
             externalRefreshKey={projectsVersion}
@@ -443,6 +497,8 @@ export function App() {
             onNeedProject={() => setView('projects')}
             pendingSelection={pendingTaskSelection}
             onPendingSelectionApplied={() => setPendingTaskSelection(null)}
+            pendingCreateForProjectId={pendingCreateForProjectId}
+            onPendingCreateApplied={() => setPendingCreateForProjectId(null)}
           />
         )}
       </main>

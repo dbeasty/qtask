@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { inviteService } from '../services/inviteService.js';
 import { projectService } from '../services/projectService.js';
 import { taskService } from '../services/taskService.js';
 import { createLogger } from '../utils/logger.js';
@@ -353,7 +354,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'share_project',
     description:
-      'Add an existing QTask user as a project collaborator by email (or userId). Roles: editor, executor, viewer.',
+      'Send a project collaboration invite to an existing QTask user by email (or userId). They must accept before gaining access. Roles: editor, executor, viewer.',
     parameters: {
       type: 'object',
       properties: {
@@ -376,12 +377,12 @@ export const toolDefinitions: ToolDefinition[] = [
     },
     async execute(userId, input) {
       try {
-        const project = await projectService.addCollaborator(userId, String(input.projectId), {
+        const invite = await inviteService.createInvite(userId, String(input.projectId), {
           email: input.email as string | undefined,
           userId: input.userId as string | undefined,
           role: input.role as 'editor' | 'executor' | 'viewer' | undefined,
         });
-        return ok(JSON.stringify(project, null, 2));
+        return ok(JSON.stringify(invite, null, 2));
       } catch (error) {
         return err(error instanceof Error ? error.message : 'Failed to share project');
       }
@@ -437,17 +438,22 @@ export const toolDefinitions: ToolDefinition[] = [
             : false;
 
         if (!alreadyMember) {
-          const shared = await projectService.addCollaborator(userId, projectId, {
+          const invite = await inviteService.createInvite(userId, projectId, {
             email,
             userId: collaboratorUserId,
             role: (input.role as 'editor' | 'executor' | 'viewer' | undefined) ?? 'editor',
           });
-          const added = shared.collaborators.find(
-            (c) =>
-              (collaboratorUserId && c.userId === collaboratorUserId) ||
-              (email && c.email === email.trim().toLowerCase())
+          return ok(
+            JSON.stringify(
+              {
+                message:
+                  'Collaboration invite sent. The user must accept before they can be assigned.',
+                invite,
+              },
+              null,
+              2
+            )
           );
-          collaboratorUserId = added?.userId;
         } else if (!collaboratorUserId && email) {
           collaboratorUserId = project.collaborators.find(
             (c) => c.email === email.trim().toLowerCase()

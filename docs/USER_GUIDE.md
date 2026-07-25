@@ -118,7 +118,12 @@ Projects group related tasks. They can form a **tree**: a project may sit under 
 ### Members
 
 - Select a project and click **Members** in the detail panel to invite or manage collaborators.
-- Roles and permissions are **per project**. Nesting does not automatically share access with parent or child projects.
+- Enter the email of an **existing qtask user** and choose a role, then click **Send invite**.
+- The recipient receives an email and an in-app notification. They must **accept** the invite before gaining access.
+- When you accept an invite to a parent project, access is granted to that project and **all of its sub-projects** (same role).
+- Roles and permissions are **per project**. Nesting does not automatically share access with parent or child projects unless you invite on the parent (which cascades downward).
+- Pending invites appear in the Members dialog; owners can cancel them.
+- After someone accepts, the project owner receives an email and in-app notification.
 
 ### Delete
 

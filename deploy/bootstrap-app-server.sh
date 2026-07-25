@@ -51,9 +51,9 @@ else
   echo "Warning: docker group not found — install Docker, then: sudo usermod -aG docker qtask" >&2
 fi
 
-sudo mkdir -p "${INSTALL_DIR}/.ssh"
-sudo chmod 700 "${INSTALL_DIR}/.ssh"
-sudo chown qtask:qtask "${INSTALL_DIR}/.ssh"
+sudo mkdir -p "${INSTALL_DIR}/.ssh" "${INSTALL_DIR}/run"
+sudo chmod 700 "${INSTALL_DIR}/.ssh" "${INSTALL_DIR}/run"
+sudo chown qtask:qtask "${INSTALL_DIR}/.ssh" "${INSTALL_DIR}/run"
 
 SUDOERS_EXAMPLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qtask-deploy.sudoers.example"
 if [[ -f "${SUDOERS_EXAMPLE}" ]]; then

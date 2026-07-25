@@ -18,6 +18,10 @@ function isPersistedId(id?: string): boolean {
   return Boolean(id && OBJECT_ID_RE.test(id));
 }
 
+export function shouldInsertStepOnEnter(step: TaskStep): boolean {
+  return !isPersistedId(step._id);
+}
+
 function ensureClientKey(step: TaskStep): TaskStep {
   if (step.clientKey) return step;
   return {
@@ -131,7 +135,10 @@ export function TaskStepsEditor({ steps, onChange, onStepCommit, disabled = fals
     if (event.key === 'Enter') {
       event.preventDefault();
       onStepCommit?.();
-      insertStepAfter(index);
+      const step = steps[index];
+      if (step && shouldInsertStepOnEnter(step)) {
+        insertStepAfter(index);
+      }
     }
   };
 

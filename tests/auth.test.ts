@@ -70,6 +70,7 @@ describe('auth', () => {
       skipConfirmations: false,
       trackExpenses: true,
       completedDemoTour: false,
+      theme: 'light',
     });
   });
 
@@ -189,6 +190,7 @@ describe('auth', () => {
       skipConfirmations: false,
       trackExpenses: true,
       completedDemoTour: false,
+      theme: 'light',
     });
 
     const merged = await request(app)
@@ -202,6 +204,7 @@ describe('auth', () => {
       skipConfirmations: true,
       trackExpenses: false,
       completedDemoTour: false,
+      theme: 'light',
     });
 
     const me = await request(app)
@@ -214,6 +217,7 @@ describe('auth', () => {
       skipConfirmations: true,
       trackExpenses: false,
       completedDemoTour: false,
+      theme: 'light',
     });
 
     const disabled = await request(app)
@@ -233,6 +237,7 @@ describe('auth', () => {
       skipConfirmations: false,
       trackExpenses: true,
       completedDemoTour: false,
+      theme: 'light',
     });
   });
 
@@ -316,6 +321,172 @@ describe('auth', () => {
       } else {
         process.env.REGISTRATION_ENABLED = previous;
       }
+    }
+  });
+});
+
+describe('session refresh', () => {
+  function parseLogLine(call: unknown): Record<string, unknown> | null {
+    if (typeof call !== 'string') return null;
+    try {
+      return JSON.parse(call) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  function findAuthLog(calls: unknown[][], predicate: (entry: Record<string, unknown>) => boolean) {
+    return calls
+      .map((call) => parseLogLine(call[0]))
+      .find((entry): entry is Record<string, unknown> => entry != null && predicate(entry));
+  }
+
+  it('refreshes a valid token and returns a new expiry', async () => {
+    const token = await registerAndVerify('refresh-valid@example.com', 'password1234');
+    const { decodeTokenUnsafe } = await import('../src/auth/jwt.js');
+    const before = decodeTokenUnsafe(token);
+
+    const res = await request(app)
+      .post('/api/auth/refresh')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    assert.ok(res.body.token);
+    assert.equal(res.body.user.email, 'refresh-valid@example.com');
+
+    const after = decodeTokenUnsafe(res.body.token as string);
+    assert.ok(after.exp != null && before.exp != null);
+    assert.ok(after.exp >= before.exp);
+  });
+
+  it('preserves pwd_change on refresh when mustChangePassword is set', async () => {
+    const { UserModel } = await import('../src/models/index.js');
+    const { signToken } = await import('../src/auth/jwt.js');
+
+    const user = await UserModel.create({
+      email: 'refresh-pwd@example.com',
+      passwordHash: 'unused',
+      emailVerified: true,
+      mustChangePassword: true,
+    });
+
+    const token = signToken({
+      sub: String(user._id),
+      email: user.email,
+      pwd_change: true,
+    });
+
+    const res = await request(app)
+      .post('/api/auth/refresh')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    assert.equal(res.body.mustChangePassword, true);
+
+    const jwt = await import('jsonwebtoken');
+    const { config } = await import('../src/config/index.js');
+    const decoded = jwt.default.decode(res.body.token as string) as { pwd_change?: boolean };
+    assert.equal(decoded.pwd_change, true);
+  });
+
+  it('rejects refresh without a token', async () => {
+    await request(app).post('/api/auth/refresh').expect(401);
+  });
+
+  it('rejects refresh with invalid signature', async () => {
+    await request(app)
+      .post('/api/auth/refresh')
+      .set('Authorization', 'Bearer not.a.valid-token')
+      .expect(401);
+  });
+
+  it('rejects refresh when token expired beyond grace', async () => {
+    const jwt = await import('jsonwebtoken');
+    const { config } = await import('../src/config/index.js');
+
+    const token = jwt.default.sign(
+      { sub: 'expired-user', email: 'expired@example.com' },
+      config.jwtSecret,
+      { expiresIn: -600 }
+    );
+
+    await request(app)
+      .post('/api/auth/refresh')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(401);
+  });
+
+  it('accepts refresh within grace after expiry', async () => {
+    const token = await registerAndVerify('refresh-grace@example.com', 'password1234');
+    const jwt = await import('jsonwebtoken');
+    const { config } = await import('../src/config/index.js');
+    const { decodeTokenUnsafe } = await import('../src/auth/jwt.js');
+
+    const payload = decodeTokenUnsafe(token);
+    assert.ok(payload.sub && payload.exp);
+
+    const expiredToken = jwt.default.sign(
+      { sub: payload.sub, email: 'refresh-grace@example.com' },
+      config.jwtSecret,
+      { expiresIn: -60 }
+    );
+
+    const res = await request(app)
+      .post('/api/auth/refresh')
+      .set('Authorization', `Bearer ${expiredToken}`)
+      .expect(200);
+
+    assert.ok(res.body.token);
+    assert.equal(res.body.user.email, 'refresh-grace@example.com');
+  });
+
+  it('logs refresh success and rejection with auth module metadata', async () => {
+    const token = await registerAndVerify('refresh-log@example.com', 'password1234');
+    const jwt = await import('jsonwebtoken');
+    const { config } = await import('../src/config/index.js');
+
+    const warnCalls: unknown[][] = [];
+    const logCalls: unknown[][] = [];
+    const originalWarn = console.warn;
+    const originalLog = console.log;
+
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+      originalWarn(...args);
+    };
+    console.log = (...args: unknown[]) => {
+      logCalls.push(args);
+      originalLog(...args);
+    };
+
+    try {
+      await request(app)
+        .post('/api/auth/refresh')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      const successLog = findAuthLog(logCalls, (entry) => entry.message === 'Session refreshed');
+      assert.ok(successLog);
+      assert.equal(successLog.module, 'auth');
+      assert.equal(successLog.source, 'refresh_endpoint');
+
+      const staleToken = jwt.default.sign(
+        { sub: 'missing-user', email: 'missing@example.com' },
+        config.jwtSecret,
+        { expiresIn: -3600 }
+      );
+
+      await request(app)
+        .post('/api/auth/refresh')
+        .set('Authorization', `Bearer ${staleToken}`)
+        .expect(401);
+
+      const rejectLog = findAuthLog(warnCalls, (entry) => entry.reason === 'refresh_rejected');
+      assert.ok(rejectLog);
+      assert.equal(rejectLog.module, 'auth');
+    } finally {
+      console.warn = originalWarn;
+      console.log = originalLog;
     }
   });
 });

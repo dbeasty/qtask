@@ -5,6 +5,7 @@ import {
   deleteProject,
   getProjectTracking,
   listProjects,
+  listTasks,
   moveProject,
   removeProjectCollaborator,
   updateProject,
@@ -13,13 +14,15 @@ import {
 import { useAuth } from '../auth/AuthContext';
 import { getUserPreferences } from '../auth/storage';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DescriptionSection } from '../components/DescriptionSection';
+import { ProjectTasksList } from '../components/ProjectTasksList';
 import { CurrentProjectLabel } from '../components/CurrentProjectBar';
 import { HourlyRateDialog } from '../components/HourlyRateDialog';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
 import { ProjectHierarchyTree } from '../components/ProjectHierarchyTree';
 import { TaskSplitInput } from '../components/TaskSplitInput';
 import { ExpenseTree } from '../components/ExpenseTree';
-import type { CollaboratorRole, ExpenseTreeNode, Project, TaskStatus } from '../types';
+import type { CollaboratorRole, ExpenseTreeNode, Project, Task, TaskStatus } from '../types';
 import { filterNonZeroExpenseNodes, formatMoney } from '../utils/costRollup';
 import { getDefaultProject } from '../utils/project';
 import { buildProjectTree } from '../utils/projectTree';
@@ -28,8 +31,8 @@ import { shouldExpandProjectTrackingOnLoad } from '../utils/trackingExpand';
 interface ProjectsPageProps {
   activeProjectId: string | null;
   onActiveProjectChange: (projectId: string | null) => void;
-  onOpenTasks?: () => void;
-  onOpenTask?: (taskId: string, path: string[]) => void;
+  onOpenTask?: (taskId: string, path: string[], projectId: string) => void;
+  onAddTask?: (projectId: string) => void;
   externalRefreshKey?: number;
 }
 
@@ -49,13 +52,14 @@ function progressShareToFormValue(share: number | undefined): string {
 export function ProjectsPage({
   activeProjectId,
   onActiveProjectChange,
-  onOpenTasks,
   onOpenTask,
+  onAddTask,
   externalRefreshKey = 0,
 }: ProjectsPageProps) {
   const { user, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,8 +105,12 @@ export function ProjectsPage({
     setLoading(true);
     setError(null);
     try {
-      const { projects: items } = await listProjects();
+      const [{ projects: items }, { tasks: taskItems }] = await Promise.all([
+        listProjects(),
+        listTasks(),
+      ]);
       setProjects(items);
+      setTasks(taskItems);
       if (items.length > 0) {
         const stillValid = activeProjectId && items.some((p) => p._id === activeProjectId);
         if (!stillValid) {
@@ -370,8 +378,7 @@ export function ProjectsPage({
     if (!activeProject) return;
     setSaving(true);
     try {
-      const { project } = await addProjectCollaborator(activeProject._id, { email, role });
-      replaceProject(project);
+      await addProjectCollaborator(activeProject._id, { email, role });
     } finally {
       setSaving(false);
     }
@@ -514,15 +521,11 @@ export function ProjectsPage({
                       autoFocus
                     />
                   </label>
-                  <label className="task-form-field">
-                    <span>Description</span>
-                    <textarea
-                      value={newDescription}
-                      onChange={(event) => setNewDescription(event.target.value)}
-                      disabled={saving}
-                      rows={4}
-                    />
-                  </label>
+                  <DescriptionSection
+                    value={newDescription}
+                    onChange={setNewDescription}
+                    disabled={saving}
+                  />
                   <div className="task-form-actions">
                     <button type="submit" className="primary-button" disabled={saving}>
                       Create project
@@ -566,15 +569,24 @@ export function ProjectsPage({
                       disabled={saving || !activeProject.canManageMembers}
                     />
                   </label>
-                  <label className="task-form-field">
-                    <span>Description</span>
-                    <textarea
-                      value={detailDescription}
-                      onChange={(event) => updateDetailDescription(event.target.value)}
-                      disabled={saving || !activeProject.canManageMembers}
-                      rows={5}
+                  <DescriptionSection
+                    key={activeProject._id}
+                    value={detailDescription}
+                    onChange={updateDetailDescription}
+                    disabled={saving || !activeProject.canManageMembers}
+                  />
+
+                  {onOpenTask && onAddTask && (
+                    <ProjectTasksList
+                      projectId={activeProject._id}
+                      projects={projects}
+                      tasks={tasks}
+                      canEdit={Boolean(activeProject.canEdit)}
+                      onOpenTask={onOpenTask}
+                      onAddTask={onAddTask}
                     />
-                  </label>
+                  )}
+
                   <div className="task-form-field">
                     <span>Status</span>
                     <input
@@ -670,7 +682,11 @@ export function ProjectsPage({
                           <ExpenseTree
                             nodes={trackingTree}
                             showHours={preferences.trackExpenses}
-                            onNavigate={onOpenTask}
+                            onNavigate={
+                              onOpenTask
+                                ? (taskId, path) => onOpenTask(taskId, path, activeProject._id)
+                                : undefined
+                            }
                           />
                         </div>
                       )}
@@ -692,16 +708,6 @@ export function ProjectsPage({
                     >
                       Members
                     </button>
-                    {onOpenTasks && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={saving}
-                        onClick={onOpenTasks}
-                      >
-                        Open tasks
-                      </button>
-                    )}
                   </div>
                 </form>
               </article>

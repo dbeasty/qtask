@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authService } from '../services/authService.js';
 import { isRegistrationEnabled } from '../services/emailService.js';
-import { requireAuth, requirePasswordChangeAuth } from '../middleware/auth.js';
+import { requireAuth, requireAuthForRefresh, requirePasswordChangeAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { getUserId } from '../middleware/index.js';
+import { createLogger } from '../utils/logger.js';
 
 export const authRouter = Router();
+const logger = createLogger('auth');
 
 const registerSchema = z.object({
   email: z.string().email('Valid email is required'),
@@ -142,6 +144,21 @@ authRouter.get('/me', requirePasswordChangeAuth, async (req, res, next) => {
       return;
     }
     res.json({ user });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post('/refresh', requireAuthForRefresh, async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const result = await authService.refreshSession(userId);
+    logger.info('Session refreshed', {
+      userId,
+      mustChangePassword: result.mustChangePassword === true,
+      source: 'refresh_endpoint',
+    });
+    res.json(result);
   } catch (error) {
     next(error);
   }

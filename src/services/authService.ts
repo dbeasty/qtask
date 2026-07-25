@@ -3,8 +3,11 @@ import { ProjectModel, UserModel } from '../models/index.js';
 import { signToken } from '../auth/jwt.js';
 import { createOneTimeToken, hashToken } from '../auth/oneTimeToken.js';
 import { HttpError } from '../utils/httpError.js';
+import { createLogger } from '../utils/logger.js';
 import { projectService } from './projectService.js';
 import * as emailService from './emailService.js';
+
+const logger = createLogger('auth');
 
 const BCRYPT_ROUNDS = 12;
 const LEGAL_VERSION = '1.0';
@@ -148,6 +151,7 @@ export class AuthService {
       email: user.email,
       ...(mustChangePassword ? { pwd_change: true } : {}),
     });
+    logger.debug('User logged in', { userId });
     return { token, user: serializeUser(user), mustChangePassword };
   }
 
@@ -245,6 +249,22 @@ export class AuthService {
 
     const token = signToken({ sub: String(user._id), email: user.email });
     return { message: 'Password updated.', token, user: serializeUser(user) };
+  }
+
+  async refreshSession(userId: string) {
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      logger.warn('Refresh failed', { userId, reason: 'user_deleted' });
+      throw new HttpError(404, 'User not found');
+    }
+
+    const mustChangePassword = user.mustChangePassword === true;
+    const token = signToken({
+      sub: String(user._id),
+      email: user.email,
+      ...(mustChangePassword ? { pwd_change: true } : {}),
+    });
+    return { token, user: serializeUser(user), mustChangePassword };
   }
 
   async updateProfile(

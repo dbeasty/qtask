@@ -21,6 +21,7 @@ import {
 } from './TaskMaterialsEditor';
 import { shouldExpandTrackingSection } from '../utils/trackingExpand';
 import { mergeLocalSteps, stepsSyncedEqual, stepsEqualForSave, stepsForApi, debugSteps, TaskStepsEditor } from './TaskStepsEditor';
+import { DescriptionSection } from './DescriptionSection';
 
 export interface TaskFormValues {
   title: string;
@@ -516,17 +517,11 @@ export function TaskForm(props: TaskFormProps) {
         />
       </label>
 
-      <label className="task-form-field">
-        <span>Description</span>
-        <textarea
-          value={values.description}
-          onChange={(event) =>
-            updateValues((current) => ({ ...current, description: event.target.value }))
-          }
-          disabled={fieldsDisabled}
-          rows={3}
-        />
-      </label>
+      <DescriptionSection
+        value={values.description}
+        onChange={(description) => updateValues((current) => ({ ...current, description }))}
+        disabled={fieldsDisabled}
+      />
 
       <TaskStepsEditor
         steps={values.steps}

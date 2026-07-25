@@ -1,4 +1,10 @@
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('session');
+
 const TOKEN_KEY = 'qtask_token';
+
+export const AUTH_TOKEN_KEY = TOKEN_KEY;
 
 export function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -193,4 +199,24 @@ export async function fetchMe(token: string): Promise<AuthUser> {
   });
   const body = await parseAuthResponse(response, 'Session expired');
   return (body as { user: AuthUser }).user;
+}
+
+export async function refreshSessionRequest(): Promise<LoginResult> {
+  const token = getStoredToken();
+  const response = await fetch('/api/auth/refresh', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  const body = await response.json().catch(() => ({ error: response.statusText }));
+  if (!response.ok) {
+    logger.warn('Refresh request failed', {
+      status: response.status,
+      serverError: (body as { error?: string }).error,
+    });
+    throw new Error((body as { error?: string }).error ?? 'Session refresh failed');
+  }
+  return body as LoginResult;
 }

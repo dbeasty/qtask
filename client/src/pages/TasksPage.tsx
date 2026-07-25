@@ -62,6 +62,8 @@ interface TasksPageProps {
   onNeedProject?: () => void;
   pendingSelection?: Selection | null;
   onPendingSelectionApplied?: () => void;
+  pendingCreateForProjectId?: string | null;
+  onPendingCreateApplied?: () => void;
 }
 
 type PendingConfirm = {
@@ -257,6 +259,8 @@ export function TasksPage({
   onNeedProject,
   pendingSelection = null,
   onPendingSelectionApplied,
+  pendingCreateForProjectId = null,
+  onPendingCreateApplied,
 }: TasksPageProps) {
   const { user, updatePreferences, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
@@ -639,6 +643,17 @@ export function TasksPage({
       return current;
     });
   }, [activeProjectId, tasks, pendingSelection, onPendingSelectionApplied]);
+
+  useEffect(() => {
+    if (!pendingCreateForProjectId || loading) return;
+    if (pendingCreateForProjectId !== activeProjectId) return;
+
+    setCreatingTaskForProjectId(pendingCreateForProjectId);
+    setSelection(null);
+    setAddingSubtask(false);
+    setTaskListExpanded(true);
+    onPendingCreateApplied?.();
+  }, [pendingCreateForProjectId, activeProjectId, loading, onPendingCreateApplied]);
 
   const detail = selectedTask && selection ? getDetailItem(selectedTask, selection) : null;
   const breadcrumbs = selectedTask && selection ? buildBreadcrumb(selectedTask, selection) : [];

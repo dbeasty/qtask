@@ -3,6 +3,8 @@ set -euo pipefail
 
 INSTALL_DIR="${1:-/opt/qtask}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ensure-run-dir.sh
+source "${SCRIPT_DIR}/lib/ensure-run-dir.sh"
 APP_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 echo "Installing QTask to ${INSTALL_DIR}..."
@@ -65,6 +67,8 @@ if [[ "$(id -u)" -eq 0 ]] || needs_sudo_for_install_dir; then
 
   run_privileged chown -R qtask:qtask "${INSTALL_DIR}"
 fi
+
+ensure_qtask_run_dir "${INSTALL_DIR}/run"
 
 echo ""
 echo "Next steps:"

@@ -343,3 +343,49 @@ export interface UpdateSubtaskInput {
   laborLines?: LaborLineInput[];
   hourlyRate?: number | null;
 }
+
+export interface ProjectShareSummary {
+  directTaskCount: number;
+  descendantProjectCount: number;
+  descendantTaskCount: number;
+  totalTaskCount: number;
+}
+
+export interface ProjectInvite {
+  _id: string;
+  projectId: string;
+  projectName: string;
+  inviterUserId: string;
+  inviterEmail: string;
+  inviterDisplayName?: string;
+  inviteeEmail: string;
+  inviteeUserId?: string;
+  role: CollaboratorRole;
+  status: 'pending' | 'accepted' | 'declined' | 'expired';
+  token: string;
+  expiresAt: string;
+  respondedAt?: string;
+  createdAt: string;
+}
+
+export type NotificationType =
+  | 'project_invite'
+  | 'project_share_accepted'
+  | 'project_share_declined';
+
+export interface AppNotification {
+  _id: string;
+  type: NotificationType;
+  payload: {
+    projectId?: string;
+    projectName?: string;
+    inviterEmail?: string;
+    inviterDisplayName?: string;
+    inviteeEmail?: string;
+    inviteeDisplayName?: string;
+    role?: string;
+    inviteId?: string;
+  };
+  read: boolean;
+  createdAt: string;
+}

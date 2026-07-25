@@ -1,10 +1,42 @@
-import { getStoredToken, clearStoredToken } from '../auth/storage';
+import {
+  classifyAuthFailure,
+  getExpiredAgoMs,
+  getTokenExpiryMs,
+  isWithinRefreshGrace,
+  sessionMessageForReason,
+  type SessionExpiryReason,
+} from '../auth/session';
+import { getStoredToken, refreshSessionRequest, setStoredToken, type AuthUser } from '../auth/storage';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('session');
+
+export type { SessionExpiryReason };
 
 export class AuthError extends Error {
-  constructor(message: string) {
+  readonly reason: SessionExpiryReason;
+
+  constructor(message: string, reason: SessionExpiryReason) {
     super(message);
     this.name = 'AuthError';
+    this.reason = reason;
   }
+}
+
+type SessionExpiredHandler = (reason: SessionExpiryReason, source: 'api' | 'refresh_failed') => void;
+type TokenRefreshedHandler = (user: AuthUser, token: string) => void;
+
+let sessionExpiredHandler: SessionExpiredHandler | null = null;
+let tokenRefreshedHandler: TokenRefreshedHandler | null = null;
+let refreshInFlight: Promise<{ token: string; user: AuthUser } | null> | null = null;
+let logoutInProgress = false;
+
+export function setSessionExpiredHandler(handler: SessionExpiredHandler | null): void {
+  sessionExpiredHandler = handler;
+}
+
+export function setTokenRefreshedHandler(handler: TokenRefreshedHandler | null): void {
+  tokenRefreshedHandler = handler;
 }
 
 function authHeaders(extra?: HeadersInit): HeadersInit {
@@ -18,16 +50,99 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   return { ...headers, ...extra };
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: authHeaders(init?.headers),
+function log401(path: string, method: string, hadToken: boolean, token: string | null, reason: SessionExpiryReason) {
+  logger.warn('Unauthorized response', {
+    reason,
+    path,
+    method,
+    hadToken,
+    tokenExp: token ? getTokenExpiryMs(token) : undefined,
+    expiredAgoMs: getExpiredAgoMs(token),
   });
+}
 
-  if (response.status === 401) {
-    clearStoredToken();
-    throw new AuthError('Session expired. Please sign in again.');
+function triggerSessionExpired(reason: SessionExpiryReason, source: 'api' | 'refresh_failed'): never {
+  if (!logoutInProgress) {
+    logoutInProgress = true;
+    sessionExpiredHandler?.(reason, source);
+    logoutInProgress = false;
   }
+  throw new AuthError(sessionMessageForReason(reason), reason);
+}
+
+async function attemptTokenRefresh(): Promise<{ token: string; user: AuthUser } | null> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  refreshInFlight = (async () => {
+    try {
+      const result = await refreshSessionRequest();
+      setStoredToken(result.token);
+      tokenRefreshedHandler?.(result.user, result.token);
+      return { token: result.token, user: result.user };
+    } catch {
+      return null;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
+}
+
+function canAttemptRefresh(token: string | null, reason: SessionExpiryReason): boolean {
+  if (!token) return false;
+  return reason === 'expired' || isWithinRefreshGrace(token);
+}
+
+async function handleUnauthorized(
+  _response: Response,
+  path: string,
+  method: string,
+  hadToken: boolean,
+  retry: () => Promise<Response>
+): Promise<Response> {
+  const token = getStoredToken();
+  const reason = classifyAuthFailure({ hadToken, token });
+  log401(path, method, hadToken, token, reason);
+
+  if (canAttemptRefresh(token, reason)) {
+    logger.info('Attempting refresh and retry', { trigger: 'reactive_401', path });
+    const refreshed = await attemptTokenRefresh();
+    if (refreshed) {
+      logger.info('Refresh succeeded, retrying request', { trigger: 'reactive_401', path });
+      const retryResponse = await retry();
+      if (retryResponse.status !== 401) {
+        return retryResponse;
+      }
+    }
+    logger.warn('Refresh failed, signing out', { reason, path });
+    return triggerSessionExpired(reason, 'refresh_failed');
+  }
+
+  return triggerSessionExpired(reason, 'api');
+}
+
+async function authorizedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const hadToken = Boolean(getStoredToken());
+  const method = init?.method ?? 'GET';
+
+  const doFetch = () =>
+    fetch(path, {
+      ...init,
+      headers: authHeaders(init?.headers),
+    });
+
+  const response = await doFetch();
+  if (response.status === 401) {
+    return handleUnauthorized(response, path, method, hadToken, doFetch);
+  }
+  return response;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await authorizedFetch(path, init);
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
@@ -45,11 +160,6 @@ async function consumeSseStream(
   response: Response,
   onEvent: (event: import('../types').AgentStreamEvent) => void
 ): Promise<void> {
-  if (response.status === 401) {
-    clearStoredToken();
-    throw new AuthError('Session expired. Please sign in again.');
-  }
-
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error((body as { error?: string }).error ?? 'Request failed');
@@ -156,11 +266,82 @@ export async function deleteProject(
 export async function addProjectCollaborator(
   projectId: string,
   body: { email?: string; userId?: string; role?: import('../types').CollaboratorRole }
-): Promise<{ project: import('../types').Project }> {
+): Promise<{ invite: import('../types').ProjectInvite }> {
   return request(`/api/projects/${projectId}/collaborators`, {
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+export async function getProjectShareSummary(
+  projectId: string
+): Promise<{ summary: import('../types').ProjectShareSummary }> {
+  return request(`/api/projects/${projectId}/share-summary`);
+}
+
+export async function listProjectInvites(
+  projectId: string
+): Promise<{ invites: import('../types').ProjectInvite[] }> {
+  return request(`/api/projects/${projectId}/invites`);
+}
+
+export async function cancelProjectInvite(
+  projectId: string,
+  inviteId: string
+): Promise<{ invite: import('../types').ProjectInvite }> {
+  return request(`/api/projects/${projectId}/invites/${inviteId}`, { method: 'DELETE' });
+}
+
+export async function listInvites(
+  status: 'pending' | 'all' = 'pending'
+): Promise<{ invites: import('../types').ProjectInvite[] }> {
+  const params = status === 'all' ? '?status=all' : '';
+  return request(`/api/invites${params}`);
+}
+
+export async function getInvitePreview(
+  token: string
+): Promise<{ invite: import('../types').ProjectInvite }> {
+  return request(`/api/invites/preview/${encodeURIComponent(token)}`);
+}
+
+export async function acceptInvite(
+  inviteId: string
+): Promise<{ invite: import('../types').ProjectInvite; project: import('../types').Project | null }> {
+  return request(`/api/invites/${inviteId}/accept`, { method: 'POST' });
+}
+
+export async function acceptInviteByToken(
+  token: string
+): Promise<{ invite: import('../types').ProjectInvite; project: import('../types').Project | null }> {
+  return request('/api/invites/accept-by-token', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+}
+
+export async function declineInvite(
+  inviteId: string
+): Promise<{ invite: import('../types').ProjectInvite }> {
+  return request(`/api/invites/${inviteId}/decline`, { method: 'POST' });
+}
+
+export async function listNotifications(): Promise<{ notifications: import('../types').AppNotification[] }> {
+  return request('/api/notifications');
+}
+
+export async function getUnreadNotificationCount(): Promise<{ count: number }> {
+  return request('/api/notifications/unread-count');
+}
+
+export async function markNotificationRead(
+  notificationId: string
+): Promise<{ notification: import('../types').AppNotification }> {
+  return request(`/api/notifications/${notificationId}/read`, { method: 'PATCH' });
+}
+
+export async function markAllNotificationsRead(): Promise<{ count: number }> {
+  return request('/api/notifications/read-all', { method: 'POST' });
 }
 
 export async function updateProjectCollaborator(
@@ -367,9 +548,8 @@ export async function streamAgent(
   onEvent: (event: import('../types').AgentStreamEvent) => void,
   projectId?: string
 ): Promise<void> {
-  const response = await fetch('/api/agent', {
+  const response = await authorizedFetch('/api/agent', {
     method: 'POST',
-    headers: authHeaders(),
     body: JSON.stringify({ message, conversationId, projectId }),
   });
 
@@ -393,11 +573,12 @@ export async function approveProposal(
   action: 'approve' | 'reject',
   onEvent: (event: import('../types').AgentStreamEvent) => void
 ): Promise<void> {
-  const response = await fetch('/api/agent/approve', {
+  const response = await authorizedFetch('/api/agent/approve', {
     method: 'POST',
-    headers: authHeaders(),
     body: JSON.stringify({ conversationId, proposalId, action }),
   });
 
   await consumeSseStream(response, onEvent);
 }
+
+export { isTokenExpired, msUntilRefresh, REFRESH_LEAD_MS } from '../auth/session';

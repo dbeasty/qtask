@@ -10,6 +10,8 @@ import { tasksRouter } from './routes/tasks.js';
 import { agentRouter } from './routes/agent.js';
 import { authRouter } from './routes/auth.js';
 import { searchRouter } from './routes/search.js';
+import { invitesRouter } from './routes/invites.js';
+import { notificationsRouter } from './routes/notifications.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
 import { requireAuth } from './middleware/auth.js';
 import { startEmbeddingWorker } from './services/embeddingQueue.js';
@@ -108,6 +110,8 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
 
   app.use('/api/tasks', requireAuth, tasksRouter);
   app.use('/api/projects', requireAuth, projectsRouter);
+  app.use('/api/invites', requireAuth, invitesRouter);
+  app.use('/api/notifications', requireAuth, notificationsRouter);
   app.use('/api/search', requireAuth, searchRouter);
   app.use('/api', requireAuth, agentLimiter, agentRouter);
 

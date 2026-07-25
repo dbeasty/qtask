@@ -66,9 +66,17 @@ if [[ "${needs_config}" == true && "${FORCE}" != true ]]; then
   exit 0
 fi
 
+mongodb_running() {
+  docker ps --format '{{.Ports}}' 2>/dev/null | grep -q '127.0.0.1:27017->'
+}
+
 if [[ "${SKIP_MONGODB}" != true ]]; then
-  echo "==> Starting MongoDB"
-  QTASK_ENV_FILE="${ENV_FILE}" "${INSTALL_DIR}/deploy/start-mongodb.sh"
+  if mongodb_running; then
+    echo "==> MongoDB already running (skipping start-mongodb.sh)"
+  else
+    echo "==> Starting MongoDB"
+    QTASK_ENV_FILE="${ENV_FILE}" "${INSTALL_DIR}/deploy/start-mongodb.sh"
+  fi
 fi
 
 if [[ "${SKIP_SYSTEMD}" != true ]]; then

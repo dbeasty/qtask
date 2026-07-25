@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getUserId } from '../middleware/index.js';
 import { validateBody } from '../middleware/validate.js';
 import { projectService } from '../services/projectService.js';
+import { inviteService } from '../services/inviteService.js';
 import { COLLABORATOR_ROLES } from '../types/project.js';
 
 export const projectsRouter = Router();
@@ -20,6 +21,16 @@ const addCollaboratorSchema = z
 const updateCollaboratorSchema = z.object({
   role: z.enum(COLLABORATOR_ROLES),
 });
+
+const createInviteSchema = z
+  .object({
+    email: z.string().email().optional(),
+    userId: z.string().min(1).optional(),
+    role: z.enum(COLLABORATOR_ROLES).optional(),
+  })
+  .refine((body) => Boolean(body.email || body.userId), {
+    message: 'email or userId is required',
+  });
 
 projectsRouter.get('/', async (req, res, next) => {
   try {
@@ -137,13 +148,61 @@ projectsRouter.post(
   async (req, res, next) => {
     try {
       const userId = getUserId(req);
-      const project = await projectService.addCollaborator(userId, String(req.params.id), req.body);
-      res.status(201).json({ project });
+      const invite = await inviteService.createInvite(userId, String(req.params.id), req.body);
+      res.status(201).json({ invite });
     } catch (error) {
       next(error);
     }
   }
 );
+
+projectsRouter.post(
+  '/:id/invites',
+  validateBody(createInviteSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const invite = await inviteService.createInvite(userId, String(req.params.id), req.body);
+      res.status(201).json({ invite });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+projectsRouter.get('/:id/invites', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const invites = await inviteService.listInvitesForProject(userId, String(req.params.id));
+    res.json({ invites });
+  } catch (error) {
+    next(error);
+  }
+});
+
+projectsRouter.delete('/:id/invites/:inviteId', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const invite = await inviteService.cancelInvite(
+      userId,
+      String(req.params.id),
+      String(req.params.inviteId)
+    );
+    res.json({ invite });
+  } catch (error) {
+    next(error);
+  }
+});
+
+projectsRouter.get('/:id/share-summary', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const summary = await projectService.getProjectShareSummary(userId, String(req.params.id));
+    res.json({ summary });
+  } catch (error) {
+    next(error);
+  }
+});
 
 projectsRouter.patch(
   '/:id/collaborators/:collaboratorUserId',

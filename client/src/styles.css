@@ -203,6 +203,9 @@ button {
 .header-user {
   flex-shrink: 0;
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .user-pill {
@@ -421,6 +424,149 @@ button {
   margin-bottom: 0.75rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--color-border-strong);
+}
+
+.project-members-add-hint {
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.project-members-add-button-wrap {
+  display: inline-flex;
+}
+
+.project-members-subheading {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.project-members-share-hint,
+.project-members-success {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+}
+
+.project-members-success {
+  color: var(--color-success, #2e7d32);
+}
+
+.notification-bell {
+  position: relative;
+}
+
+.notification-bell-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  background: var(--color-bg-surface);
+  color: inherit;
+  cursor: pointer;
+}
+
+.notification-bell-badge {
+  position: absolute;
+  top: -0.2rem;
+  right: -0.2rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.2rem;
+  border-radius: 999px;
+  background: var(--color-accent, #2563eb);
+  color: #fff;
+  font-size: 0.65rem;
+  line-height: 1rem;
+  text-align: center;
+}
+
+.notification-panel {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 1001;
+  width: min(22rem, calc(100vw - 1rem));
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 0.5rem;
+  background: var(--color-bg-surface);
+  box-shadow: 0 8px 24px var(--color-shadow);
+}
+
+.notification-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.notification-section + .notification-section {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.notification-section h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+}
+
+.notification-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.notification-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.notification-item-unread .notification-item-button {
+  font-weight: 600;
+}
+
+.notification-item-button {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.notification-item-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.invite-banner {
+  margin: 0.5rem 1rem 0;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 0.5rem;
+  background: var(--color-bg-muted, rgba(37, 99, 235, 0.08));
+  font-size: 0.9rem;
+}
+
+.link-button {
+  border: none;
+  background: transparent;
+  color: var(--color-accent, #2563eb);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
 }
 
 .user-menu {
@@ -2601,6 +2747,13 @@ button.expense-tree-meta:hover {
   min-height: 4.5rem;
 }
 
+.task-form-description-textarea {
+  overflow-y: auto;
+  max-height: 12rem;
+  min-height: 2.5rem;
+  resize: none;
+}
+
 .task-form-actions {
   display: flex;
   gap: 0.5rem;
@@ -2708,6 +2861,63 @@ button.expense-tree-meta:hover {
 
 .task-steps-add {
   margin-bottom: 0.5rem;
+}
+
+.project-tasks-editor {
+  margin-top: 0.5rem;
+}
+
+.project-tasks-list {
+  list-style: none;
+}
+
+.project-task-item {
+  list-style: none;
+}
+
+.project-task-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  border: 1px solid transparent;
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+  border-radius: 0.75rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.project-task-row:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-hover);
+}
+
+.project-task-row--project {
+  font-weight: 600;
+}
+
+.project-task-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.project-task-title--project {
+  cursor: default;
+  color: var(--color-text-muted);
+}
+
+.project-tasks-children {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0 0 0 1.25rem;
 }
 
 .task-detail-form .task-form-readonly-fields {

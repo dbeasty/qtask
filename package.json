@@ -1,6 +1,6 @@
 {
   "name": "qtask",
-  "version": "0.1.26",
+  "version": "0.1.29",
   "description": "AI-native, MCP-powered task management backend",
   "type": "module",
   "main": "dist/index.js",
@@ -26,6 +26,9 @@
   "engines": {
     "node": ">=20"
   },
+  "overrides": {
+    "@hono/node-server": "^2.0.11"
+  },
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
@@ -49,7 +52,7 @@
     "@types/node": "^24.0.3",
     "@types/nodemailer": "^8.0.1",
     "@types/supertest": "^7.2.0",
-    "concurrently": "^9.2.0",
+    "concurrently": "^9.2.4",
     "mongodb-memory-server": "^11.2.0",
     "supertest": "^7.2.2",
     "tsx": "^4.20.3",

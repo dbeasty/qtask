@@ -1,5 +1,6 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { consumeSessionMessage } from '../auth/session';
 import { PasswordInput } from '../components/PasswordInput';
 import { forgotPassword, getAuthConfig, resendVerification } from '../auth/storage';
 
@@ -23,6 +24,10 @@ export function LoginPage() {
         setRegistrationEnabled(config.registrationEnabled);
       }
     });
+    const sessionMessage = consumeSessionMessage();
+    if (sessionMessage) {
+      setInfo(sessionMessage);
+    }
     return () => {
       cancelled = true;
     };

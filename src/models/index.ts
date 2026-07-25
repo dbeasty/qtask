@@ -369,3 +369,50 @@ const adminAuditSchema = new Schema(
 );
 
 export const AdminAuditModel = model('AdminAudit', adminAuditSchema);
+
+const inviteSchema = new Schema(
+  {
+    projectId: { type: String, required: true, index: true },
+    inviterUserId: { type: String, required: true, index: true },
+    inviteeEmail: { type: String, required: true, lowercase: true, trim: true, index: true },
+    inviteeUserId: { type: String, index: true },
+    role: {
+      type: String,
+      enum: ['editor', 'executor', 'viewer'],
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'accepted', 'declined', 'expired'],
+      default: 'pending',
+      index: true,
+    },
+    token: { type: String, required: true, unique: true, index: true },
+    expiresAt: { type: Date, required: true, index: true },
+    respondedAt: { type: Date },
+  },
+  { timestamps: true }
+);
+
+inviteSchema.index({ projectId: 1, inviteeEmail: 1, status: 1 });
+inviteSchema.index({ inviteeUserId: 1, status: 1 });
+
+export const InviteModel = model('Invite', inviteSchema);
+
+const notificationSchema = new Schema(
+  {
+    userId: { type: String, required: true, index: true },
+    type: {
+      type: String,
+      enum: ['project_invite', 'project_share_accepted', 'project_share_declined'],
+      required: true,
+    },
+    payload: { type: Schema.Types.Mixed, required: true },
+    read: { type: Boolean, default: false, index: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
+
+export const NotificationModel = model('Notification', notificationSchema);

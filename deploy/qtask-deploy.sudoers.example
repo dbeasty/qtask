@@ -12,3 +12,6 @@ qtask ALL=(ALL) NOPASSWD: /bin/systemctl enable --now qtask.service
 qtask ALL=(ALL) NOPASSWD: /bin/systemctl enable --now qtask-admin.service
 qtask ALL=(ALL) NOPASSWD: /bin/systemctl restart qtask.service
 qtask ALL=(ALL) NOPASSWD: /bin/systemctl restart qtask-admin.service
+qtask ALL=(ALL) NOPASSWD: /bin/chown -R qtask\:qtask /opt/qtask/run
+qtask ALL=(ALL) NOPASSWD: /bin/chmod 700 /opt/qtask/run
+qtask ALL=(ALL) NOPASSWD: /bin/rm -f /opt/qtask/run/mongo.env

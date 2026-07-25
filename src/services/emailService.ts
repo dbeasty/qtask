@@ -12,6 +12,12 @@ export const testEmailOutbox = {
   reset: [] as string[],
   verificationBodies: [] as string[],
   resetBodies: [] as string[],
+  projectInvite: [] as string[],
+  projectInviteBodies: [] as string[],
+  projectShareAccepted: [] as string[],
+  projectShareAcceptedBodies: [] as string[],
+  projectShareDeclined: [] as string[],
+  projectShareDeclinedBodies: [] as string[],
 };
 
 export function clearTestEmailOutbox(): void {
@@ -19,6 +25,12 @@ export function clearTestEmailOutbox(): void {
   testEmailOutbox.reset = [];
   testEmailOutbox.verificationBodies = [];
   testEmailOutbox.resetBodies = [];
+  testEmailOutbox.projectInvite = [];
+  testEmailOutbox.projectInviteBodies = [];
+  testEmailOutbox.projectShareAccepted = [];
+  testEmailOutbox.projectShareAcceptedBodies = [];
+  testEmailOutbox.projectShareDeclined = [];
+  testEmailOutbox.projectShareDeclinedBodies = [];
 }
 
 let transporter: Transporter | null = null;
@@ -215,4 +227,65 @@ Privacy Policy: ${privacyUrl}`;
   }
 
   await sendEmail(email, 'Reset your QTask password', text);
+}
+
+export async function sendProjectInviteEmail(input: {
+  to: string;
+  token: string;
+  projectName: string;
+  inviterName: string;
+  role: string;
+}): Promise<void> {
+  const acceptUrl = `${config.appUrl}/invites/accept?token=${encodeURIComponent(input.token)}`;
+  const text = `${input.inviterName} invited you to collaborate on "${input.projectName}" as ${input.role}.
+
+Open QTask and accept the invite:
+${acceptUrl}
+
+Or sign in to QTask and check your notifications.
+
+This invite expires in 7 days.`;
+
+  if (process.env.NODE_ENV === 'test') {
+    testEmailOutbox.projectInvite.push(input.token);
+    testEmailOutbox.projectInviteBodies.push(text);
+  }
+
+  await sendEmail(input.to, `Invitation to collaborate on ${input.projectName}`, text);
+}
+
+export async function sendProjectShareAcceptedEmail(input: {
+  to: string;
+  projectName: string;
+  inviteeEmail: string;
+  inviteeDisplayName?: string;
+}): Promise<void> {
+  const who = input.inviteeDisplayName || input.inviteeEmail;
+  const text = `${who} accepted your invitation to collaborate on "${input.projectName}".
+
+They now have access to the project and its sub-projects.`;
+
+  if (process.env.NODE_ENV === 'test') {
+    testEmailOutbox.projectShareAccepted.push(input.inviteeEmail);
+    testEmailOutbox.projectShareAcceptedBodies.push(text);
+  }
+
+  await sendEmail(input.to, `${who} joined ${input.projectName}`, text);
+}
+
+export async function sendProjectShareDeclinedEmail(input: {
+  to: string;
+  projectName: string;
+  inviteeEmail: string;
+  inviteeDisplayName?: string;
+}): Promise<void> {
+  const who = input.inviteeDisplayName || input.inviteeEmail;
+  const text = `${who} declined your invitation to collaborate on "${input.projectName}".`;
+
+  if (process.env.NODE_ENV === 'test') {
+    testEmailOutbox.projectShareDeclined.push(input.inviteeEmail);
+    testEmailOutbox.projectShareDeclinedBodies.push(text);
+  }
+
+  await sendEmail(input.to, `Invite declined for ${input.projectName}`, text);
 }
