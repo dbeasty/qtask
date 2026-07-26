@@ -458,6 +458,7 @@ export function ProjectsPage({
   const isCreating = creatingRoot || Boolean(creatingChildOf);
   const addProjectLabel = creatingRoot ? 'Cancel' : '+ Add project';
   const addSubProjectLabel = creatingChildOf ? 'Cancel' : '+ Add sub project';
+  const projectCountLabel = `${projects.length} ${projects.length === 1 ? 'project' : 'projects'}`;
 
   return (
     <section className="tasks-page">
@@ -467,69 +468,70 @@ export function ProjectsPage({
 
       {!loading && (
         <>
-          <div className="project-toolbar-wrap">
+          <div className="project-toolbar-wrap floating-bar">
             <div className="context-bar-row context-bar-row-stacked">
               <CurrentProjectLabel activeProject={activeProject} />
-              <button
-                type="button"
-                className={`project-toolbar-collapsed context-bar-tasks-toggle${listExpanded ? ' expanded' : ''}`}
-                aria-expanded={listExpanded}
-                onClick={() => setListExpanded((value) => !value)}
-              >
-                <span
-                  className={`project-toolbar-chevron${listExpanded ? ' expanded' : ''}`}
-                  aria-hidden="true"
+              <div className="context-bar-list-row">
+                <button
+                  type="button"
+                  className={`project-toolbar-collapsed context-bar-tasks-toggle${listExpanded ? ' expanded' : ''}`}
+                  aria-expanded={listExpanded}
+                  onClick={() => setListExpanded((value) => !value)}
                 >
-                  ›
-                </span>
-                <span className="project-toolbar-collapsed-label">Projects</span>
-              </button>
+                  <span
+                    className={`project-toolbar-chevron${listExpanded ? ' expanded' : ''}`}
+                    aria-hidden="true"
+                  >
+                    ›
+                  </span>
+                  <span className="project-toolbar-collapsed-label">Projects</span>
+                  <span className="project-toolbar-collapsed-meta">({projectCountLabel})</span>
+                </button>
+                <div className="context-bar-actions">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    data-demo-step="add-project"
+                    disabled={saving}
+                    onClick={() => {
+                      if (creatingRoot) {
+                        setCreatingRoot(false);
+                        return;
+                      }
+                      setCreatingRoot(true);
+                      setCreatingChildOf(null);
+                      setNewName('');
+                      setNewDescription('');
+                    }}
+                  >
+                    {addProjectLabel}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!activeProject || saving || !activeProject.canManageStructure}
+                    onClick={() => {
+                      if (creatingChildOf) {
+                        setCreatingChildOf(null);
+                        return;
+                      }
+                      if (!activeProject) return;
+                      setCreatingChildOf(activeProject._id);
+                      setCreatingRoot(false);
+                      setNewName('');
+                      setNewDescription('');
+                    }}
+                  >
+                    {addSubProjectLabel}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
           <div className={`tasks-layout${listExpanded ? '' : ' tasks-layout-task-list-collapsed'}`}>
             {listExpanded && (
               <aside className="task-list-panel">
-                <header className="task-list-panel-header">
-                  <div className="task-list-panel-actions">
-                    <button
-                      type="button"
-                      className="primary-button"
-                      data-demo-step="add-project"
-                      disabled={saving}
-                      onClick={() => {
-                        if (creatingRoot) {
-                          setCreatingRoot(false);
-                          return;
-                        }
-                        setCreatingRoot(true);
-                        setCreatingChildOf(null);
-                        setNewName('');
-                        setNewDescription('');
-                      }}
-                    >
-                      {addProjectLabel}
-                    </button>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      disabled={!activeProject || saving || !activeProject.canManageStructure}
-                      onClick={() => {
-                        if (creatingChildOf) {
-                          setCreatingChildOf(null);
-                          return;
-                        }
-                        if (!activeProject) return;
-                        setCreatingChildOf(activeProject._id);
-                        setCreatingRoot(false);
-                        setNewName('');
-                        setNewDescription('');
-                      }}
-                    >
-                      {addSubProjectLabel}
-                    </button>
-                  </div>
-                </header>
                 <div className="project-sections">
                   <ProjectHierarchyTree
                     projects={projects}

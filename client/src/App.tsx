@@ -346,7 +346,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
+      <header className="app-header floating-bar">
         <div className="header-row header-row-top">
           <div className="header-title-group">
             <h1>QTask</h1>

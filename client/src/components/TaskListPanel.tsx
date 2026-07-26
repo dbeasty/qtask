@@ -6,12 +6,6 @@ interface TaskListPanelProps {
   tasks: Task[];
   selection: Selection | null;
   saving: boolean;
-  addTaskLabel: string;
-  addSubtaskLabel: string;
-  showAddSubtask: boolean;
-  addDisabled: boolean;
-  onAddTaskClick: () => void;
-  onAddSubtaskClick: () => void;
   onDelete: (keepChildren?: boolean) => void | Promise<boolean>;
   onSelect: (selection: Selection) => void;
   canToggleDone: boolean;
@@ -40,12 +34,6 @@ export function TaskListPanel({
   tasks,
   selection,
   saving,
-  addTaskLabel,
-  addSubtaskLabel,
-  showAddSubtask,
-  addDisabled,
-  onAddTaskClick,
-  onAddSubtaskClick,
   onDelete,
   onSelect,
   canToggleDone,
@@ -61,30 +49,6 @@ export function TaskListPanel({
 }: TaskListPanelProps) {
   return (
     <aside className="task-list-panel">
-      <header className="task-list-panel-header">
-        <div className="task-list-panel-actions">
-          <button
-            type="button"
-            className="primary-button"
-            data-demo-step="add-task"
-            onClick={onAddTaskClick}
-            disabled={saving || addDisabled}
-          >
-            {addTaskLabel}
-          </button>
-          {showAddSubtask && (
-            <button
-              type="button"
-              className="primary-button"
-              onClick={onAddSubtaskClick}
-              disabled={saving}
-            >
-              {addSubtaskLabel}
-            </button>
-          )}
-        </div>
-      </header>
-
       <div className="project-sections">
         <ProjectSection
           tasks={tasks}

@@ -969,9 +969,31 @@ export function TasksPage({
             projectCount={projects.length}
             taskCount={activeProjectTasks.length}
             taskListExpanded={taskListExpanded}
-            selectedTaskTitle={detail?.title}
             onTaskListExpandedChange={setTaskListExpanded}
             onOpenProjects={() => onNeedProject?.()}
+            listActions={
+              <>
+                <button
+                  type="button"
+                  className="primary-button"
+                  data-demo-step="add-task"
+                  onClick={handleAddTaskClick}
+                  disabled={saving || !resolvedActiveProjectId || !activeProject?.canEdit}
+                >
+                  {addTaskLabel}
+                </button>
+                {hasSelection && activeProject?.canEdit ? (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleAddSubtaskClick}
+                    disabled={saving}
+                  >
+                    {addSubtaskButtonLabel}
+                  </button>
+                ) : null}
+              </>
+            }
           />
 
           <div className={`tasks-layout${taskListExpanded ? '' : ' tasks-layout-task-list-collapsed'}`}>
@@ -980,12 +1002,6 @@ export function TasksPage({
                 tasks={activeProjectGroup.tasks}
                 selection={selection}
                 saving={saving}
-                addTaskLabel={addTaskLabel}
-                addSubtaskLabel={addSubtaskButtonLabel}
-                showAddSubtask={Boolean(hasSelection && activeProject?.canEdit)}
-                addDisabled={!resolvedActiveProjectId || !activeProject?.canEdit}
-                onAddTaskClick={handleAddTaskClick}
-                onAddSubtaskClick={handleAddSubtaskClick}
                 onDelete={handleDelete}
                 onSelect={handleSelect}
                 canToggleDone={Boolean(activeProject?.canEdit || activeProject?.canUpdateStatus)}
@@ -1047,6 +1063,8 @@ export function TasksPage({
                     ))}
                   </nav>
                 )}
+
+                <h3 className="panel-title">Task details</h3>
 
                 <TaskForm
                   key={selectionKey}

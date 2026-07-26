@@ -22,9 +22,6 @@ function CurrentProjectContent({
         <>
           <span className="project-toolbar-collapsed-sep">·</span>
           <span className="project-toolbar-collapsed-name">{activeProject.name}</span>
-          {projectCountLabel ? (
-            <span className="project-toolbar-collapsed-meta">({projectCountLabel})</span>
-          ) : null}
         </>
       ) : projectCountLabel ? (
         <span className="project-toolbar-collapsed-meta">
@@ -71,7 +68,7 @@ export function CurrentProjectBar({
   onOpenProjects,
 }: CurrentProjectBarProps) {
   return (
-    <div className="project-toolbar-wrap">
+    <div className="project-toolbar-wrap floating-bar">
       <div className="context-bar-row context-bar-row-stacked">
         <CurrentProjectLabel
           activeProject={activeProject}

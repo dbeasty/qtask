@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { Project } from '../types';
 
 interface ProjectToolbarProps {
@@ -5,9 +6,9 @@ interface ProjectToolbarProps {
   projectCount: number;
   taskCount: number;
   taskListExpanded: boolean;
-  selectedTaskTitle?: string;
   onTaskListExpandedChange: (expanded: boolean) => void;
   onOpenProjects: () => void;
+  listActions?: ReactNode;
 }
 
 export function ProjectToolbar({
@@ -15,15 +16,15 @@ export function ProjectToolbar({
   projectCount,
   taskCount,
   taskListExpanded,
-  selectedTaskTitle,
   onTaskListExpandedChange,
   onOpenProjects,
+  listActions,
 }: ProjectToolbarProps) {
   const taskCountLabel = `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
   const projectCountLabel = `${projectCount} ${projectCount === 1 ? 'project' : 'projects'}`;
 
   return (
-    <div className="project-toolbar-wrap">
+    <div className="project-toolbar-wrap floating-bar">
       <div className="context-bar-row context-bar-row-stacked">
         <button
           type="button"
@@ -35,7 +36,6 @@ export function ProjectToolbar({
             <>
               <span className="project-toolbar-collapsed-sep">·</span>
               <span className="project-toolbar-collapsed-name">{activeProject.name}</span>
-              <span className="project-toolbar-collapsed-meta">({projectCountLabel})</span>
             </>
           ) : (
             <span className="project-toolbar-collapsed-meta">
@@ -44,27 +44,24 @@ export function ProjectToolbar({
           )}
         </button>
 
-        <button
-          type="button"
-          className={`project-toolbar-collapsed context-bar-tasks-toggle${taskListExpanded ? ' expanded' : ''}`}
-          aria-expanded={taskListExpanded}
-          onClick={() => onTaskListExpandedChange(!taskListExpanded)}
-        >
-          <span
-            className={`project-toolbar-chevron${taskListExpanded ? ' expanded' : ''}`}
-            aria-hidden="true"
+        <div className="context-bar-list-row">
+          <button
+            type="button"
+            className={`project-toolbar-collapsed context-bar-tasks-toggle${taskListExpanded ? ' expanded' : ''}`}
+            aria-expanded={taskListExpanded}
+            onClick={() => onTaskListExpandedChange(!taskListExpanded)}
           >
-            ›
-          </span>
-          <span className="project-toolbar-collapsed-label">Tasks</span>
-          {selectedTaskTitle && (
-            <>
-              <span className="project-toolbar-collapsed-sep">·</span>
-              <span className="project-toolbar-collapsed-name">{selectedTaskTitle}</span>
-            </>
-          )}
-          <span className="project-toolbar-collapsed-meta">({taskCountLabel})</span>
-        </button>
+            <span
+              className={`project-toolbar-chevron${taskListExpanded ? ' expanded' : ''}`}
+              aria-hidden="true"
+            >
+              ›
+            </span>
+            <span className="project-toolbar-collapsed-label">Tasks</span>
+            <span className="project-toolbar-collapsed-meta">({taskCountLabel})</span>
+          </button>
+          {listActions ? <div className="context-bar-actions">{listActions}</div> : null}
+        </div>
       </div>
     </div>
   );

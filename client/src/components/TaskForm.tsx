@@ -507,7 +507,7 @@ export function TaskForm(props: TaskFormProps) {
       <label
         className={`task-form-field task-form-field-title${mode === 'edit' ? ' task-form-field-title-edit' : ''}`}
       >
-        {mode === 'create' && <span>Title</span>}
+        {mode === 'create' ? <span>Title</span> : <span>Name</span>}
         <input
           type="text"
           value={values.title}
