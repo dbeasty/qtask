@@ -1367,7 +1367,8 @@ main {
   gap: 0.35rem;
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .conversation-list-item {
@@ -1435,7 +1436,8 @@ main {
 
 .message-list {
   flex: 1;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
@@ -1888,6 +1890,7 @@ main {
 
 .tasks-page {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   padding: 0 0 1.5rem;
@@ -1952,7 +1955,9 @@ main {
 
 .project-toolbar-wrap {
   flex-shrink: 0;
-  overflow: visible;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
 }
 
 .project-toolbar-wrap.floating-bar {
@@ -1965,6 +1970,7 @@ main {
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+  min-width: 0;
 }
 
 .context-bar-row-stacked {
@@ -2188,6 +2194,7 @@ main {
   grid-template-columns: minmax(240px, 320px) 1fr;
   gap: 0.75rem;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -2197,6 +2204,7 @@ main {
   background: var(--color-bg-surface-3);
   border-radius: 1rem;
   padding: 1rem;
+  min-width: 0;
   min-height: 0;
   height: 100%;
 }
@@ -2230,11 +2238,12 @@ main {
 
 .project-sections {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  min-height: 0;
+  min-width: 0;
 }
 
 .project-section {
@@ -3494,6 +3503,8 @@ button.expense-tree-meta:hover {
 
   .tasks-page {
     padding: 0 0 1rem;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .tasks-page > .error-banner,
@@ -3560,7 +3571,8 @@ button.expense-tree-meta:hover {
 
   .conversation-list.conversation-list-open {
     max-height: 40vh;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .conversation-select {
@@ -3569,11 +3581,42 @@ button.expense-tree-meta:hover {
 
   .tasks-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    flex: none;
+    align-items: start;
   }
 
-  .tasks-layout-task-list-collapsed {
-    grid-template-rows: minmax(0, 1fr);
+  .task-list-panel,
+  .task-detail-panel {
+    height: auto;
+    overflow: visible;
+  }
+
+  .project-sections {
+    flex: none;
+    overflow: visible;
+  }
+
+  @media (max-width: 520px) {
+    .context-bar-list-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .context-bar-actions {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.35rem;
+    }
+
+    .agent-sidebar-toolbar {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .agent-sidebar-toolbar .primary-button,
+    .agent-sidebar-toggle {
+      flex: none;
+    }
   }
 }
 
