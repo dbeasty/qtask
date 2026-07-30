@@ -73,18 +73,23 @@ export async function passwordLogin(req: Request, res: Response): Promise<void> 
   }
 
   const submitted = req.body?.password as string | undefined;
-  let valid = false;
-  if (config.admin.hashAdminPassword) {
-    valid = await verifyPassword(submitted ?? '', config.admin.passwordHash ?? '');
-  } else {
-    valid = equalSecret(submitted, config.admin.password);
-  }
+  try {
+    let valid = false;
+    if (config.admin.hashAdminPassword) {
+      valid = await verifyPassword(submitted ?? '', config.admin.passwordHash ?? '');
+    } else {
+      valid = equalSecret(submitted, config.admin.password);
+    }
 
-  if (!valid) {
-    res.status(401).json({ error: 'Invalid admin credentials' });
-    return;
+    if (!valid) {
+      res.status(401).json({ error: 'Invalid admin credentials' });
+      return;
+    }
+    res.json(issueSession(res, 'password-admin'));
+  } catch (err) {
+    console.error('[admin] password login failed', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
-  res.json(issueSession(res, 'password-admin'));
 }
 
 export function mtlsLogin(req: Request, res: Response): void {

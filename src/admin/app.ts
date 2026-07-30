@@ -41,6 +41,15 @@ export async function createAdminApp(options?: { connect?: boolean; serveClient?
       );
     }
   } else if (
+    config.admin.authMode === 'password' &&
+    config.admin.hashAdminPassword &&
+    config.admin.passwordHash &&
+    !isBcryptHash(config.admin.passwordHash)
+  ) {
+    console.warn(
+      '[admin] ADMIN_PASSWORD_HASH is not a valid bcrypt hash; admin password login will always fail until fixed (npm run hash-admin-password).'
+    );
+  } else if (
     config.nodeEnv === 'production' &&
     config.admin.authMode === 'password' &&
     !config.admin.password

@@ -19,7 +19,10 @@ export class AuthError extends Error {
 
 let csrfToken: string | null = null;
 
-async function request<T>(path: string, init?: RequestInit & { csrf?: boolean }): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit & { csrf?: boolean; treat401AsAuthFailure?: boolean }
+): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init?.headers as Record<string, string> | undefined),
@@ -34,13 +37,13 @@ async function request<T>(path: string, init?: RequestInit & { csrf?: boolean })
     credentials: 'include',
   });
 
-  if (response.status === 401) {
-    throw new AuthError('Session expired. Please sign in again.');
-  }
-
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error((body as { error?: string }).error ?? 'Request failed');
+    const message = (body as { error?: string }).error ?? 'Request failed';
+    if (response.status === 401 && init?.treat401AsAuthFailure !== false) {
+      throw new AuthError('Session expired. Please sign in again.');
+    }
+    throw new Error(message);
   }
 
   if (response.status === 204) {
@@ -62,6 +65,7 @@ export async function loginWithPassword(password: string): Promise<LoginResponse
   const result = await request<LoginResponse>('/api/admin/auth/login', {
     method: 'POST',
     body: JSON.stringify({ password }),
+    treat401AsAuthFailure: false,
   });
   csrfToken = result.csrfToken;
   return result;
@@ -73,7 +77,10 @@ export async function loginWithPassword(password: string): Promise<LoginResponse
  */
 export async function exchangeMtls(): Promise<LoginResponse | null> {
   try {
-    const result = await request<LoginResponse>('/api/admin/auth/mtls', { method: 'POST' });
+    const result = await request<LoginResponse>('/api/admin/auth/mtls', {
+      method: 'POST',
+      treat401AsAuthFailure: false,
+    });
     csrfToken = result.csrfToken;
     return result;
   } catch {
