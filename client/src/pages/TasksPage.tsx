@@ -34,6 +34,7 @@ import { laborLinesForApi, laborLinesFromTask } from '../components/TaskLaborEdi
 import { stepsForApi, stepsFromTask } from '../components/TaskStepsEditor';
 import { ProjectToolbar } from '../components/ProjectToolbar';
 import { TaskListPanel } from '../components/TaskListPanel';
+import { TaskActivitySection } from '../components/TaskActivitySection';
 import { type Selection } from '../components/TaskHierarchyTree';
 import type { MaterialLine, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
 import { buildExpenseTree, computeTaskCostRollup } from '../utils/costRollup';
@@ -1105,6 +1106,14 @@ export function TasksPage({
                   statusEditable={Boolean(activeProject?.canUpdateStatus)}
                   autoSave={taskDetailAutoSave}
                 />
+
+                {user && (
+                  <TaskActivitySection
+                    taskId={selection.taskId}
+                    currentUserId={user.id}
+                    refreshKey={externalRefreshKey}
+                  />
+                )}
               </article>
             ) : (
               <article className="task-detail-panel task-detail-panel-empty">

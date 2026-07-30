@@ -435,3 +435,13 @@ export interface AppNotification {
   read: boolean;
   createdAt: string;
 }
+
+export interface ActivityEntry {
+  _id: string;
+  taskId: string;
+  userId: string;
+  action: string;
+  details: Record<string, unknown>;
+  source: 'user' | 'ai' | 'system';
+  createdAt: string;
+}

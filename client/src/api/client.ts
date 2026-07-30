@@ -408,6 +408,12 @@ export async function updateTask(
   return request(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
 }
 
+export async function getTaskActivity(
+  taskId: string
+): Promise<{ activity: import('../types').ActivityEntry[] }> {
+  return request(`/api/tasks/${taskId}/activity`);
+}
+
 export async function deleteTask(
   id: string,
   options: { keepChildren?: boolean } = {}
