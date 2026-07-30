@@ -251,3 +251,28 @@ export function slimProjectForTool(project: Record<string, unknown>): SlimProjec
 
   return slim;
 }
+
+export function serializeComment(doc: {
+  _id: unknown;
+  taskId: string;
+  subtaskPath?: string[];
+  userId: string;
+  body: string;
+  parentId?: string;
+  editedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}, author: { userId: string; email: string; displayName?: string }): import('../types/comment.js').Comment {
+  return {
+    _id: String(doc._id),
+    taskId: doc.taskId,
+    subtaskPath: doc.subtaskPath ?? [],
+    userId: doc.userId,
+    author,
+    body: doc.body,
+    parentId: doc.parentId ?? undefined,
+    createdAt: doc.createdAt.toISOString(),
+    updatedAt: doc.updatedAt.toISOString(),
+    editedAt: doc.editedAt?.toISOString(),
+  };
+}

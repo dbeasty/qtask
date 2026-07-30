@@ -37,6 +37,8 @@ export type SerializedInvite = {
   createdAt: string;
 };
 
+export type PublicInvitePreview = Omit<SerializedInvite, 'token'>;
+
 type LeanInvite = {
   _id: unknown;
   projectId: string;
@@ -99,39 +101,51 @@ export class InviteService {
       throw new HttpError(400, 'Invalid collaborator role');
     }
 
+    const inviter = await UserModel.findById(userId).select('email displayName').lean();
+    if (!inviter) {
+      throw new HttpError(404, 'User not found');
+    }
+
     let targetUser: { _id: unknown; email: string; displayName?: string | null } | null = null;
+    let inviteeEmail: string;
+
     if (input.userId) {
       targetUser = await UserModel.findById(input.userId).select('email displayName').lean();
+      if (!targetUser) {
+        throw new HttpError(404, 'User not found');
+      }
+      inviteeEmail = normalizeEmail(targetUser.email);
     } else if (input.email) {
-      targetUser = await UserModel.findOne({ email: normalizeEmail(input.email) })
+      inviteeEmail = normalizeEmail(input.email);
+      targetUser = await UserModel.findOne({ email: inviteeEmail })
         .select('email displayName')
         .lean();
     } else {
       throw new HttpError(400, 'email or userId is required');
     }
 
-    if (!targetUser) {
-      throw new HttpError(404, 'User not found');
+    if (normalizeEmail(inviter.email) === inviteeEmail) {
+      throw new HttpError(400, 'You cannot invite yourself');
     }
 
-    const targetId = String(targetUser._id);
     const project = await ProjectModel.findById(projectId).lean();
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
 
-    if (project.userId === targetId) {
-      throw new HttpError(400, 'Project owner is already a member');
-    }
+    if (targetUser) {
+      const targetId = String(targetUser._id);
+      if (project.userId === targetId) {
+        throw new HttpError(400, 'Project owner is already a member');
+      }
 
-    const existingCollab = (project.collaborators ?? []).find((c) => c.userId === targetId);
-    if (existingCollab) {
-      throw new HttpError(409, 'User is already a collaborator');
+      const existingCollab = (project.collaborators ?? []).find((c) => c.userId === targetId);
+      if (existingCollab) {
+        throw new HttpError(409, 'User is already a collaborator');
+      }
     }
 
     await expireStaleInvites();
-
-    const inviteeEmail = normalizeEmail(targetUser.email);
     const pending = await InviteModel.findOne({
       projectId,
       inviteeEmail,
@@ -142,15 +156,15 @@ export class InviteService {
       throw new HttpError(409, 'A pending invite already exists for this user');
     }
 
-    const inviter = await UserModel.findById(userId).select('email displayName').lean();
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
+    const targetId = targetUser ? String(targetUser._id) : undefined;
 
     const invite = await InviteModel.create({
       projectId,
       inviterUserId: userId,
       inviteeEmail,
-      inviteeUserId: targetId,
+      ...(targetId ? { inviteeUserId: targetId } : {}),
       role,
       status: 'pending',
       token,
@@ -161,18 +175,21 @@ export class InviteService {
       to: inviteeEmail,
       token,
       projectName: project.name,
-      inviterName: inviter?.displayName || inviter?.email || 'Someone',
+      inviterName: inviter.displayName || inviter.email || 'Someone',
       role,
+      recipientHasAccount: Boolean(targetUser),
     });
 
-    await notificationService.createNotification(targetId, 'project_invite', {
-      projectId,
-      projectName: project.name,
-      inviterEmail: inviter?.email ?? 'unknown',
-      inviterDisplayName: inviter?.displayName ?? undefined,
-      role,
-      inviteId: String(invite._id),
-    });
+    if (targetId) {
+      await notificationService.createNotification(targetId, 'project_invite', {
+        projectId,
+        projectName: project.name,
+        inviterEmail: inviter.email ?? 'unknown',
+        inviterDisplayName: inviter.displayName ?? undefined,
+        role,
+        inviteId: String(invite._id),
+      });
+    }
 
     return serializeInvite(invite.toObject() as LeanInvite);
   }
@@ -212,6 +229,12 @@ export class InviteService {
       throw new HttpError(404, 'Invite not found or expired');
     }
     return serializeInvite(invite as LeanInvite);
+  }
+
+  async getPublicInvitePreview(token: string): Promise<PublicInvitePreview> {
+    const invite = await this.getInvitePreview(token);
+    const { token: _token, ...preview } = invite;
+    return preview;
   }
 
   async acceptInvite(userId: string, inviteId: string) {

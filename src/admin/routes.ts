@@ -8,6 +8,7 @@ import {
   AdminAuditModel,
   ConversationModel,
   EmbeddingJobModel,
+  FeedbackModel,
   LlmCallMetricModel,
   LlmDailyMetricModel,
   ProjectModel,
@@ -16,6 +17,13 @@ import {
 } from '../models/index.js';
 import { requireAdmin, requireCsrf } from './auth.js';
 import { fetchGpuStatus } from './gpuStats.js';
+import {
+  getAdminFeedbackById,
+  getFeedbackAttachment,
+  listAdminFeedback,
+  updateFeedbackStatus,
+  deleteFeedbackForUser,
+} from '../services/feedbackService.js';
 
 const BCRYPT_ROUNDS = 12;
 const router = Router();
@@ -65,12 +73,13 @@ async function modelBytes(model: { aggregate: (pipeline: any[]) => any }): Promi
 
 router.get('/stats', async (_req, res, next) => {
   try {
-    const [users, tasks, projects, conversations, activities, bytes] = await Promise.all([
+    const [users, tasks, projects, conversations, activities, feedback, bytes] = await Promise.all([
       UserModel.countDocuments(),
       TaskModel.countDocuments(),
       ProjectModel.countDocuments(),
       ConversationModel.countDocuments(),
       ActivityModel.countDocuments(),
+      FeedbackModel.countDocuments(),
       Promise.all([
         modelBytes(UserModel),
         modelBytes(TaskModel),
@@ -81,6 +90,7 @@ router.get('/stats', async (_req, res, next) => {
         modelBytes(LlmCallMetricModel),
         modelBytes(LlmDailyMetricModel),
         modelBytes(AdminAuditModel),
+        modelBytes(FeedbackModel),
       ]),
     ]);
     res.json({
@@ -89,6 +99,7 @@ router.get('/stats', async (_req, res, next) => {
       projects,
       conversations,
       activities,
+      feedback,
       totalDataBytes: bytes.reduce((sum, value) => sum + value, 0),
     });
   } catch (error) {
@@ -278,7 +289,7 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
       ...(await TaskModel.find(orphanFilter).distinct('_id')),
     ].map(String);
 
-    const [tasksInOwned, orphanTasks, projects, conversations, activities, embeddingJobs, metrics, dailyMetrics] =
+    const [tasksInOwned, orphanTasks, projects, conversations, activities, embeddingJobs, metrics, dailyMetrics, feedbackDeleted] =
       await Promise.all([
         ownedMembershipFilter
           ? TaskModel.deleteMany(ownedMembershipFilter)
@@ -290,6 +301,7 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
         EmbeddingJobModel.deleteMany({ taskId: { $in: taskIdsToDelete } }),
         LlmCallMetricModel.deleteMany({ userId }),
         LlmDailyMetricModel.deleteMany({ userId }),
+        deleteFeedbackForUser(userId),
       ]);
     await ProjectModel.updateMany(
       { 'collaborators.userId': userId },
@@ -311,6 +323,7 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
         embeddingJobs: embeddingJobs.deletedCount,
         metrics: metrics.deletedCount,
         dailyMetrics: dailyMetrics.deletedCount,
+        feedback: feedbackDeleted,
       },
     });
     res.json({ deleted: true });
@@ -459,7 +472,7 @@ router.get('/ollama/calls', async (req, res, next) => {
     const page = positiveInt(req.query.page, 1, 1_000_000);
     const limit = positiveInt(req.query.limit, 25, 100);
     const filter: Record<string, unknown> = {};
-    if (['agent', 'generate', 'embed'].includes(String(req.query.callType))) {
+    if (['agent', 'generate', 'embed', 'feedback_vision'].includes(String(req.query.callType))) {
       filter.callType = req.query.callType;
     }
     if (typeof req.query.model === 'string' && req.query.model) filter.model = req.query.model;
@@ -485,6 +498,140 @@ router.get('/ollama/calls', async (req, res, next) => {
         userEmail: call.userId ? emails.get(call.userId) : undefined,
       })),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const feedbackStatusSchema = z.enum(['open', 'read', 'resolved']);
+
+router.get('/feedback', async (req, res, next) => {
+  try {
+    const page = positiveInt(req.query.page, 1, 1_000_000);
+    const limit = positiveInt(req.query.limit, 25, 100);
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+    const status = feedbackStatusSchema.safeParse(req.query.status).success
+      ? (req.query.status as 'open' | 'read' | 'resolved')
+      : undefined;
+    const from =
+      typeof req.query.from === 'string' && !Number.isNaN(new Date(req.query.from).getTime())
+        ? new Date(req.query.from)
+        : undefined;
+    const to =
+      typeof req.query.to === 'string' && !Number.isNaN(new Date(req.query.to).getTime())
+        ? new Date(req.query.to)
+        : undefined;
+    const result = await listAdminFeedback({
+      page,
+      limit,
+      status,
+      search: search || undefined,
+      from,
+      to,
+    });
+    res.json({
+      page: result.page,
+      limit: result.limit,
+      total: result.total,
+      items: result.items.map((item) => ({
+        id: String(item._id),
+        userId: item.userId,
+        userEmail: item.userEmail,
+        userDisplayName: item.userDisplayName,
+        message: item.message,
+        category: item.category,
+        status: item.status,
+        createdAt: item.createdAt,
+        attachmentCount: item.attachments?.length ?? 0,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/feedback/:id', async (req, res, next) => {
+  try {
+    const feedbackId = String(req.params.id);
+    if (!isValidObjectId(feedbackId)) {
+      res.status(404).json({ error: 'Feedback not found' });
+      return;
+    }
+    const feedback = await getAdminFeedbackById(feedbackId);
+    if (!feedback) {
+      res.status(404).json({ error: 'Feedback not found' });
+      return;
+    }
+    res.json({
+      id: String(feedback._id),
+      userId: feedback.userId,
+      userEmail: feedback.userEmail,
+      userDisplayName: feedback.userDisplayName,
+      message: feedback.message,
+      category: feedback.category,
+      status: feedback.status,
+      context: feedback.context,
+      attachments: (feedback.attachments ?? []).map((attachment, index) => ({
+        index,
+        contentType: attachment.contentType,
+        sizeBytes: attachment.sizeBytes,
+        visionCheck: attachment.visionCheck,
+      })),
+      createdAt: feedback.createdAt,
+      updatedAt: feedback.updatedAt,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/feedback/:id', requireCsrf, async (req, res, next) => {
+  try {
+    const feedbackId = String(req.params.id);
+    if (!isValidObjectId(feedbackId)) {
+      res.status(404).json({ error: 'Feedback not found' });
+      return;
+    }
+    const status = feedbackStatusSchema.parse(req.body?.status);
+    const feedback = await updateFeedbackStatus(feedbackId, status);
+    if (!feedback) {
+      res.status(404).json({ error: 'Feedback not found' });
+      return;
+    }
+    res.json({
+      id: String(feedback._id),
+      status: feedback.status,
+      updatedAt: feedback.updatedAt,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      res.status(400).json({ error: 'Invalid status' });
+      return;
+    }
+    next(error);
+  }
+});
+
+router.get('/feedback/:id/attachments/:index', async (req, res, next) => {
+  try {
+    const feedbackId = String(req.params.id);
+    if (!isValidObjectId(feedbackId)) {
+      res.status(404).json({ error: 'Feedback not found' });
+      return;
+    }
+    const index = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 0) {
+      res.status(400).json({ error: 'Invalid attachment index' });
+      return;
+    }
+    const result = await getFeedbackAttachment(feedbackId, index);
+    if (!result) {
+      res.status(404).json({ error: 'Attachment not found' });
+      return;
+    }
+    res.setHeader('Content-Type', result.object.contentType);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(result.object.body);
   } catch (error) {
     next(error);
   }

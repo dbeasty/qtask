@@ -1,4 +1,4 @@
-import { EmbeddingJobModel, ProjectModel, TaskModel } from '../models/index.js';
+import { CommentModel, EmbeddingJobModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
 import {
   buildProjectEmbeddingText,
   buildTaskEmbeddingText,
@@ -149,12 +149,31 @@ async function processNextJob(): Promise<void> {
       }
 
       const projectNames = await resolveProjectNames(task);
+      const commentDocs = await CommentModel.find({ taskId: String(task._id) })
+        .sort({ createdAt: 1 })
+        .select('body subtaskPath userId')
+        .lean();
+      const commentAuthorIds = [...new Set(commentDocs.map((c) => c.userId))];
+      const commentAuthors = commentAuthorIds.length
+        ? await UserModel.find({ _id: { $in: commentAuthorIds } }).select('email displayName').lean()
+        : [];
+      const authorById = new Map(
+        commentAuthors.map((u) => [
+          String(u._id),
+          u.displayName || u.email,
+        ])
+      );
       const text = buildTaskEmbeddingText({
         title: task.title,
         description: task.description ?? undefined,
         tags: task.tags,
         projectNames,
         steps: task.steps?.map((step) => ({ text: step.text })),
+        comments: commentDocs.map((comment) => ({
+          authorLabel: authorById.get(comment.userId) ?? 'Unknown',
+          body: comment.body,
+          subtaskPath: comment.subtaskPath,
+        })),
       });
       const embedding = await generateEmbedding(text, {
         userId: task.userId,

@@ -1,10 +1,29 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { getUserId } from '../middleware/index.js';
+import { validateBody } from '../middleware/validate.js';
 import { getActivityForTask } from '../services/activityService.js';
+import { commentService } from '../services/commentService.js';
 import { taskService } from '../services/taskService.js';
 import type { TaskLinkType } from '../types/task.js';
 
 export const tasksRouter = Router();
+
+const createCommentSchema = z.object({
+  body: z.string().trim().min(1, 'body is required').max(10000),
+  subtaskPath: z.array(z.string()).optional(),
+  parentId: z.string().optional(),
+  notifyByEmail: z.boolean().optional(),
+});
+
+const updateCommentSchema = z.object({
+  body: z.string().trim().min(1, 'body is required').max(10000),
+});
+
+function parseSubtaskPathQuery(value: unknown): string[] | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  return value.split(',').filter(Boolean);
+}
 
 function parseKeepChildren(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
@@ -385,6 +404,57 @@ tasksRouter.get('/:id/activity', async (req, res, next) => {
     }
     const activity = await getActivityForTask(req.params.id!);
     res.json({ activity });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.get('/:id/comments', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const comments = await commentService.listComments(userId, req.params.id!, {
+      subtaskPath: parseSubtaskPathQuery(req.query.subtaskPath),
+    });
+    res.json({ comments });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/comments', validateBody(createCommentSchema), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const comment = await commentService.createComment(userId, String(req.params.id), req.body);
+    res.status(201).json({ comment });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.patch(
+  '/:id/comments/:commentId',
+  validateBody(updateCommentSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const comment = await commentService.updateComment(
+        userId,
+        String(req.params.id),
+        String(req.params.commentId),
+        req.body
+      );
+      res.json({ comment });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+tasksRouter.delete('/:id/comments/:commentId', async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    await commentService.deleteComment(userId, String(req.params.id), String(req.params.commentId));
+    res.status(204).send();
   } catch (error) {
     next(error);
   }

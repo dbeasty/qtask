@@ -414,10 +414,14 @@ export interface ProjectInvite {
   createdAt: string;
 }
 
+export type PublicProjectInvite = Omit<ProjectInvite, 'token'>;
+
 export type NotificationType =
   | 'project_invite'
   | 'project_share_accepted'
-  | 'project_share_declined';
+  | 'project_share_declined'
+  | 'task_comment'
+  | 'task_comment_reply';
 
 export interface AppNotification {
   _id: string;
@@ -431,9 +435,29 @@ export interface AppNotification {
     inviteeDisplayName?: string;
     role?: string;
     inviteId?: string;
+    taskId?: string;
+    taskTitle?: string;
+    commentId?: string;
+    commentPreview?: string;
+    authorDisplayName?: string;
+    authorEmail?: string;
+    subtaskPath?: string[];
   };
   read: boolean;
   createdAt: string;
+}
+
+export interface Comment {
+  _id: string;
+  taskId: string;
+  subtaskPath: string[];
+  userId: string;
+  author: UserSummary;
+  body: string;
+  parentId?: string;
+  createdAt: string;
+  updatedAt: string;
+  editedAt?: string;
 }
 
 export interface ActivityEntry {

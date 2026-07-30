@@ -367,7 +367,7 @@ describe('project collaboration', () => {
       .expect(403);
   });
 
-  it('rejects adding unknown users and cannot remove the owner', async () => {
+  it('allows inviting unknown email and cannot remove the owner', async () => {
     const alice = await registerAndVerify('owner-alice@example.com');
 
     const projectRes = await request(app)
@@ -377,11 +377,14 @@ describe('project collaboration', () => {
       .expect(201);
     const projectId = projectRes.body.project._id as string;
 
-    await request(app)
+    const inviteRes = await request(app)
       .post(`/api/projects/${projectId}/collaborators`)
       .set('Authorization', `Bearer ${alice.token}`)
       .send({ email: 'missing@example.com', role: 'editor' })
-      .expect(404);
+      .expect(201);
+
+    assert.equal(inviteRes.body.invite.inviteeEmail, 'missing@example.com');
+    assert.equal(inviteRes.body.invite.inviteeUserId, undefined);
 
     await request(app)
       .delete(`/api/projects/${projectId}/collaborators/${alice.userId}`)

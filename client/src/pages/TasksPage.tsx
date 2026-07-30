@@ -35,6 +35,7 @@ import { stepsForApi, stepsFromTask } from '../components/TaskStepsEditor';
 import { ProjectToolbar } from '../components/ProjectToolbar';
 import { TaskListPanel } from '../components/TaskListPanel';
 import { TaskActivitySection } from '../components/TaskActivitySection';
+import { TaskCommentsSection } from '../components/TaskCommentsSection';
 import { type Selection } from '../components/TaskHierarchyTree';
 import type { MaterialLine, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
 import { buildExpenseTree, computeTaskCostRollup } from '../utils/costRollup';
@@ -1106,6 +1107,17 @@ export function TasksPage({
                   statusEditable={Boolean(activeProject?.canUpdateStatus)}
                   autoSave={taskDetailAutoSave}
                 />
+
+                {user && (
+                  <TaskCommentsSection
+                    taskId={selection.taskId}
+                    subtaskPath={selection.kind === 'subtask' ? selection.path : undefined}
+                    currentUserId={user.id}
+                    canComment={Boolean(activeProject?.canUpdateStatus)}
+                    canModerate={Boolean(activeProject?.canEdit)}
+                    refreshKey={externalRefreshKey}
+                  />
+                )}
 
                 {user && (
                   <TaskActivitySection

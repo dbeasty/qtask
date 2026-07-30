@@ -50,7 +50,7 @@ export const DEMO_STEPS: DemoStepDefinition[] = [
     prepare: 'selectFirstProject',
     title: 'Share a project',
     description:
-      'As the project owner, open Members to invite collaborators. Pick someone from Recent collaborators or enter a new email. Choose a role: Manager can create sub-projects and edit structure but cannot delete or manage members; Editor can create and edit tasks; Executor updates status only; Viewer is read-only. Invites must be accepted before access is granted.',
+      'As the project owner, open Members to invite collaborators. Choose someone from the Recent collaborator dropdown or enter a new email on the same form — they can join even without an existing account. Choose a role: Manager can create sub-projects and edit structure but cannot delete or manage members; Editor can create and edit tasks; Executor updates status only; Viewer is read-only. Invites must be accepted before access is granted.',
     side: 'right',
   },
   {
@@ -102,7 +102,7 @@ export const DEMO_STEPS: DemoStepDefinition[] = [
     selector: '[data-demo-step="user-menu"]',
     title: 'Account menu',
     description:
-      'Open Help for this guide (including sharing), adjust preferences (auto-approve, expenses), or choose Take a tour again anytime.',
+      'Open Help for this guide (including sharing), adjust preferences (auto-approve, expenses), send feedback, or choose Take a tour again anytime.',
     side: 'bottom',
   },
 ];

@@ -3,6 +3,7 @@ import { useAuth } from './auth/AuthContext';
 import { getAuthPathname, isAuthPath } from './auth/session';
 import { getUserPreferences } from './auth/storage';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
+import { FeedbackDialog } from './components/FeedbackDialog';
 import { DemoTourPrompt, useDemoTour } from './components/DemoTour';
 import { UserMenu } from './components/UserMenu';
 import { AboutPage } from './pages/AboutPage';
@@ -22,6 +23,11 @@ import { WelcomePage } from './pages/WelcomePage';
 import { NotificationBell } from './components/NotificationBell';
 import { InviteAcceptPage } from './pages/InviteAcceptPage';
 import { checkHealth, listInvites, listProjects } from './api/client';
+import {
+  captureInviteTokenFromUrl,
+  clearPendingInviteToken,
+  getPendingInviteToken,
+} from './utils/inviteToken';
 import {
   getStoredActiveProjectId,
   setStoredActiveProjectId,
@@ -56,6 +62,29 @@ function isMainView(value: View): value is MainView {
   return value === 'agent' || value === 'projects' || value === 'tasks';
 }
 
+function captureTaskLinkFromUrl(): {
+  taskId: string;
+  projectId?: string;
+  subtaskPath?: string[];
+} | null {
+  const params = new URLSearchParams(window.location.search);
+  const taskId = params.get('taskId');
+  if (!taskId) return null;
+
+  const projectId = params.get('projectId') ?? undefined;
+  const subtaskPathRaw = params.get('subtaskPath');
+  const subtaskPath = subtaskPathRaw ? subtaskPathRaw.split(',').filter(Boolean) : undefined;
+
+  params.delete('taskId');
+  params.delete('projectId');
+  params.delete('subtaskPath');
+  if (params.get('view') === 'tasks') params.delete('view');
+  const remaining = params.toString();
+  window.history.replaceState(null, '', remaining ? `?${remaining}` : window.location.pathname);
+
+  return { taskId, projectId, subtaskPath };
+}
+
 export function App() {
   const { user, loading, mustChangePassword, logout, updateProfile, updatePreferences } = useAuth();
   const [view, setView] = useState<View>('projects');
@@ -74,6 +103,7 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false);
   const [demoPrompt, setDemoPrompt] = useState<string | null>(null);
   const [demoPromptGeneration, setDemoPromptGeneration] = useState(0);
   const [showTourPrompt, setShowTourPrompt] = useState(false);
@@ -84,11 +114,11 @@ export function App() {
   const viewRef = useRef(view);
   viewRef.current = view;
   const [pendingInviteCount, setPendingInviteCount] = useState(0);
-  const [inviteAcceptToken, setInviteAcceptToken] = useState<string | null>(() => {
-    const params = new URLSearchParams(window.location.search);
-    return getAuthPathname() === '/invites/accept' ? params.get('token') : null;
-  });
+  const [inviteAcceptToken, setInviteAcceptToken] = useState<string | null>(() =>
+    captureInviteTokenFromUrl()
+  );
   const defaultViewSetRef = useRef(false);
+  const taskLinkCapturedRef = useRef(false);
   const [sessionRestore, setSessionRestore] = useState<SessionRestore | null>(null);
   const [agentWorking, setAgentWorking] = useState(false);
 
@@ -158,6 +188,21 @@ export function App() {
     setStoredActiveProjectId(projectId);
   }, []);
 
+  const openTaskFromShell = useCallback(
+    (taskId: string, projectId?: string, subtaskPath?: string[]) => {
+      if (projectId) {
+        setActiveProjectId(projectId);
+      }
+      setPendingTaskSelection(
+        subtaskPath && subtaskPath.length > 0
+          ? { kind: 'subtask', taskId, path: subtaskPath }
+          : { kind: 'task', taskId }
+      );
+      setAppView('tasks');
+    },
+    [setActiveProjectId, setAppView]
+  );
+
   const refreshHealth = useCallback(() => {
     setHealthy(null);
     checkHealth()
@@ -174,9 +219,32 @@ export function App() {
   }, [refreshHealth]);
 
   useEffect(() => {
+    const token = captureInviteTokenFromUrl();
+    if (token) {
+      setInviteAcceptToken(token);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const pending = getPendingInviteToken();
+    if (pending) {
+      setInviteAcceptToken(pending);
+    }
+  }, [user]);
+
+  useEffect(() => {
     if (!user) return;
     refreshPendingInvites();
   }, [user, projectsVersion, refreshPendingInvites]);
+
+  useEffect(() => {
+    if (!user || taskLinkCapturedRef.current) return;
+    const link = captureTaskLinkFromUrl();
+    if (!link) return;
+    taskLinkCapturedRef.current = true;
+    openTaskFromShell(link.taskId, link.projectId, link.subtaskPath);
+  }, [user, openTaskFromShell]);
 
   useEffect(() => {
     if (!user) return;
@@ -313,6 +381,21 @@ export function App() {
     if (pathname === '/register') {
       return <RegisterPage />;
     }
+    if (pathname === '/invites/accept') {
+      const token = inviteAcceptToken ?? getPendingInviteToken();
+      if (token) {
+        return (
+          <InviteAcceptPage
+            token={token}
+            authenticated={false}
+            onAccepted={() => {}}
+            onBack={() => {
+              window.history.replaceState(null, '', '/');
+            }}
+          />
+        );
+      }
+    }
     return <WelcomePage />;
   }
 
@@ -329,6 +412,7 @@ export function App() {
       <InviteAcceptPage
         token={inviteAcceptToken}
         onAccepted={(projectId) => {
+          clearPendingInviteToken();
           setActiveProjectId(projectId);
           setInviteAcceptToken(null);
           window.history.replaceState(null, '', '/');
@@ -337,6 +421,7 @@ export function App() {
           refreshPendingInvites();
         }}
         onBack={() => {
+          clearPendingInviteToken();
           setInviteAcceptToken(null);
           window.history.replaceState(null, '', '/');
         }}
@@ -415,6 +500,7 @@ export function App() {
                 refreshPendingInvites();
                 handleProjectsChanged();
               }}
+              onOpenTask={openTaskFromShell}
             />
             <button
               ref={userMenuTriggerRef}
@@ -437,6 +523,10 @@ export function App() {
                 onChangePassword={() => setChangePasswordOpen(true)}
                 onOpenHelp={() => setView('help')}
                 onStartTour={handleStartTour}
+                onOpenFeedback={() => {
+                  setFeedbackDialogOpen(true);
+                  setUserMenuOpen(false);
+                }}
                 onOpenAbout={() => setView('about')}
                 onUpdateDisplayName={(displayName) => updateProfile({ displayName })}
                 onUpdatePreferences={updatePreferences}
@@ -551,7 +641,11 @@ export function App() {
             }}
           />
         ) : view === 'help' ? (
-          <HelpPage onBack={() => setAppView('projects')} onStartTour={handleStartTour} />
+          <HelpPage
+            onBack={() => setAppView('projects')}
+            onStartTour={handleStartTour}
+            onOpenFeedback={() => setFeedbackDialogOpen(true)}
+          />
         ) : view === 'about' ? (
           <AboutPage apiVersion={apiVersion} aiVersion={aiVersion} onBack={() => setAppView('projects')} />
         ) : view === 'tasks' ? (
@@ -573,6 +667,12 @@ export function App() {
       </main>
 
       {changePasswordOpen && <ChangePasswordDialog onClose={() => setChangePasswordOpen(false)} />}
+      {feedbackDialogOpen ? (
+        <FeedbackDialog
+          onClose={() => setFeedbackDialogOpen(false)}
+          contextUrl={window.location.href}
+        />
+      ) : null}
       {showTourPrompt ? (
         <DemoTourPrompt onStart={handleStartTour} onDismiss={handleDismissTourPrompt} />
       ) : null}

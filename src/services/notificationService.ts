@@ -4,7 +4,9 @@ import { HttpError } from '../utils/httpError.js';
 export type NotificationType =
   | 'project_invite'
   | 'project_share_accepted'
-  | 'project_share_declined';
+  | 'project_share_declined'
+  | 'task_comment'
+  | 'task_comment_reply';
 
 export type NotificationPayload = {
   projectId?: string;
@@ -15,6 +17,13 @@ export type NotificationPayload = {
   inviteeDisplayName?: string;
   role?: string;
   inviteId?: string;
+  taskId?: string;
+  taskTitle?: string;
+  commentId?: string;
+  commentPreview?: string;
+  authorDisplayName?: string;
+  authorEmail?: string;
+  subtaskPath?: string[];
 };
 
 export type SerializedNotification = {

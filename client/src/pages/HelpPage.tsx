@@ -5,9 +5,10 @@ const USER_GUIDE_URL = `${GITHUB_REPO_URL}/blob/main/docs/USER_GUIDE.md`;
 interface HelpPageProps {
   onBack?: () => void;
   onStartTour?: () => void;
+  onOpenFeedback?: () => void;
 }
 
-export function HelpPage({ onBack, onStartTour }: HelpPageProps) {
+export function HelpPage({ onBack, onStartTour, onOpenFeedback }: HelpPageProps) {
   return (
     <div className="help-page">
       <div className="help-page-inner">
@@ -135,14 +136,27 @@ export function HelpPage({ onBack, onStartTour }: HelpPageProps) {
             <strong>executor</strong> (status updates), <strong>viewer</strong> (read-only).
           </p>
           <p>
-            To share: open <strong>Members</strong> on a project you own. Pick from{' '}
-            <strong>Recent collaborators</strong> or invite someone new by email. They must accept
-            via the notification bell or email before gaining access. Members appear by display name
-            when set.
+            To share: open <strong>Members</strong> on a project you own. Choose a past collaborator
+            from the dropdown or enter a new email address. They receive a link and must accept
+            before gaining access (they can create an account if needed). Existing users also get an
+            in-app notification. Members appear by display name when set.
           </p>
           <p>
             Manager access on a shared project is marked with an amber dot in the project tree.
           </p>
+        </section>
+
+        <section className="help-section">
+          <h3>Send feedback</h3>
+          <p>
+            Report bugs or suggest features with a screenshot. Open your <strong>account menu</strong>{' '}
+            (top right) → <strong>Send feedback</strong>, or use the button below.
+          </p>
+          {onOpenFeedback ? (
+            <button type="button" className="primary-button" onClick={onOpenFeedback}>
+              Send feedback
+            </button>
+          ) : null}
         </section>
 
         <section className="help-section">

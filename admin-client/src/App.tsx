@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './auth/AuthContext';
+import { FeedbackPage } from './pages/FeedbackPage';
 import { LoginPage } from './pages/LoginPage';
 import { OllamaPage } from './pages/OllamaPage';
 import { UsersPage } from './pages/UsersPage';
@@ -7,7 +8,7 @@ import { applyTheme, getCachedTheme, type ThemePreference } from './theme';
 import '../../shared/theme-tokens.css';
 import './styles.css';
 
-type View = 'users' | 'ollama';
+type View = 'users' | 'ollama' | 'feedback';
 
 export function App() {
   const { admin, loading, logout } = useAuth();
@@ -56,6 +57,13 @@ export function App() {
               >
                 Ollama
               </button>
+              <button
+                type="button"
+                className={view === 'feedback' ? 'nav-active' : ''}
+                onClick={() => setView('feedback')}
+              >
+                Feedback
+              </button>
             </nav>
           </div>
           <div className="header-user">
@@ -86,7 +94,9 @@ export function App() {
         </div>
       </header>
 
-      <main>{view === 'users' ? <UsersPage /> : <OllamaPage />}</main>
+      <main>
+        {view === 'users' ? <UsersPage /> : view === 'ollama' ? <OllamaPage /> : <FeedbackPage />}
+      </main>
     </div>
   );
 }

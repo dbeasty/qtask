@@ -118,9 +118,10 @@ Projects group related tasks. They can form a **tree**: a project may sit under 
 ### Members
 
 - Select a project and click **Members** in the detail panel to invite or manage collaborators.
-- Pick someone from **Recent collaborators** (people you have shared with before), or expand **Invite someone new** and enter an email for a first-time collaborator.
+- Use the **Recent collaborator** dropdown for people you have shared with before (accepted invites on your projects), or enter a new address in **Invite by email**.
 - Choose a role, then click **Send invite**.
-- The recipient receives an email and an in-app notification. They must **accept** the invite before gaining access.
+- Existing users receive an email and an in-app notification; people without an account receive an email invite link and can register before accepting.
+- They must **accept** the invite before gaining access.
 - After acceptance, members are shown by **display name** (email appears as secondary detail when a name is set).
 - When you accept an invite to a parent project, access is granted to that project and **all of its sub-projects** (same role).
 - Roles and permissions are **per project**. Nesting does not automatically share access with parent or child projects unless you invite on the parent (which cascades downward).
@@ -167,6 +168,16 @@ Open the **Tasks** view to work with tasks in the active project.
 3. Edit the subtask in the detail panel the same way as a task.
 
 Subtasks can nest further — a subtask can have its own subtasks. Parent progress often rolls up from children.
+
+### Comments
+
+1. Select a task or subtask in the tree.
+2. Expand **Comments** in the detail panel (below the task form).
+3. Comments are scoped to the item you selected — root task comments and subtask comments are separate threads.
+4. **Executors** and above can post, reply, and edit their own comments; **viewers** can read only; **editors** can delete any comment on tasks they can edit.
+5. Use **Reply** to start a threaded conversation under an existing comment.
+6. Check **Notify collaborators by email** before posting if you want assignees and the task owner to receive email in addition to the in-app notification bell (email is off by default).
+7. Comment activity also appears in the **Activity** section for the task.
 
 ### Reorganize
 
@@ -335,7 +346,7 @@ Each project has an owner and optional collaborators.
 | Role | View | Update status | Create/edit tasks | Delete tasks | Create sub-projects | Edit project name/desc | Move projects | Manage members | Delete projects |
 |------|------|---------------|-------------------|--------------|---------------------|------------------------|---------------|----------------|-----------------|
 | **Viewer** | yes | — | — | — | — | — | — | — | — |
-| **Executor** | yes | yes | — | — | — | — | — | — | — |
+| **Executor** | yes | yes | comment | — | — | — | — | — | — |
 | **Editor** | yes | yes | yes | own tasks only | — | — | — | — | — |
 | **Manager** | yes | yes | yes | — | yes | yes | yes | — | — |
 | **Owner** | yes | yes | yes | all | yes | yes | yes | yes | yes |
@@ -344,9 +355,9 @@ Each project has an owner and optional collaborators.
 
 1. Open **Projects** and select a project you own.
 2. Click **Members** in the detail panel.
-3. Pick someone from **Recent collaborators**, or expand **Invite someone new** and enter an email.
+3. Pick someone from the **Recent collaborator** dropdown, or enter a new email address.
 4. Choose a role (**manager**, **editor**, **executor**, or **viewer**), then click **Send invite**.
-5. The invitee must **Accept** via email notification or the notification bell.
+5. The invitee must **Accept** via the email link, or via the notification bell if they already have an account.
 6. Inviting on a **parent** project cascades the same role to all sub-projects.
 7. Owners can change roles or remove members; collaborators can **Leave project**.
 
@@ -380,7 +391,7 @@ See also [Members](#members) under Projects.
 **What role should I choose when sharing?**
 - **Manager** — trusted leads who need sub-projects and project structure edits, but should not delete or manage members.
 - **Editor** — contributors who create and edit tasks (can delete only tasks they created).
-- **Executor** — field/status updates only.
+- **Executor** — field/status updates and comments.
 - **Viewer** — read-only access.
 
 **What is the difference between subtasks and steps?**

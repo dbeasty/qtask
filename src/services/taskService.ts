@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { TaskModel } from '../models/index.js';
+import { CommentModel, TaskModel } from '../models/index.js';
 import type {
   AttachTaskAsSubtaskInput,
   CreateTaskInput,
@@ -224,6 +224,32 @@ export class TaskService {
    * Load a task the user can access. Non-members get null (404);
    * members below minRole get 403.
    */
+  async assertTaskAccess(
+    userId: string,
+    taskId: string,
+    minRole: ProjectRole = 'viewer'
+  ): Promise<{ task: NonNullable<Awaited<ReturnType<typeof TaskModel.findById>>>; role: ProjectRole }> {
+    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, minRole);
+    if (!loaded) {
+      throw new HttpError(404, 'Task not found');
+    }
+    return loaded;
+  }
+
+  assertSubtaskPathExists(
+    task: { subtasks?: Array<{ _id: { toString(): string }; subtasks?: unknown[] }> },
+    subtaskPath: string[]
+  ): void {
+    if (subtaskPath.length === 0) return;
+    const found = this.findSubtaskByPath(
+      (task.subtasks ?? []) as Array<{ _id: import('mongoose').Types.ObjectId; subtasks?: Array<{ _id: import('mongoose').Types.ObjectId; subtasks?: unknown[] }> }>,
+      subtaskPath
+    );
+    if (!found) {
+      throw new HttpError(400, 'Invalid subtask path');
+    }
+  }
+
   private async loadAccessibleTask(userId: string, taskId: string, minRole: ProjectRole = 'viewer') {
     const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, minRole);
     return loaded?.task ?? null;
@@ -567,6 +593,7 @@ export class TaskService {
 
     if (!keepChildren) {
       await task.deleteOne();
+      await CommentModel.deleteMany({ taskId });
       await logActivity({
         taskId,
         userId,

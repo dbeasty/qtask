@@ -19,6 +19,9 @@ const ACTION_LABELS: Record<string, string> = {
   'task.shared_project': 'Task shared to project',
   'task.unlinked_project': 'Task unlinked from project',
   'task.duplicated': 'Task duplicated',
+  'comment.added': 'Comment added',
+  'comment.updated': 'Comment updated',
+  'comment.deleted': 'Comment deleted',
 };
 
 function humanizeAction(action: string): string {
@@ -102,6 +105,10 @@ export function formatActivityDetails(entry: ActivityEntry): string | null {
 
   if (typeof details.index === 'number') {
     parts.push(`position ${details.index + 1}`);
+  }
+
+  if (typeof details.bodyPreview === 'string' && details.bodyPreview) {
+    parts.push(`"${details.bodyPreview}"`);
   }
 
   if (parts.length === 0) {

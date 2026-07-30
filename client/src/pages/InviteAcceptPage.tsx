@@ -1,24 +1,47 @@
 import { useEffect, useState } from 'react';
-import { acceptInviteByToken, getInvitePreview } from '../api/client';
-import type { ProjectInvite } from '../types';
+import { acceptInviteByToken, getInvitePreviewPublic } from '../api/client';
+import { getAuthConfig } from '../auth/storage';
+import type { PublicProjectInvite } from '../types';
 
 interface InviteAcceptPageProps {
   token: string;
+  authenticated?: boolean;
   onAccepted: (projectId: string) => void;
   onBack: () => void;
 }
 
-export function InviteAcceptPage({ token, onAccepted, onBack }: InviteAcceptPageProps) {
-  const [invite, setInvite] = useState<ProjectInvite | null>(null);
+export function InviteAcceptPage({
+  token,
+  authenticated = true,
+  onAccepted,
+  onBack,
+}: InviteAcceptPageProps) {
+  const [invite, setInvite] = useState<PublicProjectInvite | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!authenticated) {
+      let cancelled = false;
+      void getAuthConfig().then((config) => {
+        if (!cancelled) {
+          setRegistrationEnabled(config.registrationEnabled);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    return undefined;
+  }, [authenticated]);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    getInvitePreview(token)
+    getInvitePreviewPublic(token)
       .then(({ invite: preview }) => setInvite(preview))
       .catch((err) => setError(err instanceof Error ? err.message : 'Invite not found'))
       .finally(() => setLoading(false));
@@ -60,6 +83,41 @@ export function InviteAcceptPage({ token, onAccepted, onBack }: InviteAcceptPage
     );
   }
 
+  const inviterLabel = invite.inviterDisplayName || invite.inviterEmail;
+
+  if (!authenticated) {
+    return (
+      <div className="auth-page">
+        <div className="auth-card">
+          <h1>Project invitation</h1>
+          <p>
+            <strong>{inviterLabel}</strong> invited you to collaborate on{' '}
+            <strong>{invite.projectName}</strong> as <strong>{invite.role}</strong>.
+          </p>
+          <p className="muted">Invitation for {invite.inviteeEmail}</p>
+          <p className="muted">
+            Sign in or create an account with this email address, then accept the invite to join the
+            project.
+          </p>
+          {registrationEnabled === false ? (
+            <p className="project-toolbar-error">
+              Registration is not currently enabled. Contact the person who invited you for help.
+            </p>
+          ) : (
+            <div className="auth-dialog-actions">
+              <a className="primary-button auth-submit" href="/register">
+                Create account
+              </a>
+              <a className="secondary-button" href="/login">
+                Sign in
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="auth-page">
       <h1>Project invitation</h1>
@@ -75,12 +133,10 @@ export function InviteAcceptPage({ token, onAccepted, onBack }: InviteAcceptPage
       ) : (
         <>
           <p>
-            <strong>{invite.inviterDisplayName || invite.inviterEmail}</strong> invited you to collaborate on{' '}
+            <strong>{inviterLabel}</strong> invited you to collaborate on{' '}
             <strong>{invite.projectName}</strong> as <strong>{invite.role}</strong>.
           </p>
-          <p className="muted">
-            Accepting grants access to this project and its sub-projects.
-          </p>
+          <p className="muted">Accepting grants access to this project and its sub-projects.</p>
           {error ? <p className="project-toolbar-error">{error}</p> : null}
           <div className="auth-dialog-actions">
             <button type="button" className="primary-button" disabled={busy} onClick={() => void handleAccept()}>
@@ -95,3 +151,13 @@ export function InviteAcceptPage({ token, onAccepted, onBack }: InviteAcceptPage
     </div>
   );
 }
+
+function InviteContextBanner({ invite }: { invite: PublicProjectInvite }) {
+  return (
+    <p className="auth-hint invite-context-banner">
+      You&apos;re joining <strong>{invite.projectName}</strong> as <strong>{invite.role}</strong>.
+    </p>
+  );
+}
+
+export { InviteContextBanner };

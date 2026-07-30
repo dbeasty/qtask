@@ -24,6 +24,7 @@ export interface AdminStats {
   projects: number;
   conversations: number;
   activities: number;
+  feedback: number;
   totalDataBytes: number;
 }
 
@@ -202,4 +203,57 @@ export interface OllamaCallsResponse {
   limit: number;
   total: number;
   calls: OllamaCall[];
+}
+
+export type FeedbackStatus = 'open' | 'read' | 'resolved';
+export type FeedbackCategory = 'bug' | 'feature' | 'other';
+
+export interface AdminFeedbackItem {
+  id: string;
+  userId: string;
+  userEmail?: string;
+  userDisplayName?: string | null;
+  message: string;
+  category: FeedbackCategory;
+  status: FeedbackStatus;
+  createdAt: string;
+  attachmentCount: number;
+}
+
+export interface FeedbackListResponse {
+  page: number;
+  limit: number;
+  total: number;
+  items: AdminFeedbackItem[];
+}
+
+export interface AdminFeedbackAttachment {
+  index: number;
+  contentType: string;
+  sizeBytes: number;
+  visionCheck?: {
+    isScreenshot: boolean;
+    confidence?: number;
+    model: string;
+    rationale?: string;
+    checkedAt: string;
+  };
+}
+
+export interface AdminFeedbackDetail {
+  id: string;
+  userId: string;
+  userEmail?: string;
+  userDisplayName?: string | null;
+  message: string;
+  category: FeedbackCategory;
+  status: FeedbackStatus;
+  context?: {
+    url?: string;
+    userAgent?: string;
+    appVersion?: string;
+  };
+  attachments: AdminFeedbackAttachment[];
+  createdAt: string;
+  updatedAt: string;
 }

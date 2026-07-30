@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
 import { LlmCallMetricModel, LlmDailyMetricModel } from '../models/index.js';
 
-export type LlmCallType = 'agent' | 'generate' | 'embed';
+export type LlmCallType = 'agent' | 'generate' | 'embed' | 'feedback_vision';
 export type LlmCallSource =
   | 'agent_loop'
   | 'project_summary'
   | 'embedding_job'
-  | 'semantic_search';
+  | 'semantic_search'
+  | 'feedback_vision';
 
 export interface OllamaTimingFields {
   total_duration?: number;

@@ -28,7 +28,7 @@ interface ProjectMembersDialogProps {
 const ROLE_OPTIONS: CollaboratorRole[] = ['manager', 'editor', 'executor', 'viewer'];
 const ADD_EMAIL_HINT_ID = 'project-members-add-email-hint';
 const ADD_EMAIL_HELPER =
-  'Send an invite to an existing qtask user. They must accept before gaining access.';
+  'Send an invite by email. They receive a link and must accept before gaining access (they can create an account if needed).';
 
 function inviteUserSummary(invite: ProjectInvite): UserSummary {
   return {
@@ -36,6 +36,10 @@ function inviteUserSummary(invite: ProjectInvite): UserSummary {
     email: invite.inviteeEmail,
     displayName: invite.inviteeDisplayName,
   };
+}
+
+function contactLabel(contact: ShareContact): string {
+  return contact.displayName ? `${contact.displayName} (${contact.email})` : contact.email;
 }
 
 export function ProjectMembersDialog({
@@ -49,8 +53,7 @@ export function ProjectMembersDialog({
 }: ProjectMembersDialogProps) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<CollaboratorRole>('editor');
-  const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
-  const [showEmailInvite, setShowEmailInvite] = useState(false);
+  const [selectedContactId, setSelectedContactId] = useState('');
   const [shareContacts, setShareContacts] = useState<ShareContact[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -58,14 +61,10 @@ export function ProjectMembersDialog({
   const [shareSummary, setShareSummary] = useState<ProjectShareSummary | null>(null);
   const trimmedEmail = email.trim();
   const selectedContact = shareContacts.find((c) => c.userId === selectedContactId) ?? null;
-  const canSendToContact = Boolean(selectedContact && !saving);
-  const canSendToEmail = Boolean(trimmedEmail && !saving);
-  const addMemberDisabled = showEmailInvite ? !canSendToEmail : !canSendToContact;
-  const addMemberDisabledHint = addMemberDisabled
-    ? showEmailInvite
-      ? 'Enter an email address first'
-      : 'Select someone to invite'
-    : undefined;
+  const canSendInvite = Boolean((selectedContact || trimmedEmail) && !saving);
+  const addMemberDisabledHint = canSendInvite
+    ? undefined
+    : 'Select a recent collaborator or enter an email address';
 
   useEffect(() => {
     if (!project.canManageMembers) return;
@@ -78,9 +77,6 @@ export function ProjectMembersDialog({
         setPendingInvites(invites);
         setShareSummary(summary);
         setShareContacts(contacts);
-        if (contacts.length === 0) {
-          setShowEmailInvite(true);
-        }
       })
       .catch(() => {
         // optional enrichment
@@ -92,15 +88,15 @@ export function ProjectMembersDialog({
     setError(null);
     setSuccess(null);
     try {
-      if (showEmailInvite) {
-        await onAdd({ email: trimmedEmail }, role);
-        setSuccess(`Invite sent to ${trimmedEmail}. They will be notified by email.`);
-        setEmail('');
-      } else if (selectedContact) {
+      if (selectedContact) {
         await onAdd({ userId: selectedContact.userId }, role);
         const label = selectedContact.displayName || selectedContact.email;
         setSuccess(`Invite sent to ${label}. They will be notified by email.`);
-        setSelectedContactId(null);
+        setSelectedContactId('');
+      } else if (trimmedEmail) {
+        await onAdd({ email: trimmedEmail }, role);
+        setSuccess(`Invite sent to ${trimmedEmail}. They will be notified by email.`);
+        setEmail('');
       } else {
         return;
       }
@@ -240,38 +236,34 @@ export function ProjectMembersDialog({
 
         {project.canManageMembers && (
           <form className="project-members-add" onSubmit={handleAdd}>
-            {!showEmailInvite && (
-              <>
-                <h3 className="project-members-subheading">Recent collaborators</h3>
-                {shareContacts.length > 0 ? (
-                  <ul className="project-members-contact-list" role="listbox" aria-label="Recent collaborators">
-                    {shareContacts.map((contact) => {
-                      const selected = selectedContactId === contact.userId;
-                      return (
-                        <li key={contact.userId}>
-                          <button
-                            type="button"
-                            className={`project-members-contact${selected ? ' selected' : ''}`}
-                            role="option"
-                            aria-selected={selected}
-                            disabled={saving}
-                            onClick={() =>
-                              setSelectedContactId(selected ? null : contact.userId)
-                            }
-                          >
-                            <UserIdentity user={contact} size="sm" />
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  <p className="muted project-members-empty-contacts">
-                    No recent collaborators yet. Invite someone by email below.
-                  </p>
-                )}
-              </>
-            )}
+            <h3 className="project-members-subheading">Invite collaborator</h3>
+
+            <label className="task-form-field">
+              Recent collaborator
+              <select
+                value={selectedContactId}
+                disabled={saving || Boolean(trimmedEmail)}
+                aria-label="Recent collaborators"
+                onChange={(event) => {
+                  const nextId = event.target.value;
+                  setSelectedContactId(nextId);
+                  if (nextId) {
+                    setEmail('');
+                  }
+                }}
+              >
+                <option value="">
+                  {shareContacts.length > 0
+                    ? "Select someone you've shared with before…"
+                    : 'No past collaborators yet'}
+                </option>
+                {shareContacts.map((contact) => (
+                  <option key={contact.userId} value={contact.userId}>
+                    {contactLabel(contact)}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             <label className="task-form-field">
               Role
@@ -288,63 +280,39 @@ export function ProjectMembersDialog({
               </select>
             </label>
 
+            <label className="task-form-field project-members-email-field">
+              Invite by email
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => {
+                  const nextEmail = event.target.value;
+                  setEmail(nextEmail);
+                  if (nextEmail.trim()) {
+                    setSelectedContactId('');
+                  }
+                }}
+                placeholder="collaborator@example.com"
+                disabled={saving || Boolean(selectedContactId)}
+                aria-describedby={ADD_EMAIL_HINT_ID}
+              />
+              <span id={ADD_EMAIL_HINT_ID} className="muted project-members-add-hint">
+                {ADD_EMAIL_HELPER}
+              </span>
+            </label>
+
             <div className="auth-dialog-actions">
               <span className="project-members-add-button-wrap" title={addMemberDisabledHint}>
                 <button
                   type="submit"
                   className="primary-button"
-                  disabled={addMemberDisabled}
+                  disabled={!canSendInvite}
                   aria-describedby={addMemberDisabledHint ? ADD_EMAIL_HINT_ID : undefined}
                 >
                   Send invite
                 </button>
               </span>
             </div>
-
-            {!showEmailInvite && shareContacts.length > 0 ? (
-              <button
-                type="button"
-                className="link-button project-members-email-toggle"
-                disabled={saving}
-                onClick={() => setShowEmailInvite(true)}
-              >
-                Invite someone new by email
-              </button>
-            ) : null}
-
-            {showEmailInvite ? (
-              <>
-                {shareContacts.length > 0 ? (
-                  <button
-                    type="button"
-                    className="link-button project-members-email-toggle"
-                    disabled={saving}
-                    onClick={() => {
-                      setShowEmailInvite(false);
-                      setEmail('');
-                    }}
-                  >
-                    Back to recent collaborators
-                  </button>
-                ) : null}
-                <label className="task-form-field">
-                  Invite by email
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    placeholder="collaborator@example.com"
-                    disabled={saving}
-                    autoFocus
-                    aria-describedby={ADD_EMAIL_HINT_ID}
-                    required={showEmailInvite}
-                  />
-                  <span id={ADD_EMAIL_HINT_ID} className="muted project-members-add-hint">
-                    {ADD_EMAIL_HELPER}
-                  </span>
-                </label>
-              </>
-            ) : null}
           </form>
         )}
 

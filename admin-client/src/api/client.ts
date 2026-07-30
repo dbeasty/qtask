@@ -1,5 +1,7 @@
 import type {
+  AdminFeedbackDetail,
   AdminStats,
+  FeedbackListResponse,
   GpuResources,
   LoginResponse,
   OllamaCallsResponse,
@@ -8,6 +10,7 @@ import type {
   OllamaTimeseriesResponse,
   SessionResponse,
   UsersResponse,
+  FeedbackStatus,
 } from '../types';
 
 export class AuthError extends Error {
@@ -166,4 +169,34 @@ export async function listOllamaCalls(params: {
     limit: String(params.limit),
   });
   return request(`/api/admin/ollama/calls?${query.toString()}`);
+}
+
+export async function listFeedback(params: {
+  page: number;
+  limit: number;
+  search?: string;
+  status?: FeedbackStatus;
+}): Promise<FeedbackListResponse> {
+  const query = new URLSearchParams({
+    page: String(params.page),
+    limit: String(params.limit),
+  });
+  if (params.search) query.set('search', params.search);
+  if (params.status) query.set('status', params.status);
+  return request(`/api/admin/feedback?${query.toString()}`);
+}
+
+export async function getFeedback(id: string): Promise<AdminFeedbackDetail> {
+  return request(`/api/admin/feedback/${encodeURIComponent(id)}`);
+}
+
+export async function updateFeedbackStatus(
+  id: string,
+  status: FeedbackStatus
+): Promise<{ id: string; status: FeedbackStatus; updatedAt: string }> {
+  return request(`/api/admin/feedback/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+    csrf: true,
+  });
 }

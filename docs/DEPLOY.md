@@ -114,6 +114,17 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_KEEP_ALIVE` | `-1` | Agent model keep-alive passed to Ollama (`-1` = keep agent model loaded) |
 | `OLLAMA_EMBEDDING_KEEP_ALIVE` | `-1` | Embedding keep-alive (`-1` = keep loaded; set `0` to unload after each request) |
 | `OLLAMA_EMBEDDING_NUM_GPU` | `0` | GPU layers for embeddings (`0` = CPU; keeps agent model on GPU) |
+| `OLLAMA_VISION_MODEL` | `llava` | Vision model for feedback screenshot validation (`ollama pull llava` or similar) |
+| `STORAGE_BACKEND` | `local` | `local` or `s3` for feedback screenshot storage |
+| `STORAGE_LOCAL_PATH` | `./data/uploads` | Local directory when `STORAGE_BACKEND=local` |
+| `S3_BUCKET` | — | S3 bucket when `STORAGE_BACKEND=s3` |
+| `S3_REGION` | — | AWS region (required for S3 backend) |
+| `S3_ENDPOINT` | — | Optional custom endpoint (MinIO, etc.) |
+| `S3_ACCESS_KEY_ID` | — | S3 access key |
+| `S3_SECRET_ACCESS_KEY` | — | S3 secret key |
+| `FEEDBACK_MAX_ATTACHMENT_BYTES` | `5242880` | Max screenshot size (5 MB) |
+| `FEEDBACK_MAX_ATTACHMENTS` | `3` | Max screenshots per submission |
+| `FEEDBACK_VISION_MIN_CONFIDENCE` | `0.7` | Minimum model confidence to accept a screenshot |
 | `AGENT_HYBRID_SEARCH` | `true` | When `false`, agent `find_tasks` skips Ollama embeddings (text/regex only). User search API unchanged. |
 | `OLLAMA_DOCKER_STATS_URL` | — | Docker API base for admin CPU/RAM (e.g. Jetson `http://<ip>:2375/v1.44`) |
 | `OLLAMA_DOCKER_CONTAINER` | `qtask-ollama` | Container name for Docker stats |
@@ -197,7 +208,9 @@ Operators can also set `REGISTRATION_ENABLED=false` to close signup for capacity
 
 All `/api/tasks`, `/api/projects`, `/api/agent`, and `/api/conversations` routes require a valid JWT.
 
-Each user has their own projects by default. Project owners can invite other existing accounts to collaborate (roles: manager, editor, executor, viewer). Invites must be accepted before access is granted; sub-project access cascades from the invited parent project. The Members dialog lists recent collaborators for quick re-invites. Email invites for users without an account are not yet implemented.
+Each user has their own projects by default. Project owners can invite collaborators by email (roles: manager, editor, executor, viewer). Invites must be accepted before access is granted; recipients without an account can register via the invite link. Sub-project access cascades from the invited parent project. The Members dialog lists recent collaborators for quick re-invites.
+
+Task comments send in-app notifications to the task owner and assignee (and parent-comment authors on replies). Email delivery is opt-in per comment (`notifyByEmail` on create); links use `APP_URL` with `?view=tasks&taskId=...`.
 
 Use `scripts/diagnose-project-share.ts` against production MongoDB to investigate empty shared projects (tasks in sub-projects, wrong project links, or staged tasks).
 

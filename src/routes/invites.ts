@@ -10,21 +10,25 @@ const acceptByTokenSchema = z.object({
   token: z.string().min(1),
 });
 
+export async function invitePreviewHandler(
+  req: { params: { token?: string } },
+  res: { json: (body: unknown) => void },
+  next: (error: unknown) => void
+) {
+  try {
+    const invite = await inviteService.getPublicInvitePreview(String(req.params.token));
+    res.json({ invite });
+  } catch (error) {
+    next(error);
+  }
+}
+
 invitesRouter.get('/', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const status = req.query.status === 'all' ? 'all' : 'pending';
     const invites = await inviteService.listInvitesForUser(userId, status);
     res.json({ invites });
-  } catch (error) {
-    next(error);
-  }
-});
-
-invitesRouter.get('/preview/:token', async (req, res, next) => {
-  try {
-    const invite = await inviteService.getInvitePreview(String(req.params.token));
-    res.json({ invite });
   } catch (error) {
     next(error);
   }

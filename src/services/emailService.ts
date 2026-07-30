@@ -18,6 +18,8 @@ export const testEmailOutbox = {
   projectShareAcceptedBodies: [] as string[],
   projectShareDeclined: [] as string[],
   projectShareDeclinedBodies: [] as string[],
+  commentNotification: [] as string[],
+  commentNotificationBodies: [] as string[],
 };
 
 export function clearTestEmailOutbox(): void {
@@ -31,6 +33,8 @@ export function clearTestEmailOutbox(): void {
   testEmailOutbox.projectShareAcceptedBodies = [];
   testEmailOutbox.projectShareDeclined = [];
   testEmailOutbox.projectShareDeclinedBodies = [];
+  testEmailOutbox.commentNotification = [];
+  testEmailOutbox.commentNotificationBodies = [];
 }
 
 let transporter: Transporter | null = null;
@@ -235,14 +239,22 @@ export async function sendProjectInviteEmail(input: {
   projectName: string;
   inviterName: string;
   role: string;
+  recipientHasAccount: boolean;
 }): Promise<void> {
   const acceptUrl = `${config.appUrl}/invites/accept?token=${encodeURIComponent(input.token)}`;
-  const text = `${input.inviterName} invited you to collaborate on "${input.projectName}" as ${input.role}.
+  const text = input.recipientHasAccount
+    ? `${input.inviterName} invited you to collaborate on "${input.projectName}" as ${input.role}.
 
 Open QTask and accept the invite:
 ${acceptUrl}
 
 Or sign in to QTask and check your notifications.
+
+This invite expires in 7 days.`
+    : `${input.inviterName} invited you to collaborate on "${input.projectName}" as ${input.role}.
+
+Create a free QTask account and accept the invite:
+${acceptUrl}
 
 This invite expires in 7 days.`;
 
@@ -288,4 +300,33 @@ export async function sendProjectShareDeclinedEmail(input: {
   }
 
   await sendEmail(input.to, `Invite declined for ${input.projectName}`, text);
+}
+
+export async function sendCommentNotificationEmail(input: {
+  to: string;
+  authorName: string;
+  taskTitle: string;
+  commentPreview: string;
+  taskId: string;
+  subtaskPath?: string[];
+  projectId?: string;
+  isReply?: boolean;
+}): Promise<void> {
+  const taskUrl = input.projectId
+    ? `${config.appUrl}/?view=tasks&taskId=${encodeURIComponent(input.taskId)}&projectId=${encodeURIComponent(input.projectId)}`
+    : `${config.appUrl}/?view=tasks&taskId=${encodeURIComponent(input.taskId)}`;
+  const action = input.isReply ? 'replied to a comment on' : 'commented on';
+  const text = `${input.authorName} ${action} "${input.taskTitle}":
+
+"${input.commentPreview}"
+
+Open the task in QTask:
+${taskUrl}`;
+
+  if (process.env.NODE_ENV === 'test') {
+    testEmailOutbox.commentNotification.push(input.to);
+    testEmailOutbox.commentNotificationBodies.push(text);
+  }
+
+  await sendEmail(input.to, `New comment on ${input.taskTitle}`, text);
 }

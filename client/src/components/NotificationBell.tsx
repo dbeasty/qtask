@@ -12,10 +12,14 @@ import type { AppNotification, ProjectInvite } from '../types';
 
 interface NotificationBellProps {
   onInvitesChanged?: () => void;
+  onOpenTask?: (taskId: string, projectId?: string, subtaskPath?: string[]) => void;
 }
 
 function notificationLabel(notification: AppNotification): string {
   const name = notification.payload.projectName ?? 'a project';
+  const author =
+    notification.payload.authorDisplayName || notification.payload.authorEmail || 'Someone';
+  const taskTitle = notification.payload.taskTitle ?? 'a task';
   switch (notification.type) {
     case 'project_invite':
       return `${notification.payload.inviterDisplayName || notification.payload.inviterEmail || 'Someone'} invited you to ${name}`;
@@ -23,12 +27,20 @@ function notificationLabel(notification: AppNotification): string {
       return `${notification.payload.inviteeDisplayName || notification.payload.inviteeEmail || 'Someone'} joined ${name}`;
     case 'project_share_declined':
       return `${notification.payload.inviteeDisplayName || notification.payload.inviteeEmail || 'Someone'} declined ${name}`;
+    case 'task_comment':
+      return `${author} commented on "${taskTitle}"`;
+    case 'task_comment_reply':
+      return `${author} replied on "${taskTitle}"`;
     default:
       return name;
   }
 }
 
-export function NotificationBell({ onInvitesChanged }: NotificationBellProps) {
+function isTaskNotification(notification: AppNotification): boolean {
+  return notification.type === 'task_comment' || notification.type === 'task_comment_reply';
+}
+
+export function NotificationBell({ onInvitesChanged, onOpenTask }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -110,6 +122,21 @@ export function NotificationBell({ onInvitesChanged }: NotificationBellProps) {
       await refresh();
     } catch {
       // ignore
+    }
+  }
+
+  async function handleNotificationClick(notification: AppNotification) {
+    if (!notification.read) {
+      await handleMarkRead(notification._id);
+    }
+
+    if (isTaskNotification(notification) && notification.payload.taskId && onOpenTask) {
+      setOpen(false);
+      onOpenTask(
+        notification.payload.taskId,
+        notification.payload.projectId,
+        notification.payload.subtaskPath
+      );
     }
   }
 
@@ -202,11 +229,7 @@ export function NotificationBell({ onInvitesChanged }: NotificationBellProps) {
                     <button
                       type="button"
                       className="notification-item-button"
-                      onClick={() => {
-                        if (!notification.read) {
-                          void handleMarkRead(notification._id);
-                        }
-                      }}
+                      onClick={() => void handleNotificationClick(notification)}
                     >
                       {notificationLabel(notification)}
                     </button>

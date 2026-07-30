@@ -67,6 +67,7 @@ export function buildTaskEmbeddingText(task: {
   tags?: string[];
   projectNames?: string[];
   steps?: Array<{ text: string }>;
+  comments?: Array<{ authorLabel: string; body: string; subtaskPath?: string[] }>;
 }): string {
   const parts = [task.title];
   if (task.description) parts.push(task.description);
@@ -76,6 +77,16 @@ export function buildTaskEmbeddingText(task: {
     parts.push('Steps:');
     for (const step of task.steps) {
       parts.push(`- ${step.text}`);
+    }
+  }
+  if (task.comments?.length) {
+    parts.push('Comments:');
+    for (const comment of task.comments) {
+      const scope =
+        comment.subtaskPath && comment.subtaskPath.length > 0
+          ? ` [subtask ${comment.subtaskPath.join(' › ')}]`
+          : '';
+      parts.push(`- ${comment.authorLabel}${scope}: ${comment.body}`);
     }
   }
   return parts.join('\n');

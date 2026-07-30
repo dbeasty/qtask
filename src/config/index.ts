@@ -95,9 +95,32 @@ export const config = {
     baseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
     model: process.env.OLLAMA_MODEL ?? 'qwen3.5:2b',
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'nomic-embed-text',
+    visionModel: process.env.OLLAMA_VISION_MODEL ?? 'llava',
     keepAlive: parseOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE, '-1'),
     embeddingKeepAlive: parseOllamaKeepAlive(process.env.OLLAMA_EMBEDDING_KEEP_ALIVE, '-1'),
     embeddingNumGpu: parseInt(process.env.OLLAMA_EMBEDDING_NUM_GPU ?? '0', 10),
+  },
+  storage: {
+    backend: process.env.STORAGE_BACKEND === 's3' ? ('s3' as const) : ('local' as const),
+    localPath: process.env.STORAGE_LOCAL_PATH ?? './data/uploads',
+    s3: {
+      bucket: process.env.S3_BUCKET,
+      region: process.env.S3_REGION,
+      endpoint: process.env.S3_ENDPOINT,
+      accessKeyId: process.env.S3_ACCESS_KEY_ID,
+      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+    },
+  },
+  feedback: {
+    maxAttachmentBytes: Math.max(
+      1,
+      parseInt(process.env.FEEDBACK_MAX_ATTACHMENT_BYTES ?? '5242880', 10)
+    ),
+    maxAttachments: Math.max(1, parseInt(process.env.FEEDBACK_MAX_ATTACHMENTS ?? '3', 10)),
+    visionMinConfidence: Math.min(
+      1,
+      Math.max(0, parseFloat(process.env.FEEDBACK_VISION_MIN_CONFIDENCE ?? '0.7'))
+    ),
   },
   features: {
     /** When false, agent find_tasks skips Ollama embeddings (text/regex search only). */

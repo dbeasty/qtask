@@ -39,11 +39,12 @@ export function setTokenRefreshedHandler(handler: TokenRefreshedHandler | null):
   tokenRefreshedHandler = handler;
 }
 
-function authHeaders(extra?: HeadersInit): HeadersInit {
+function authHeaders(extra?: HeadersInit, body?: BodyInit | null): HeadersInit {
   const token = getStoredToken();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
+  const headers: Record<string, string> = {};
+  if (!(body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
@@ -131,7 +132,7 @@ async function authorizedFetch(path: string, init?: RequestInit): Promise<Respon
   const doFetch = () =>
     fetch(path, {
       ...init,
-      headers: authHeaders(init?.headers),
+      headers: authHeaders(init?.headers, init?.body),
     });
 
   const response = await doFetch();
@@ -330,10 +331,21 @@ export async function listInvites(
   return request(`/api/invites${params}`);
 }
 
+export async function getInvitePreviewPublic(
+  token: string
+): Promise<{ invite: import('../types').PublicProjectInvite }> {
+  const response = await fetch(`/api/invites/preview/${encodeURIComponent(token)}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error((body as { error?: string }).error ?? 'Request failed');
+  }
+  return response.json() as Promise<{ invite: import('../types').PublicProjectInvite }>;
+}
+
 export async function getInvitePreview(
   token: string
-): Promise<{ invite: import('../types').ProjectInvite }> {
-  return request(`/api/invites/preview/${encodeURIComponent(token)}`);
+): Promise<{ invite: import('../types').PublicProjectInvite }> {
+  return getInvitePreviewPublic(token);
 }
 
 export async function acceptInvite(
@@ -412,6 +424,48 @@ export async function getTaskActivity(
   taskId: string
 ): Promise<{ activity: import('../types').ActivityEntry[] }> {
   return request(`/api/tasks/${taskId}/activity`);
+}
+
+function commentsSubtaskPathQuery(path?: string[]): string {
+  if (!path || path.length === 0) return '';
+  return `?subtaskPath=${path.join(',')}`;
+}
+
+export async function getTaskComments(
+  taskId: string,
+  subtaskPath?: string[]
+): Promise<{ comments: import('../types').Comment[] }> {
+  return request(`/api/tasks/${taskId}/comments${commentsSubtaskPathQuery(subtaskPath)}`);
+}
+
+export async function createTaskComment(
+  taskId: string,
+  body: {
+    body: string;
+    subtaskPath?: string[];
+    parentId?: string;
+    notifyByEmail?: boolean;
+  }
+): Promise<{ comment: import('../types').Comment }> {
+  return request(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateTaskComment(
+  taskId: string,
+  commentId: string,
+  body: { body: string }
+): Promise<{ comment: import('../types').Comment }> {
+  return request(`/api/tasks/${taskId}/comments/${commentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteTaskComment(taskId: string, commentId: string): Promise<void> {
+  await request(`/api/tasks/${taskId}/comments/${commentId}`, { method: 'DELETE' });
 }
 
 export async function deleteTask(
@@ -620,6 +674,27 @@ export async function approveProposal(
   });
 
   await consumeSseStream(response, onEvent, signal);
+}
+
+export async function submitFeedback(formData: FormData): Promise<{
+  id: string;
+  message: string;
+  category: string;
+  status: string;
+  createdAt: string;
+  attachmentCount: number;
+}> {
+  const response = await authorizedFetch('/api/feedback', {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error((body as { error?: string }).error ?? 'Request failed');
+  }
+
+  return response.json();
 }
 
 export { isTokenExpired, msUntilRefresh, REFRESH_LEAD_MS } from '../auth/session';

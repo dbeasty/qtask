@@ -205,6 +205,24 @@ const activitySchema = new Schema(
 
 export const ActivityModel = model('Activity', activitySchema);
 
+const commentSchema = new Schema(
+  {
+    taskId: { type: String, required: true, index: true },
+    subtaskPath: { type: [String], default: [] },
+    userId: { type: String, required: true, index: true },
+    body: { type: String, required: true, trim: true, maxlength: 10000 },
+    parentId: { type: String, index: true },
+    editedAt: { type: Date },
+  },
+  { timestamps: true }
+);
+
+commentSchema.index({ taskId: 1, createdAt: 1 });
+commentSchema.index({ taskId: 1, subtaskPath: 1, createdAt: 1 });
+commentSchema.index({ body: 'text' });
+
+export const CommentModel = model('Comment', commentSchema);
+
 const embeddingJobSchema = new Schema(
   {
     entityType: {
@@ -308,7 +326,7 @@ const llmCallMetricSchema = new Schema(
     userId: { type: String, index: true },
     conversationId: { type: String },
     taskId: { type: String },
-    callType: { type: String, enum: ['agent', 'generate', 'embed'], required: true, index: true },
+    callType: { type: String, enum: ['agent', 'generate', 'embed', 'feedback_vision'], required: true, index: true },
     source: {
       type: String,
       enum: ['agent_loop', 'project_summary', 'embedding_job', 'semantic_search'],
@@ -344,7 +362,7 @@ const llmDailyMetricSchema = new Schema(
   {
     day: { type: Date, required: true },
     userId: { type: String },
-    callType: { type: String, enum: ['agent', 'generate', 'embed'], required: true },
+    callType: { type: String, enum: ['agent', 'generate', 'embed', 'feedback_vision'], required: true },
     model: { type: String, required: true },
     calls: { type: Number, default: 0 },
     successes: { type: Number, default: 0 },
@@ -411,7 +429,13 @@ const notificationSchema = new Schema(
     userId: { type: String, required: true, index: true },
     type: {
       type: String,
-      enum: ['project_invite', 'project_share_accepted', 'project_share_declined'],
+      enum: [
+        'project_invite',
+        'project_share_accepted',
+        'project_share_declined',
+        'task_comment',
+        'task_comment_reply',
+      ],
       required: true,
     },
     payload: { type: Schema.Types.Mixed, required: true },
@@ -423,3 +447,59 @@ const notificationSchema = new Schema(
 notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
 
 export const NotificationModel = model('Notification', notificationSchema);
+
+const feedbackVisionCheckSchema = new Schema(
+  {
+    isScreenshot: { type: Boolean, required: true },
+    confidence: { type: Number, min: 0, max: 1 },
+    model: { type: String, required: true },
+    rationale: { type: String },
+    checkedAt: { type: Date, required: true, default: Date.now },
+  },
+  { _id: false }
+);
+
+const feedbackAttachmentSchema = new Schema(
+  {
+    storageKey: { type: String, required: true },
+    contentType: { type: String, required: true },
+    sizeBytes: { type: Number, required: true, min: 0 },
+    visionCheck: { type: feedbackVisionCheckSchema, required: true },
+  },
+  { _id: false }
+);
+
+const feedbackContextSchema = new Schema(
+  {
+    url: { type: String },
+    userAgent: { type: String },
+    appVersion: { type: String },
+  },
+  { _id: false }
+);
+
+const feedbackSchema = new Schema(
+  {
+    userId: { type: String, required: true, index: true },
+    message: { type: String, required: true, trim: true, maxlength: 4000 },
+    category: {
+      type: String,
+      enum: ['bug', 'feature', 'other'],
+      default: 'other',
+    },
+    status: {
+      type: String,
+      enum: ['open', 'read', 'resolved'],
+      default: 'open',
+      index: true,
+    },
+    context: { type: feedbackContextSchema, default: () => ({}) },
+    attachments: { type: [feedbackAttachmentSchema], default: [] },
+  },
+  { timestamps: true }
+);
+
+feedbackSchema.index({ status: 1, createdAt: -1 });
+feedbackSchema.index({ userId: 1, createdAt: -1 });
+
+export const FeedbackModel = model('Feedback', feedbackSchema);

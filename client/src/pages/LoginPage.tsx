@@ -3,11 +3,14 @@ import { useAuth } from '../auth/AuthContext';
 import { consumeSessionMessage } from '../auth/session';
 import { PasswordInput } from '../components/PasswordInput';
 import { forgotPassword, getAuthConfig, resendVerification } from '../auth/storage';
+import { usePendingInvitePreview } from '../hooks/usePendingInvitePreview';
+import { InviteContextBanner } from './InviteAcceptPage';
 
 type Mode = 'login' | 'forgot-password';
 
 export function LoginPage() {
   const { login } = useAuth();
+  const { invite, loading: inviteLoading } = usePendingInvitePreview();
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -16,6 +19,12 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [needsVerification, setNeedsVerification] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
+
+  useEffect(() => {
+    if (invite?.inviteeEmail) {
+      setEmail(invite.inviteeEmail);
+    }
+  }, [invite?.inviteeEmail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +96,7 @@ export function LoginPage() {
         <p className="muted">
           {mode === 'forgot-password' ? 'Reset your password' : 'Sign in to manage your tasks'}
         </p>
+        {!inviteLoading && invite ? <InviteContextBanner invite={invite} /> : null}
 
         <form className="auth-form" onSubmit={handleSubmit}>
           <label>

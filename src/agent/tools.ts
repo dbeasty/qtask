@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { config } from '../config/index.js';
+import { commentService } from '../services/commentService.js';
 import { inviteService } from '../services/inviteService.js';
 import { projectService } from '../services/projectService.js';
 import { taskService } from '../services/taskService.js';
@@ -292,7 +293,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'get_task',
-    description: 'Fetch a single task with its subtasks and links.',
+    description: 'Fetch a single task with its subtasks, links, and comments.',
     parameters: {
       type: 'object',
       properties: {
@@ -309,7 +310,63 @@ export const toolDefinitions: ToolDefinition[] = [
     async execute(userId, input) {
       const task = await taskService.getTask(userId, String(input.taskId));
       if (!task) return err('Task not found');
-      return ok(JSON.stringify(slimTaskForTool(task as Record<string, unknown>), null, 2));
+      const comments = await commentService.listCommentsForTask(userId, String(input.taskId));
+      const payload = {
+        ...slimTaskForTool(task as Record<string, unknown>),
+        comments: comments.map((comment) => ({
+          _id: comment._id,
+          body: comment.body,
+          author: comment.author.displayName || comment.author.email,
+          subtaskPath: comment.subtaskPath.length > 0 ? comment.subtaskPath : undefined,
+          parentId: comment.parentId,
+          createdAt: comment.createdAt,
+        })),
+      };
+      return ok(JSON.stringify(payload, null, 2));
+    },
+  },
+  {
+    name: 'add_comment',
+    description: 'Add a comment to a task or subtask. Use parentId to reply in a thread.',
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: {
+          type: 'string',
+          description: 'Task ID: a 24-character hex id from a previous tool result',
+        },
+        body: { type: 'string', description: 'Comment text' },
+        subtaskPath: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional subtask path ids when commenting on a subtask',
+        },
+        parentId: {
+          type: 'string',
+          description: 'Optional parent comment id when replying to an existing comment',
+        },
+        notifyByEmail: {
+          type: 'boolean',
+          description: 'When true, email collaborators about this comment (default false)',
+        },
+      },
+      required: ['taskId', 'body'],
+    },
+    zodShape: {
+      taskId: objectIdSchema.describe('Task ID'),
+      body: z.string().trim().min(1).max(10000).describe('Comment text'),
+      subtaskPath: z.array(z.string()).optional().describe('Subtask path ids'),
+      parentId: objectIdSchema.optional().describe('Parent comment id for replies'),
+      notifyByEmail: z.boolean().optional().describe('Email collaborators (default false)'),
+    },
+    async execute(userId, input) {
+      const comment = await commentService.createComment(userId, String(input.taskId), {
+        body: String(input.body),
+        subtaskPath: input.subtaskPath as string[] | undefined,
+        parentId: input.parentId as string | undefined,
+        notifyByEmail: Boolean(input.notifyByEmail),
+      });
+      return ok(JSON.stringify({ comment }, null, 2));
     },
   },
   {
@@ -380,12 +437,12 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'share_project',
     description:
-      'Send a project collaboration invite to an existing QTask user by email (or userId). They must accept before gaining access. Roles: manager, editor, executor, viewer.',
+      'Send a project collaboration invite by email (or userId). The recipient receives an email link and must accept before gaining access. If they do not have a QTask account, they can register via the invite link. Roles: manager, editor, executor, viewer.',
     parameters: {
       type: 'object',
       properties: {
         projectId: { type: 'string' },
-        email: { type: 'string', description: 'Email of an existing QTask account' },
+        email: { type: 'string', description: 'Invitee email (account optional — invite link sent by email)' },
         userId: { type: 'string', description: 'User id (alternative to email)' },
         role: {
           type: 'string',
@@ -422,7 +479,7 @@ export const toolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         taskId: { type: 'string' },
-        email: { type: 'string', description: 'Email of an existing QTask account' },
+        email: { type: 'string', description: 'Invitee email (account optional — invite link sent by email)' },
         collaboratorId: { type: 'string', description: 'User id (alternative to email)' },
         role: {
           type: 'string',

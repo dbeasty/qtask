@@ -2,9 +2,12 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { PasswordInput } from '../components/PasswordInput';
 import { getAuthConfig } from '../auth/storage';
+import { usePendingInvitePreview } from '../hooks/usePendingInvitePreview';
+import { InviteContextBanner } from './InviteAcceptPage';
 
 export function RegisterPage() {
   const { register } = useAuth();
+  const { invite, loading: inviteLoading } = usePendingInvitePreview();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -14,6 +17,13 @@ export function RegisterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [checkEmail, setCheckEmail] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean | null>(null);
+  const emailLocked = Boolean(invite);
+
+  useEffect(() => {
+    if (invite?.inviteeEmail) {
+      setEmail(invite.inviteeEmail);
+    }
+  }, [invite?.inviteeEmail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,7 +54,7 @@ export function RegisterPage() {
     }
   }
 
-  if (registrationEnabled === null) {
+  if (registrationEnabled === null || inviteLoading) {
     return (
       <div className="auth-page">
         <div className="auth-card">
@@ -93,6 +103,7 @@ export function RegisterPage() {
       <div className="auth-card">
         <h1>QTask</h1>
         <p className="muted">Create an account to get started</p>
+        {invite ? <InviteContextBanner invite={invite} /> : null}
 
         <form className="auth-form" onSubmit={handleSubmit}>
           <label>
@@ -114,6 +125,7 @@ export function RegisterPage() {
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
               required
+              readOnly={emailLocked}
             />
           </label>
 

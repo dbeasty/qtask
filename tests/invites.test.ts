@@ -234,4 +234,146 @@ describe('project invites and notifications', () => {
       .expect(200);
     assert.equal(pending.body.invites.length, 0);
   });
+
+  it('creates invite for non-user email without notification', async () => {
+    const alice = await registerAndVerify('nonuser-alice@example.com');
+
+    const projectRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'New User Project' })
+      .expect(201);
+    const projectId = projectRes.body.project._id as string;
+
+    const inviteRes = await request(app)
+      .post(`/api/projects/${projectId}/invites`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ email: 'brand-new@example.com', role: 'editor' })
+      .expect(201);
+
+    assert.equal(inviteRes.body.invite.inviteeEmail, 'brand-new@example.com');
+    assert.equal(inviteRes.body.invite.inviteeUserId, undefined);
+    assert.equal(inviteRes.body.invite.status, 'pending');
+
+    const { testEmailOutbox } = await import('../src/services/emailService.js');
+    assert.equal(testEmailOutbox.projectInvite.length, 1);
+    assert.match(testEmailOutbox.projectInviteBodies[0] ?? '', /Create a free QTask account/);
+
+    const notifications = await request(app)
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+    assert.equal(
+      notifications.body.notifications.some((n: { type: string }) => n.type === 'project_invite'),
+      false
+    );
+  });
+
+  it('exposes public invite preview without auth', async () => {
+    const alice = await registerAndVerify('preview-alice@example.com');
+
+    const projectRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Preview Project' })
+      .expect(201);
+    const projectId = projectRes.body.project._id as string;
+
+    const inviteRes = await request(app)
+      .post(`/api/projects/${projectId}/invites`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ email: 'preview-guest@example.com', role: 'viewer' })
+      .expect(201);
+
+    const { testEmailOutbox } = await import('../src/services/emailService.js');
+    const token = testEmailOutbox.projectInvite.at(-1);
+    assert.ok(token);
+
+    const preview = await request(app).get(`/api/invites/preview/${token}`).expect(200);
+    assert.equal(preview.body.invite.projectName, 'Preview Project');
+    assert.equal(preview.body.invite.inviteeEmail, 'preview-guest@example.com');
+    assert.equal(preview.body.invite.token, undefined);
+
+    await request(app).get('/api/invites/preview/not-a-real-token').expect(404);
+  });
+
+  it('lets non-user register and accept invite by email match', async () => {
+    const alice = await registerAndVerify('acceptpath-alice@example.com');
+    const guestEmail = 'acceptpath-guest@example.com';
+
+    const projectRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Accept Path Project' })
+      .expect(201);
+    const projectId = projectRes.body.project._id as string;
+
+    await request(app)
+      .post(`/api/projects/${projectId}/invites`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ email: guestEmail, role: 'editor' })
+      .expect(201);
+
+    const guest = await registerAndVerify(guestEmail);
+
+    const guestInvites = await request(app)
+      .get('/api/invites')
+      .set('Authorization', `Bearer ${guest.token}`)
+      .expect(200);
+    assert.equal(guestInvites.body.invites.length, 1);
+
+    const { testEmailOutbox } = await import('../src/services/emailService.js');
+    const inviteToken = testEmailOutbox.projectInvite.at(-1);
+    assert.ok(inviteToken);
+
+    const accepted = await request(app)
+      .post('/api/invites/accept-by-token')
+      .set('Authorization', `Bearer ${guest.token}`)
+      .send({ token: inviteToken })
+      .expect(200);
+
+    assert.equal(accepted.body.invite.status, 'accepted');
+    assert.equal(accepted.body.project._id, projectId);
+    assert.equal(testEmailOutbox.projectShareAccepted.length, 1);
+  });
+
+  it('rejects accept when signed-in email does not match invite', async () => {
+    const alice = await registerAndVerify('mismatch-alice@example.com');
+    const bob = await registerAndVerify('mismatch-bob@example.com');
+
+    const projectRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Mismatch Project' })
+      .expect(201);
+    const projectId = projectRes.body.project._id as string;
+
+    const inviteRes = await request(app)
+      .post(`/api/projects/${projectId}/invites`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ email: 'mismatch-guest@example.com', role: 'editor' })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/invites/${inviteRes.body.invite._id}/accept`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(403);
+  });
+
+  it('rejects self-invite by email', async () => {
+    const alice = await registerAndVerify('selfinvite-alice@example.com');
+
+    const projectRes = await request(app)
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ name: 'Self Invite Project' })
+      .expect(201);
+    const projectId = projectRes.body.project._id as string;
+
+    await request(app)
+      .post(`/api/projects/${projectId}/invites`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ email: alice.email, role: 'editor' })
+      .expect(400);
+  });
 });
