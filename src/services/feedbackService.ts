@@ -1,35 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
 import { FeedbackModel } from '../models/index.js';
-import {
-  classifyScreenshot,
-  FeedbackVisionError,
-  SCREENSHOT_REJECTION_MESSAGE,
-  type VisionCheckResult,
-} from './feedbackVisionService.js';
+import { enqueueFeedbackVisionJob } from './feedbackVisionQueue.js';
+import { SCREENSHOT_REJECTION_MESSAGE } from './feedbackVisionService.js';
 import {
   extensionForContentType,
   getObjectStorage,
   type ObjectStorage,
 } from './storage/index.js';
 
-export type ScreenshotClassifier = (
-  imageBuffer: Buffer,
-  contentType: string,
-  userId?: string
-) => Promise<VisionCheckResult>;
-
-let screenshotClassifierOverride: ScreenshotClassifier | null = null;
-
-export function setScreenshotClassifierForTests(classifier: ScreenshotClassifier | null): void {
-  screenshotClassifierOverride = classifier;
-}
-
-function getScreenshotClassifier(): ScreenshotClassifier {
-  return screenshotClassifierOverride ?? classifyScreenshot;
-}
+export {
+  setScreenshotClassifierForTests,
+  classifyScreenshotForFeedback,
+  SCREENSHOT_REJECTION_MESSAGE,
+} from './feedbackVisionService.js';
 
 export const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+export type FeedbackValidationStatus = 'pending' | 'validated' | 'rejected' | 'failed';
 
 export interface FeedbackAttachmentInput {
   buffer: Buffer;
@@ -51,6 +39,10 @@ export class FeedbackValidationError extends Error {
     super(message);
     this.name = 'FeedbackValidationError';
   }
+}
+
+function isFeedbackImagesEnabled(): boolean {
+  return process.env.FEEDBACK_IMAGES_ENABLED !== 'false';
 }
 
 function detectContentType(buffer: Buffer, declaredType: string): string | null {
@@ -81,43 +73,21 @@ function validateAttachment(file: FeedbackAttachmentInput): FeedbackAttachmentIn
   return { ...file, contentType };
 }
 
-async function storeAndValidateAttachment(
+async function storeAttachment(
   storage: ObjectStorage,
-  file: FeedbackAttachmentInput,
-  userId: string
-): Promise<{ storageKey: string; contentType: string; sizeBytes: number; visionCheck: VisionCheckResult }> {
+  file: FeedbackAttachmentInput
+): Promise<{ storageKey: string; contentType: string; sizeBytes: number }> {
   const validated = validateAttachment(file);
   const ext = extensionForContentType(validated.contentType);
   const storageKey = `feedback/${randomUUID()}.${ext}`;
 
   await storage.put(storageKey, validated.buffer, validated.contentType);
 
-  try {
-    const visionCheck = await getScreenshotClassifier()(
-      validated.buffer,
-      validated.contentType,
-      userId
-    );
-    if (!visionCheck.isScreenshot) {
-      await storage.delete(storageKey);
-      throw new FeedbackValidationError(SCREENSHOT_REJECTION_MESSAGE, 422);
-    }
-    return {
-      storageKey,
-      contentType: validated.contentType,
-      sizeBytes: validated.sizeBytes,
-      visionCheck,
-    };
-  } catch (error) {
-    if (!(error instanceof FeedbackValidationError)) {
-      await storage.delete(storageKey).catch(() => undefined);
-    }
-    if (error instanceof FeedbackVisionError) {
-      await storage.delete(storageKey).catch(() => undefined);
-      throw new FeedbackValidationError(error.message, error.statusCode);
-    }
-    throw error;
-  }
+  return {
+    storageKey,
+    contentType: validated.contentType,
+    sizeBytes: validated.sizeBytes,
+  };
 }
 
 export async function createFeedback(input: {
@@ -128,13 +98,20 @@ export async function createFeedback(input: {
   attachments: FeedbackAttachmentInput[];
   storage?: ObjectStorage;
 }) {
+  const imagesEnabled = isFeedbackImagesEnabled();
   const message = input.message.trim();
   if (!message) {
     throw new FeedbackValidationError('Message is required', 400);
   }
-  if (input.attachments.length === 0) {
-    throw new FeedbackValidationError('At least one screenshot is required', 400);
+
+  if (imagesEnabled) {
+    if (input.attachments.length === 0) {
+      throw new FeedbackValidationError('At least one screenshot is required', 400);
+    }
+  } else if (input.attachments.length > 0) {
+    throw new FeedbackValidationError('Screenshot attachments are not enabled', 400);
   }
+
   if (input.attachments.length > config.feedback.maxAttachments) {
     throw new FeedbackValidationError(
       `At most ${config.feedback.maxAttachments} attachments are allowed`,
@@ -143,12 +120,25 @@ export async function createFeedback(input: {
   }
 
   const storage = input.storage ?? getObjectStorage();
+
+  if (!imagesEnabled) {
+    const doc = await FeedbackModel.create({
+      userId: input.userId,
+      message,
+      category: input.category ?? 'other',
+      context: input.context ?? {},
+      attachments: [],
+      validationStatus: 'validated',
+    });
+    return doc.toObject();
+  }
+
   const storedAttachments = [];
   const storedKeys: string[] = [];
 
   try {
     for (const attachment of input.attachments) {
-      const stored = await storeAndValidateAttachment(storage, attachment, input.userId);
+      const stored = await storeAttachment(storage, attachment);
       storedKeys.push(stored.storageKey);
       storedAttachments.push(stored);
     }
@@ -163,9 +153,18 @@ export async function createFeedback(input: {
     category: input.category ?? 'other',
     context: input.context ?? {},
     attachments: storedAttachments,
+    validationStatus: 'pending',
   });
 
+  await enqueueFeedbackVisionJob(String(doc._id));
+
   return doc.toObject();
+}
+
+export async function getFeedbackForUser(userId: string, feedbackId: string) {
+  const doc = await FeedbackModel.findOne({ _id: feedbackId, userId }).lean();
+  if (!doc) return null;
+  return doc;
 }
 
 export async function listUserFeedback(userId: string, page: number, limit: number) {

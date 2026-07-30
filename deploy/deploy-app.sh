@@ -128,5 +128,11 @@ if [[ -n "${OLLAMA_BASE_URL:-}" ]]; then
   echo ""
 fi
 
+if [[ -n "${OLLAMA_VISION_BASE_URL:-}" ]]; then
+  echo "==> Vision Ollama reachability (${OLLAMA_VISION_BASE_URL})"
+  curl -sf "${OLLAMA_VISION_BASE_URL}/api/tags" | head -c 120 || echo "(Vision Ollama not reachable — run deploy/start-ollama-vision.sh)"
+  echo ""
+fi
+
 echo ""
 echo "App server deploy complete (${INSTALL_DIR})."

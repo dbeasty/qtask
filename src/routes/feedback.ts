@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import multer from 'multer';
 import { z } from 'zod';
@@ -7,10 +7,21 @@ import { APP_VERSION } from '../version.js';
 import {
   createFeedback,
   FeedbackValidationError,
+  getFeedbackForUser,
   listUserFeedback,
 } from '../services/feedbackService.js';
 
 const router = Router();
+
+function requireFeedbackEnabled(req: Request, res: Response, next: NextFunction): void {
+  if (process.env.FEEDBACK_ENABLED === 'false') {
+    res.status(503).json({ error: 'Feedback is not available.' });
+    return;
+  }
+  next();
+}
+
+router.use(requireFeedbackEnabled);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -60,6 +71,7 @@ router.post('/', feedbackLimiter, upload.array('attachments', config.feedback.ma
       message: feedback.message,
       category: feedback.category,
       status: feedback.status,
+      validationStatus: feedback.validationStatus ?? 'validated',
       createdAt: feedback.createdAt,
       attachmentCount: feedback.attachments?.length ?? 0,
     });
@@ -96,9 +108,32 @@ router.get('/mine', async (req, res, next) => {
         message: item.message,
         category: item.category,
         status: item.status,
+        validationStatus: item.validationStatus ?? 'validated',
         createdAt: item.createdAt,
         attachmentCount: item.attachments?.length ?? 0,
       })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:id', async (req, res, next) => {
+  try {
+    const feedbackId = String(req.params.id);
+    const feedback = await getFeedbackForUser(req.auth!.userId, feedbackId);
+    if (!feedback) {
+      res.status(404).json({ error: 'Feedback not found' });
+      return;
+    }
+    res.json({
+      id: String(feedback._id),
+      message: feedback.message,
+      category: feedback.category,
+      status: feedback.status,
+      validationStatus: feedback.validationStatus ?? 'validated',
+      createdAt: feedback.createdAt,
+      attachmentCount: feedback.attachments?.length ?? 0,
     });
   } catch (error) {
     next(error);

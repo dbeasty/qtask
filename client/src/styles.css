@@ -650,6 +650,11 @@ button {
   flex-shrink: 0;
 }
 
+.deployment-banner {
+  margin: 0.5rem 1.5rem 0;
+  flex-shrink: 0;
+}
+
 .link-button {
   border: none;
   background: transparent;

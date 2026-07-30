@@ -10,6 +10,7 @@ interface UserMenuProps {
   onOpenHelp: () => void;
   onStartTour?: () => void;
   onOpenFeedback: () => void;
+  feedbackEnabled?: boolean;
   onOpenAbout: () => void;
   onUpdateDisplayName: (displayName: string | null) => Promise<void>;
   onUpdatePreferences: (preferences: Partial<UserPreferences>) => Promise<void>;
@@ -24,6 +25,7 @@ export function UserMenu({
   onOpenHelp,
   onStartTour,
   onOpenFeedback,
+  feedbackEnabled = true,
   onOpenAbout,
   onUpdateDisplayName,
   onUpdatePreferences,
@@ -331,17 +333,19 @@ export function UserMenu({
         </button>
       ) : null}
 
-      <button
-        type="button"
-        className="user-menu-item"
-        role="menuitem"
-        onClick={() => {
-          onOpenFeedback();
-          onClose();
-        }}
-      >
-        Send feedback
-      </button>
+      {feedbackEnabled ? (
+        <button
+          type="button"
+          className="user-menu-item"
+          role="menuitem"
+          onClick={() => {
+            onOpenFeedback();
+            onClose();
+          }}
+        >
+          Send feedback
+        </button>
+      ) : null}
 
       <button
         type="button"

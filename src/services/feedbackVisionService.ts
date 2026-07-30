@@ -83,11 +83,11 @@ export async function classifyScreenshot(
 
   let response: Response;
   try {
-    response = await fetch(`${config.ollama.baseUrl.replace(/\/$/, '')}/api/chat`, {
+    response = await fetch(`${config.ollama.visionBaseUrl.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(60_000),
     });
   } catch (error) {
     tracker.fail(error);
@@ -138,3 +138,23 @@ export async function classifyScreenshot(
 
 export const SCREENSHOT_REJECTION_MESSAGE =
   'Please attach a screenshot of the issue (not a photo or unrelated image).';
+
+export type ScreenshotClassifier = (
+  imageBuffer: Buffer,
+  contentType: string,
+  userId?: string
+) => Promise<VisionCheckResult>;
+
+let screenshotClassifierOverride: ScreenshotClassifier | null = null;
+
+export function setScreenshotClassifierForTests(classifier: ScreenshotClassifier | null): void {
+  screenshotClassifierOverride = classifier;
+}
+
+export function classifyScreenshotForFeedback(
+  imageBuffer: Buffer,
+  contentType: string,
+  userId?: string
+): Promise<VisionCheckResult> {
+  return (screenshotClassifierOverride ?? classifyScreenshot)(imageBuffer, contentType, userId);
+}

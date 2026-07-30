@@ -1,6 +1,6 @@
 {
   "name": "qtask",
-  "version": "0.1.37",
+  "version": "0.1.42",
   "description": "AI-native, MCP-powered task management backend",
   "type": "module",
   "main": "dist/index.js",
@@ -21,7 +21,9 @@
     "release:jetson": "bash scripts/build-jetson-release.sh",
     "publish:jetson": "bash scripts/publish-jetson-release.sh",
     "release:app": "bash scripts/build-app-release.sh",
-    "publish:app": "bash scripts/publish-app-release.sh"
+    "publish:app": "bash scripts/publish-app-release.sh",
+    "publish:app:major": "QTASK_DEPLOY_MAJOR=1 bash scripts/publish-app-release.sh",
+    "tunnel:app": "bash scripts/tunnel-app-server.sh"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,12 @@
+{
+  "migrations": [
+    {
+      "key": "search_embedding_v1",
+      "description": "Backfill search embeddings for tasks and projects"
+    },
+    {
+      "key": "llm_metrics_agent_call_type_v1",
+      "description": "Rename LLM metric call types from chat to agent"
+    }
+  ]
+}

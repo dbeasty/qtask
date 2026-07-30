@@ -31,6 +31,10 @@ cp -R admin-client/dist "${STAGING}/admin-client/dist"
 cp -R deploy "${STAGING}/deploy"
 
 chmod +x "${STAGING}/deploy/"*.sh
+chmod +x "${STAGING}/deploy/qtask-deploy" 2>/dev/null || true
+chmod +x "${STAGING}/deploy/repair-ab-deploy.sh" 2>/dev/null || true
+chmod +x "${STAGING}/deploy/migrate-to-user-systemd.sh" 2>/dev/null || true
+cp -R deploy/systemd-user "${STAGING}/deploy/systemd-user"
 
 mkdir -p "${ROOT}/release"
 tar -czf "${ARCHIVE}" -C "${ROOT}/release" "qtask-${VERSION}"

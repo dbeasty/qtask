@@ -106,6 +106,11 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `SMTP_PASS` | — | SMTP password (if required) |
 | `SMTP_FROM` | `noreply@qtask.dev` | From address for SMTP (also fallback for Resend if `RESEND_FROM` unset) |
 | `REGISTRATION_ENABLED` | `true` | Set `false` to disable new account creation (capacity). Restart after changing. |
+| `READ_ONLY_MODE` | `false` | Set by `qtask-deploy prepare --major` — blocks writes; UI shows deployment banner |
+| `DEPLOYMENT_PHASE` | `normal` | `normal` \| `major-deploy` \| `candidate` — informational; set by `qtask-deploy` |
+| `DEPLOYMENT_MESSAGE` | *(default text)* | Banner text when `READ_ONLY_MODE=true` |
+| `EMBEDDING_WORKER_ENABLED` | `true` | Set `false` on read-only live stack during major deploy |
+| `STORAGE_LOCAL_PATH` | `./data/uploads` | Use `/var/lib/qtask/uploads` when using A/B layout (`qtask-deploy init`) |
 | `TRUST_PROXY` | `false` | Set `true` behind reverse proxy |
 | `SERVE_CLIENT` | `true` | Serve `client/dist` from API in production |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL (Jetson LAN IP in production; see §4.1.1) |
@@ -114,7 +119,10 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_KEEP_ALIVE` | `-1` | Agent model keep-alive passed to Ollama (`-1` = keep agent model loaded) |
 | `OLLAMA_EMBEDDING_KEEP_ALIVE` | `-1` | Embedding keep-alive (`-1` = keep loaded; set `0` to unload after each request) |
 | `OLLAMA_EMBEDDING_NUM_GPU` | `0` | GPU layers for embeddings (`0` = CPU; keeps agent model on GPU) |
-| `OLLAMA_VISION_MODEL` | `llava` | Vision model for feedback screenshot validation (`ollama pull llava` or similar) |
+| `OLLAMA_VISION_BASE_URL` | *(same as `OLLAMA_BASE_URL`)* | Ollama for feedback screenshot validation — use `http://127.0.0.1:11434` when vision runs on the app server |
+| `OLLAMA_VISION_MODEL` | `moondream` | Vision model for feedback screenshot validation (`ollama pull moondream` on the vision host) |
+| `FEEDBACK_ENABLED` | `true` | When `false`, feedback UI and API are disabled |
+| `FEEDBACK_IMAGES_ENABLED` | `true` | When `false`, feedback is text-only (no screenshot uploads or vision validation) |
 | `STORAGE_BACKEND` | `local` | `local` or `s3` for feedback screenshot storage |
 | `STORAGE_LOCAL_PATH` | `./data/uploads` | Local directory when `STORAGE_BACKEND=local` |
 | `S3_BUCKET` | — | S3 bucket when `STORAGE_BACKEND=s3` |
@@ -536,7 +544,23 @@ OLLAMA_EMBEDDING_NUM_GPU=0
 # AGENT_HYBRID_SEARCH=true
 OLLAMA_DOCKER_STATS_URL=http://192.168.13.14:2375/v1.44
 OLLAMA_DOCKER_CONTAINER=qtask-ollama
+# Feedback screenshots — local Ollama on app server (loopback only)
+OLLAMA_VISION_BASE_URL=http://127.0.0.1:11434
+OLLAMA_VISION_MODEL=moondream
+FEEDBACK_ENABLED=true
+FEEDBACK_IMAGES_ENABLED=true
 ```
+
+**App-server vision Ollama** (feedback screenshot validation; agent/embeddings stay on Jetson):
+
+```bash
+./deploy/start-ollama-vision.sh          # Docker on 127.0.0.1:11434
+docker exec qtask-ollama-vision ollama pull moondream
+# Optional persistence: sudo cp deploy/qtask-ollama-vision.service /etc/systemd/system/
+# sudo systemctl enable --now qtask-ollama-vision.service
+```
+
+Set `OLLAMA_VISION_BASE_URL=http://127.0.0.1:11434` in `/opt/qtask/live/.env` (and candidate `.env` during A/B testing). Do not point `OLLAMA_BASE_URL` at localhost unless the Jetson stack is retired.
 
 **On app server only** (from extracted release tar, as `qtask`):
 
@@ -698,6 +722,122 @@ NODE_ENV=production PORT=3003 npm start
 ```
 
 The API serves `client/dist/` when `NODE_ENV=production` and `SERVE_CLIENT=true`.
+
+### 4.6 A/B deployment (blue-green)
+
+For zero-downtime updates on the systemd/tarball path, use **`qtask-deploy`** — a CLI that runs two app stacks on one host:
+
+| Stack | Symlink | API port | Admin port |
+|-------|---------|----------|------------|
+| **Live** | `/opt/qtask/live` | 3003 | 3004 |
+| **Candidate** (testing) | `/opt/qtask/candidate` | 3005 | 3006 |
+
+Shared resources: one MongoDB instance, uploads at `/var/lib/qtask/uploads`, deployment state at `/var/lib/qtask/deploy/`.
+
+#### First-time migration from flat `/opt/qtask`
+
+After a normal [`deploy-app.sh`](#42-release-tar-bootstrap--offline) install:
+
+```bash
+qtask-deploy init
+sudo cp /opt/qtask/live/deploy/qtask-backup.service /opt/qtask/live/deploy/qtask-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now qtask-backup.timer
+```
+
+Include the nginx upstream in your site config (see [`deploy/nginx-qtask-service-ip.conf.example`](../deploy/nginx-qtask-service-ip.conf.example)).
+
+Enable template units (if not already):
+
+```bash
+sudo cp /opt/qtask/live/deploy/qtask@.service /opt/qtask/live/deploy/qtask-admin@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable qtask@live qtask-admin@live
+```
+
+#### Release tiers
+
+| Tier | Command | Live stack | User-visible |
+|------|---------|------------|--------------|
+| **Routine** (default) | `qtask-deploy prepare <tarball>` | Stays writable | No banner — users unaffected |
+| **Major** (MongoDB migrations) | `qtask-deploy prepare --major <tarball>` | Read-only + banner | Edits disabled until promote completes |
+
+Every `prepare` runs a **pre-release MongoDB backup** first (unless `--skip-backup`). Major releases also snapshot the DB to `qtask_candidate` for isolated candidate testing.
+
+#### Routine release workflow
+
+From your dev machine:
+
+```bash
+npm run publish:app
+# builds, uploads tarball, runs qtask-deploy prepare on the server
+```
+
+On the server:
+
+```bash
+qtask-deploy status          # candidate on 3005
+qtask-deploy test            # smoke test against candidate
+qtask-deploy promote         # cut over to new version
+```
+
+Users keep editing on live during candidate testing. Cutover is a brief nginx upstream reload.
+
+#### Major release workflow (read-only UI)
+
+When a release adds MongoDB data migrations (see [`deploy/migrations.manifest.json`](../deploy/migrations.manifest.json)):
+
+```bash
+QTASK_DEPLOY_MAJOR=1 npm run publish:app
+# or: npm run publish:app:major
+```
+
+On the server:
+
+```bash
+qtask-deploy test
+qtask-deploy promote --promote-db   # promotes candidate DB to live
+```
+
+During `--major` prepare, live enters read-only mode: the web UI shows a warning banner and blocks edits until promote or abort.
+
+#### Rollback
+
+```bash
+qtask-deploy rollback                  # previous release (app + .env)
+qtask-deploy rollback --restore-db /var/lib/qtask/backups/<timestamp>-pre-<version>
+qtask-deploy abort                     # cancel in-progress candidate deploy
+qtask-deploy releases list
+qtask-deploy retire <version>          # remove old release dir
+```
+
+#### Backups
+
+| Type | When | Path |
+|------|------|------|
+| Pre-release | Every `prepare` | `/var/lib/qtask/backups/<ts>-pre-<version>/` |
+| Daily | systemd timer | `/var/lib/qtask/backups/daily/` |
+| Manual | `qtask-deploy backup` | `/var/lib/qtask/backups/<ts>-manual/` |
+
+```bash
+qtask-deploy backups list
+qtask-deploy restore-db /var/lib/qtask/backups/<path>   # requires typing YES
+```
+
+See [§7 Backups](#7-backups-and-mongodb-hardening) for restore details.
+
+#### Candidate testing URL
+
+Direct `http://192.168.13.13:3005` is often **blocked from client VLANs** (UniFi/firewall allows only 80/443 to the app server). The candidate process listens on all interfaces; verify on-server with `curl http://127.0.0.1:3005/health`.
+
+**Option A — SSH tunnel** (no server changes):
+
+```bash
+ssh -L 3005:127.0.0.1:3005 qtask@192.168.13.13
+# then open http://localhost:3005
+```
+
+**Option B — nginx staging on service IP :443** (LAN-friendly): local DNS `staging.qtask.dev` → app service IP, then [`deploy/nginx-qtask-staging.conf.example`](../deploy/nginx-qtask-staging.conf.example) (proxies to `127.0.0.1:3005`). Do **not** publish a public DNS record for `staging`.
 
 ### Health check
 
@@ -1155,6 +1295,8 @@ Default is `MONGO_ENCRYPT_AT_REST=false` (Docker named volume `qtask_mongo_data`
 
 ### Backup
 
+**Recommended:** use `qtask-deploy backup` (also runs automatically before every release and via the daily systemd timer — see [§4.6 A/B deployment](#46-ab-deployment-blue-green)).
+
 With Docker Compose running:
 
 ```bash
@@ -1185,7 +1327,8 @@ docker compose exec mongodb mongorestore \
 
 ### Recommended schedule
 
-- Daily `mongodump` to a directory outside the container
+- **Every release:** automatic pre-release backup via `qtask-deploy prepare`
+- **Daily:** `qtask-deploy backup --label daily` (enable `qtask-backup.timer`)
 - Copy backups to off-site storage (S3, another machine, etc.)
 - Test restore quarterly
 

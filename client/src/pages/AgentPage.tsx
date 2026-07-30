@@ -62,6 +62,7 @@ interface AgentPageProps {
   onSessionRestoreConsumed?: () => void;
   isActive?: boolean;
   onAgentWorkingChange?: (working: boolean) => void;
+  editsDisabled?: boolean;
 }
 
 type PendingConfirm =
@@ -458,6 +459,7 @@ export function AgentPage({
   onSessionRestoreConsumed,
   isActive = true,
   onAgentWorkingChange,
+  editsDisabled = false,
 }: AgentPageProps) {
   const { user, updatePreferences } = useAuth();
   const preferences = getUserPreferences(user);
@@ -784,6 +786,7 @@ export function AgentPage({
 
   async function handleSend(event: React.FormEvent) {
     event.preventDefault();
+    if (editsDisabled) return;
     const text = input.trim();
     if (!text) return;
 
@@ -1733,6 +1736,7 @@ export function AgentPage({
             />
             <textarea
               ref={inputRef}
+              disabled={editsDisabled}
               value={input}
               onChange={(event) => {
                 setPaletteDismissed(false);
@@ -1790,7 +1794,7 @@ export function AgentPage({
               Stop
             </button>
           ) : (
-            <button type="submit" className="primary-button" disabled={!input.trim()}>
+            <button type="submit" className="primary-button" disabled={editsDisabled || !input.trim()}>
               Send
             </button>
           )}

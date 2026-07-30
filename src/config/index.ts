@@ -93,9 +93,14 @@ export const config = {
   },
   ollama: {
     baseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
+    /** Feedback screenshot validation — defaults to OLLAMA_BASE_URL when unset. */
+    visionBaseUrl:
+      process.env.OLLAMA_VISION_BASE_URL ??
+      process.env.OLLAMA_BASE_URL ??
+      'http://localhost:11434',
     model: process.env.OLLAMA_MODEL ?? 'qwen3.5:2b',
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'nomic-embed-text',
-    visionModel: process.env.OLLAMA_VISION_MODEL ?? 'llava',
+    visionModel: process.env.OLLAMA_VISION_MODEL ?? 'moondream',
     keepAlive: parseOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE, '-1'),
     embeddingKeepAlive: parseOllamaKeepAlive(process.env.OLLAMA_EMBEDDING_KEEP_ALIVE, '-1'),
     embeddingNumGpu: parseInt(process.env.OLLAMA_EMBEDDING_NUM_GPU ?? '0', 10),
@@ -125,6 +130,10 @@ export const config = {
   features: {
     /** When false, agent find_tasks skips Ollama embeddings (text/regex search only). */
     agentHybridSearch: process.env.AGENT_HYBRID_SEARCH !== 'false',
+    /** When false, feedback UI and POST /api/feedback are disabled. */
+    feedbackEnabled: process.env.FEEDBACK_ENABLED !== 'false',
+    /** When false, feedback is text-only (no screenshot uploads or vision validation). */
+    feedbackImagesEnabled: process.env.FEEDBACK_IMAGES_ENABLED !== 'false',
   },
   admin: {
     host: process.env.ADMIN_HOST ?? '127.0.0.1',
@@ -157,4 +166,34 @@ export const config = {
   },
   mongoEncryptAtRest: process.env.MONGO_ENCRYPT_AT_REST === 'true',
   mongoEncryptMount: process.env.MONGO_ENCRYPT_MOUNT ?? '/var/lib/qtask/mongo-data',
+  deployment: {
+    readOnlyMode: process.env.READ_ONLY_MODE === 'true',
+    message:
+      process.env.DEPLOYMENT_MESSAGE ??
+      'Edits are temporarily disabled while we deploy a major update.',
+    phase: parseDeploymentPhase(process.env.DEPLOYMENT_PHASE),
+  },
+  /** When false, embedding worker does not start (used on read-only live stack during major deploy). */
+  embeddingWorkerEnabled: process.env.EMBEDDING_WORKER_ENABLED !== 'false',
+  /** When false, feedback vision worker does not start (requires feedbackImagesEnabled). */
+  feedbackVisionWorkerEnabled:
+    process.env.FEEDBACK_VISION_WORKER_ENABLED !== 'false' &&
+    process.env.FEEDBACK_IMAGES_ENABLED !== 'false',
 } as const;
+
+export function getHealthFeaturesPayload(): {
+  feedback: boolean;
+  feedbackImages: boolean;
+} {
+  return {
+    feedback: process.env.FEEDBACK_ENABLED !== 'false',
+    feedbackImages: process.env.FEEDBACK_IMAGES_ENABLED !== 'false',
+  };
+}
+
+export type DeploymentPhase = 'normal' | 'major-deploy' | 'candidate';
+
+function parseDeploymentPhase(value: string | undefined): DeploymentPhase {
+  if (value === 'major-deploy' || value === 'candidate') return value;
+  return 'normal';
+}

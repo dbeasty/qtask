@@ -39,6 +39,7 @@ interface ProjectsPageProps {
   externalRefreshKey?: number;
   restoredListExpanded?: boolean;
   onSessionRestoreConsumed?: () => void;
+  editsDisabled?: boolean;
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -62,6 +63,7 @@ export function ProjectsPage({
   externalRefreshKey = 0,
   restoredListExpanded,
   onSessionRestoreConsumed,
+  editsDisabled = false,
 }: ProjectsPageProps) {
   const { user, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
@@ -165,6 +167,9 @@ export function ProjectsPage({
     [projects, activeProjectId]
   );
 
+  const projectCanEdit = Boolean(activeProject?.canEdit) && !editsDisabled;
+  const projectCanManageStructure = Boolean(activeProject?.canManageStructure) && !editsDisabled;
+
   const pendingDeleteProject = useMemo(
     () => projects.find((project) => project._id === pendingDeleteId) ?? null,
     [projects, pendingDeleteId]
@@ -253,7 +258,7 @@ export function ProjectsPage({
 
   const performAutoSave = useCallback(
     async (name: string, description: string, notes: string) => {
-      if (!activeProject || !activeProject.canManageStructure) return;
+      if (!activeProject || !projectCanManageStructure) return;
 
       const trimmed = name.trim();
       if (!trimmed) {
@@ -349,7 +354,7 @@ export function ProjectsPage({
 
   const handleProgressShareChange = async (value: string) => {
     setDetailProgressShare(value);
-    if (!activeProject?.canEdit) return;
+    if (!activeProject || !projectCanEdit) return;
 
     const trimmed = value.trim();
     const nextShare =
@@ -509,7 +514,7 @@ export function ProjectsPage({
                   <button
                     type="button"
                     className="primary-button"
-                    disabled={!activeProject || saving || !activeProject.canManageStructure}
+                    disabled={!activeProject || saving || !projectCanManageStructure}
                     onClick={() => {
                       if (creatingChildOf) {
                         setCreatingChildOf(null);
@@ -612,14 +617,14 @@ export function ProjectsPage({
                     <input
                       value={detailName}
                       onChange={(event) => updateDetailName(event.target.value)}
-                      disabled={saving || !activeProject.canManageStructure}
+                      disabled={saving || !projectCanManageStructure}
                     />
                   </label>
                   <DescriptionSection
                     key={activeProject._id}
                     value={detailDescription}
                     onChange={updateDetailDescription}
-                    disabled={saving || !activeProject.canManageStructure}
+                    disabled={saving || !projectCanManageStructure}
                   />
 
                   {onOpenTask && onAddTask && (
@@ -627,7 +632,7 @@ export function ProjectsPage({
                       projectId={activeProject._id}
                       projects={projects}
                       tasks={tasks}
-                      canEdit={Boolean(activeProject.canEdit)}
+                      canEdit={projectCanEdit}
                       onOpenTask={onOpenTask}
                       onAddTask={onAddTask}
                     />
@@ -637,7 +642,7 @@ export function ProjectsPage({
                     key={`${activeProject._id}-notes`}
                     value={detailNotes}
                     onChange={updateDetailNotes}
-                    disabled={saving || !activeProject.canManageStructure}
+                    disabled={saving || !projectCanManageStructure}
                   />
 
                   <div className="task-form-field">
@@ -664,7 +669,7 @@ export function ProjectsPage({
                         onChange={(value) => {
                           void handleProgressShareChange(value);
                         }}
-                        disabled={saving || !activeProject.canEdit}
+                        disabled={saving || !projectCanEdit}
                       />
                     </div>
                   )}
@@ -807,7 +812,7 @@ export function ProjectsPage({
           effectiveRate={projectEffectiveHourlyRate}
           userRate={user?.hourlyRate}
           projectRate={activeProject.hourlyRate}
-          canEditProject={activeProject.canEdit}
+          canEditProject={projectCanEdit}
           showTaskOverride={false}
           saving={rateSaving}
           onClose={() => setRateDialogOpen(false)}

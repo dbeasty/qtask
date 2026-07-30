@@ -421,7 +421,8 @@ export type NotificationType =
   | 'project_share_accepted'
   | 'project_share_declined'
   | 'task_comment'
-  | 'task_comment_reply';
+  | 'task_comment_reply'
+  | 'feedback_rejected';
 
 export interface AppNotification {
   _id: string;
@@ -442,6 +443,9 @@ export interface AppNotification {
     authorDisplayName?: string;
     authorEmail?: string;
     subtaskPath?: string[];
+    feedbackId?: string;
+    message?: string;
+    reason?: string;
   };
   read: boolean;
   createdAt: string;

@@ -217,6 +217,15 @@ export async function checkHealth(): Promise<{
   service: string;
   version?: string;
   aiVersion?: string | null;
+  features?: {
+    feedback: boolean;
+    feedbackImages: boolean;
+  };
+  deployment?: {
+    readOnly: boolean;
+    phase: string;
+    message: string;
+  };
 }> {
   const response = await fetch('/health');
   if (!response.ok) {
@@ -227,6 +236,15 @@ export async function checkHealth(): Promise<{
     service: string;
     version?: string;
     aiVersion?: string | null;
+    features?: {
+      feedback: boolean;
+      feedbackImages: boolean;
+    };
+    deployment?: {
+      readOnly: boolean;
+      phase: string;
+      message: string;
+    };
   }>;
 }
 
@@ -681,6 +699,7 @@ export async function submitFeedback(formData: FormData): Promise<{
   message: string;
   category: string;
   status: string;
+  validationStatus: string;
   createdAt: string;
   attachmentCount: number;
 }> {
@@ -695,6 +714,14 @@ export async function submitFeedback(formData: FormData): Promise<{
   }
 
   return response.json();
+}
+
+export async function getFeedbackStatus(feedbackId: string): Promise<{
+  id: string;
+  validationStatus: string;
+  message: string;
+}> {
+  return request(`/api/feedback/${encodeURIComponent(feedbackId)}`);
 }
 
 export { isTokenExpired, msUntilRefresh, REFRESH_LEAD_MS } from '../auth/session';

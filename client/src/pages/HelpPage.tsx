@@ -6,9 +6,10 @@ interface HelpPageProps {
   onBack?: () => void;
   onStartTour?: () => void;
   onOpenFeedback?: () => void;
+  feedbackEnabled?: boolean;
 }
 
-export function HelpPage({ onBack, onStartTour, onOpenFeedback }: HelpPageProps) {
+export function HelpPage({ onBack, onStartTour, onOpenFeedback, feedbackEnabled = true }: HelpPageProps) {
   return (
     <div className="help-page">
       <div className="help-page-inner">
@@ -148,15 +149,22 @@ export function HelpPage({ onBack, onStartTour, onOpenFeedback }: HelpPageProps)
 
         <section className="help-section">
           <h3>Send feedback</h3>
-          <p>
-            Report bugs or suggest features with a screenshot. Open your <strong>account menu</strong>{' '}
-            (top right) → <strong>Send feedback</strong>, or use the button below.
-          </p>
-          {onOpenFeedback ? (
-            <button type="button" className="primary-button" onClick={onOpenFeedback}>
-              Send feedback
-            </button>
-          ) : null}
+          {feedbackEnabled ? (
+            <>
+              <p>
+                Report bugs or suggest features
+                {onOpenFeedback ? ' with a screenshot' : ''}. Open your <strong>account menu</strong>{' '}
+                (top right) → <strong>Send feedback</strong>, or use the button below.
+              </p>
+              {onOpenFeedback ? (
+                <button type="button" className="primary-button" onClick={onOpenFeedback}>
+                  Send feedback
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted">Feedback is not available on this deployment.</p>
+          )}
         </section>
 
         <section className="help-section">

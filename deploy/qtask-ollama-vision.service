@@ -1,0 +1,17 @@
+[Unit]
+Description=QTask vision Ollama (feedback screenshot validation)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=qtask
+Group=qtask
+WorkingDirectory=/opt/qtask/live
+EnvironmentFile=-/var/lib/qtask/ollama-vision.env
+ExecStart=/opt/qtask/live/deploy/start-ollama-vision.sh
+ExecStop=/opt/qtask/live/deploy/stop-ollama-vision.sh
+
+[Install]
+WantedBy=multi-user.target

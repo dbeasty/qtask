@@ -206,6 +206,7 @@ export interface OllamaCallsResponse {
 }
 
 export type FeedbackStatus = 'open' | 'read' | 'resolved';
+export type FeedbackValidationStatus = 'pending' | 'validated' | 'rejected' | 'failed';
 export type FeedbackCategory = 'bug' | 'feature' | 'other';
 
 export interface AdminFeedbackItem {
@@ -216,6 +217,7 @@ export interface AdminFeedbackItem {
   message: string;
   category: FeedbackCategory;
   status: FeedbackStatus;
+  validationStatus?: FeedbackValidationStatus;
   createdAt: string;
   attachmentCount: number;
 }
@@ -248,6 +250,7 @@ export interface AdminFeedbackDetail {
   message: string;
   category: FeedbackCategory;
   status: FeedbackStatus;
+  validationStatus?: FeedbackValidationStatus;
   context?: {
     url?: string;
     userAgent?: string;

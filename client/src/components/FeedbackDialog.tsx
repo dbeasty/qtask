@@ -5,9 +5,16 @@ import { FeedbackForm } from './FeedbackForm';
 interface FeedbackDialogProps {
   onClose: () => void;
   contextUrl?: string;
+  imagesEnabled?: boolean;
+  disabled?: boolean;
 }
 
-export function FeedbackDialog({ onClose, contextUrl }: FeedbackDialogProps) {
+export function FeedbackDialog({
+  onClose,
+  contextUrl,
+  imagesEnabled = true,
+  disabled = false,
+}: FeedbackDialogProps) {
   const formKey = useId();
 
   return createPortal(
@@ -24,6 +31,8 @@ export function FeedbackDialog({ onClose, contextUrl }: FeedbackDialogProps) {
           key={formKey}
           contextUrl={contextUrl}
           compact
+          imagesEnabled={imagesEnabled}
+          disabled={disabled}
           onSuccess={onClose}
         />
       </div>

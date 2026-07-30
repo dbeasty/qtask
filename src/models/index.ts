@@ -435,6 +435,7 @@ const notificationSchema = new Schema(
         'project_share_declined',
         'task_comment',
         'task_comment_reply',
+        'feedback_rejected',
       ],
       required: true,
     },
@@ -464,7 +465,7 @@ const feedbackAttachmentSchema = new Schema(
     storageKey: { type: String, required: true },
     contentType: { type: String, required: true },
     sizeBytes: { type: Number, required: true, min: 0 },
-    visionCheck: { type: feedbackVisionCheckSchema, required: true },
+    visionCheck: { type: feedbackVisionCheckSchema, required: false },
   },
   { _id: false }
 );
@@ -493,6 +494,12 @@ const feedbackSchema = new Schema(
       default: 'open',
       index: true,
     },
+    validationStatus: {
+      type: String,
+      enum: ['pending', 'validated', 'rejected', 'failed'],
+      default: 'validated',
+      index: true,
+    },
     context: { type: feedbackContextSchema, default: () => ({}) },
     attachments: { type: [feedbackAttachmentSchema], default: [] },
   },
@@ -501,5 +508,24 @@ const feedbackSchema = new Schema(
 
 feedbackSchema.index({ status: 1, createdAt: -1 });
 feedbackSchema.index({ userId: 1, createdAt: -1 });
+
+const feedbackVisionJobSchema = new Schema(
+  {
+    feedbackId: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'failed'],
+      default: 'pending',
+      index: true,
+    },
+    attempts: { type: Number, default: 0 },
+    lastError: { type: String },
+  },
+  { timestamps: true }
+);
+
+feedbackVisionJobSchema.index({ feedbackId: 1 }, { unique: true });
+
+export const FeedbackVisionJobModel = model('FeedbackVisionJob', feedbackVisionJobSchema);
 
 export const FeedbackModel = model('Feedback', feedbackSchema);

@@ -1,0 +1,732 @@
+#!/usr/bin/env bash
+# QTask A/B deployment CLI — blue-green releases with optional major-deploy read-only mode.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/mongo-backup.sh
+source "${SCRIPT_DIR}/lib/mongo-backup.sh"
+
+QTASK_ROOT="${QTASK_ROOT:-/opt/qtask}"
+QTASK_DATA="${QTASK_DATA:-/var/lib/qtask}"
+DEPLOY_DIR="${QTASK_DATA}/deploy"
+BACKUP_DIR="${QTASK_DATA}/backups"
+UPLOADS_DIR="${QTASK_DATA}/uploads"
+RELEASES_DIR="${QTASK_ROOT}/releases"
+LIVE_LINK="${QTASK_ROOT}/live"
+CANDIDATE_LINK="${QTASK_ROOT}/candidate"
+STATE_FILE="${DEPLOY_DIR}/state.json"
+RELEASES_META="${DEPLOY_DIR}/releases.json"
+NGINX_UPSTREAM="${DEPLOY_DIR}/nginx-upstream.conf"
+LIVE_API_PORT="${LIVE_API_PORT:-3003}"
+LIVE_ADMIN_PORT="${LIVE_ADMIN_PORT:-3004}"
+CAND_API_PORT="${CAND_API_PORT:-3005}"
+CAND_ADMIN_PORT="${CAND_ADMIN_PORT:-3006}"
+
+usage() {
+  cat <<'EOF'
+Usage: qtask-deploy <command> [options]
+
+Commands:
+  init                     Migrate flat /opt/qtask install to releases/ layout
+  status                   Show live/candidate stacks and deployment phase
+  releases list            List installed releases
+  prepare [--major] [--skip-backup] <tarball|version>
+  start-candidate           Start systemd for an existing candidate symlink
+  test                     Smoke-test candidate stack (port 3005)
+  promote [--promote-db]   Cut over to candidate release
+  rollback [--restore-db PATH] [version]
+  abort                    Stop candidate and restore normal live operation
+  retire <version>         Remove an old release directory
+  backup [--label LABEL] [--retention-daily N]
+  backups list             List MongoDB backup archives
+  restore-db <path>        Restore live qtask database from backup (confirm prompt)
+  repair                   Fix nginx upstream + migrate off legacy systemd units
+
+Environment:
+  QTASK_ROOT   App root (default: /opt/qtask)
+  QTASK_DATA   Shared data (default: /var/lib/qtask)
+EOF
+}
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+json_write() {
+  local path="$1"
+  local data="$2"
+  python3 -c 'import json,sys; p,d=sys.argv[1],json.loads(sys.argv[2]); f=open(p,"w"); json.dump(d,f,indent=2); f.write("\n")' "${path}" "${data}"
+}
+
+json_read() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = json.load(f)
+if not key:
+    print(json.dumps(data))
+else:
+    cur = data
+    for part in key.split("."):
+        cur = cur[part]
+    print(cur if isinstance(cur, str) else json.dumps(cur))
+PY
+}
+
+ensure_data_dirs() {
+  mkdir -p "${DEPLOY_DIR}" "${BACKUP_DIR}" "${BACKUP_DIR}/daily" "${UPLOADS_DIR}" "${RELEASES_DIR}"
+  # deploy/ must be traversable by nginx (www-data) when sites include nginx-upstream.conf
+  chmod 755 "${QTASK_DATA}" "${DEPLOY_DIR}" 2>/dev/null || true
+  chmod 700 "${BACKUP_DIR}" 2>/dev/null || true
+}
+
+ensure_layout() {
+  ensure_data_dirs
+  [[ -L "${LIVE_LINK}" || -d "${LIVE_LINK}" ]] || die "live stack missing at ${LIVE_LINK} — run: qtask-deploy init"
+}
+
+live_env() { echo "${LIVE_LINK}/.env"; }
+candidate_env() { echo "${CANDIDATE_LINK}/.env"; }
+
+read_version_from_dir() {
+  node -p "require('${1}/package.json').version" 2>/dev/null || true
+}
+
+user_runtime_dir() {
+  if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "${XDG_RUNTIME_DIR}" ]]; then
+    printf '%s' "${XDG_RUNTIME_DIR}"
+  elif [[ -d "/run/user/$(id -u)" ]]; then
+    printf '/run/user/%s' "$(id -u)"
+  else
+    printf ''
+  fi
+}
+
+uses_user_systemd() {
+  [[ -f "${QTASK_ROOT}/.config/systemd/user/qtask@.service" ]]
+}
+
+user_systemctl() {
+  local runtime
+  runtime="$(user_runtime_dir)"
+  [[ -n "${runtime}" ]] || die "no user systemd runtime — admin must run once: sudo ${LIVE_LINK}/deploy/migrate-to-user-systemd.sh"
+  XDG_RUNTIME_DIR="${runtime}" systemctl --user "$@"
+}
+
+install_user_systemd_units() {
+  local unit_dir="${QTASK_ROOT}/.config/systemd/user"
+  local src="${LIVE_LINK}/deploy/systemd-user"
+  [[ -d "${src}" ]] || die "missing ${src} — publish a newer release"
+  mkdir -p "${unit_dir}"
+  cp "${src}/qtask@.service" "${src}/qtask-admin@.service" "${unit_dir}/"
+  if user_systemctl daemon-reload 2>/dev/null; then
+    echo "User systemd units installed under ${unit_dir}"
+    return 0
+  fi
+  echo "User systemd units copied to ${unit_dir}." >&2
+  echo "Admin must run once: sudo ${LIVE_LINK}/deploy/migrate-to-user-systemd.sh" >&2
+  return 1
+}
+
+systemctl_stack() {
+  local stack="$1"
+  local strict="${SYSTEMCTL_STACK_STRICT:-false}"
+  shift
+  local run_one
+  run_one() {
+    local unit="$1"
+    shift
+    if uses_user_systemd; then
+      if user_systemctl "$@" "${unit}"; then
+        return 0
+      fi
+    elif sudo -n systemctl "$@" "${unit}" 2>/dev/null; then
+      return 0
+    elif systemctl "$@" "${unit}" 2>/dev/null; then
+      return 0
+    fi
+    if [[ "${strict}" == true ]]; then
+      echo "Error: could not run systemctl $* ${unit}" >&2
+      if uses_user_systemd; then
+        echo "Check: systemctl --user status ${unit}" >&2
+      else
+        echo "Prefer user systemd (no sudo): sudo ${LIVE_LINK}/deploy/migrate-to-user-systemd.sh" >&2
+        echo "Or as admin: sudo systemctl $* ${unit}" >&2
+      fi
+      return 1
+    fi
+    return 0
+  }
+  if uses_user_systemd || systemctl list-unit-files 'qtask@.service' >/dev/null 2>&1; then
+    run_one "qtask@${stack}.service" "$@" || return 1
+    run_one "qtask-admin@${stack}.service" "$@" || return 1
+  else
+    run_one qtask.service "$@" || return 1
+    run_one qtask-admin.service "$@" || return 1
+  fi
+}
+
+set_env_kv() {
+  local file="$1" key="$2" value="$3"
+  if grep -q "^${key}=" "${file}" 2>/dev/null; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" "${file}"
+    rm -f "${file}.bak"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+  fi
+}
+
+copy_env_for_candidate() {
+  local src="$1" dest="$2" tier="$3"
+  cp "${src}" "${dest}"
+  set_env_kv "${dest}" PORT "${CAND_API_PORT}"
+  set_env_kv "${dest}" ADMIN_PORT "${CAND_ADMIN_PORT}"
+  set_env_kv "${dest}" DEPLOYMENT_PHASE "candidate"
+  set_env_kv "${dest}" READ_ONLY_MODE "false"
+  set_env_kv "${dest}" EMBEDDING_WORKER_ENABLED "true"
+  set_env_kv "${dest}" STORAGE_LOCAL_PATH "${UPLOADS_DIR}"
+  if [[ "${tier}" == "major" ]]; then
+    local base_uri
+    base_uri="$(grep '^MONGODB_URI=' "${src}" | head -1 | cut -d= -f2- | tr -d '"')"
+    if [[ "${base_uri}" == *"/qtask"* ]]; then
+      set_env_kv "${dest}" MONGODB_URI "${base_uri/qtask/qtask_candidate}"
+    else
+      set_env_kv "${dest}" MONGODB_URI "mongodb://127.0.0.1:27017/qtask_candidate"
+    fi
+  fi
+}
+
+prepare_live_env_ports() {
+  local env_file="$1"
+  set_env_kv "${env_file}" PORT "${LIVE_API_PORT}"
+  set_env_kv "${env_file}" ADMIN_PORT "${LIVE_ADMIN_PORT}"
+  set_env_kv "${env_file}" STORAGE_LOCAL_PATH "${UPLOADS_DIR}"
+  set_env_kv "${env_file}" DEPLOYMENT_PHASE "normal"
+  set_env_kv "${env_file}" READ_ONLY_MODE "false"
+  set_env_kv "${env_file}" EMBEDDING_WORKER_ENABLED "true"
+}
+
+write_nginx_upstream() {
+  local port="$1"
+  ensure_data_dirs
+  cat > "${NGINX_UPSTREAM}" <<EOF
+# Managed by qtask-deploy — $(date -u +%Y-%m-%dT%H:%M:%SZ)
+upstream qtask_active {
+    server 127.0.0.1:${port};
+}
+EOF
+  chmod 644 "${NGINX_UPSTREAM}" 2>/dev/null || true
+  sync_nginx_upstream
+}
+
+sync_nginx_upstream() {
+  [[ -f "${NGINX_UPSTREAM}" ]] || die "missing ${NGINX_UPSTREAM} — run: qtask-deploy repair"
+  # Live API stays on 3003 after promote — nginx reload is only needed when upstream path changes.
+  if [[ -f /etc/nginx/conf.d/qtask-upstream.conf ]]; then
+    echo "Note: nginx upstream file is at ${NGINX_UPSTREAM} (live port ${LIVE_API_PORT})." >&2
+    echo "If the public site stops routing correctly, admin: sudo cp ${NGINX_UPSTREAM} /etc/nginx/conf.d/qtask-upstream.conf && sudo nginx -t && sudo systemctl reload nginx" >&2
+  else
+    echo "Note: install nginx upstream once as admin:" >&2
+    echo "  sudo cp ${NGINX_UPSTREAM} /etc/nginx/conf.d/qtask-upstream.conf" >&2
+    echo "  sudo nginx -t && sudo systemctl reload nginx" >&2
+  fi
+}
+
+install_user_systemd_or_hint() {
+  if uses_user_systemd; then
+    return 0
+  fi
+  if install_user_systemd_units; then
+    return 0
+  fi
+  migrate_legacy_systemd
+}
+
+migrate_legacy_systemd() {
+  [[ -L "${LIVE_LINK}" ]] || return 0
+
+  local template_api="${LIVE_LINK}/deploy/qtask@.service"
+  local template_admin="${LIVE_LINK}/deploy/qtask-admin@.service"
+  [[ -f "${template_api}" && -f "${template_admin}" ]] || return 0
+
+  if sudo -n cp "${template_api}" /etc/systemd/system/qtask@.service 2>/dev/null \
+    && sudo -n cp "${template_admin}" /etc/systemd/system/qtask-admin@.service 2>/dev/null; then
+    sudo -n systemctl daemon-reload
+    if systemctl is-active --quiet qtask.service 2>/dev/null \
+      || systemctl is-enabled --quiet qtask.service 2>/dev/null; then
+      echo "==> Disabling legacy qtask.service (flat /opt/qtask layout)"
+      sudo -n systemctl disable --now qtask.service 2>/dev/null || true
+      sudo -n systemctl disable --now qtask-admin.service 2>/dev/null || true
+    fi
+    sudo -n systemctl enable qtask@live.service qtask-admin@live.service 2>/dev/null || true
+    sudo -n systemctl restart qtask@live.service qtask-admin@live.service 2>/dev/null || true
+    echo "Live stack: qtask@live, qtask-admin@live"
+  else
+    echo "Warning: could not install template systemd units (sudo denied)." >&2
+    echo "Run as admin: ${SCRIPT_DIR}/repair-ab-deploy.sh" >&2
+  fi
+}
+
+cmd_repair() {
+  ensure_layout
+  write_nginx_upstream "${LIVE_API_PORT}"
+  install_user_systemd_or_hint || true
+  echo ""
+  cmd_status
+}
+
+cmd_init() {
+  need_cmd node
+  local version="${1:-}"
+  if [[ -z "${version}" && -f "${QTASK_ROOT}/package.json" ]]; then
+    version="$(read_version_from_dir "${QTASK_ROOT}")"
+  fi
+  [[ -n "${version}" ]] || die "could not determine version — pass: qtask-deploy init <version>"
+
+  mkdir -p "${RELEASES_DIR}" "${DEPLOY_DIR}" "${BACKUP_DIR}" "${UPLOADS_DIR}"
+  ensure_data_dirs
+
+  if [[ -L "${LIVE_LINK}" ]]; then
+    echo "Already initialized (live -> $(readlink "${LIVE_LINK}"))"
+    return 0
+  fi
+
+  local target="${RELEASES_DIR}/${version}"
+  if [[ ! -d "${target}" ]]; then
+    echo "==> Moving current install to ${target}"
+    mkdir -p "${target}"
+    shopt -s dotglob
+    for item in "${QTASK_ROOT}"/*; do
+      base="$(basename "${item}")"
+      case "${base}" in
+        releases|live|candidate) continue ;;
+      esac
+      mv "${item}" "${target}/"
+    done
+    shopt -u dotglob
+  fi
+
+  ln -sfn "${target}" "${LIVE_LINK}"
+  prepare_live_env_ports "$(live_env)"
+
+  local old_uploads="${target}/data/uploads"
+  if [[ -d "${old_uploads}" && ! -L "${old_uploads}" ]]; then
+    echo "==> Migrating uploads to ${UPLOADS_DIR}"
+    mkdir -p "${UPLOADS_DIR}"
+    rsync -a "${old_uploads}/" "${UPLOADS_DIR}/"
+  fi
+
+  echo "==> Migrating to user systemd (no sudo for deploys)"
+  install_user_systemd_or_hint || true
+
+  json_write "${STATE_FILE}" "{\"phase\":\"normal\",\"tier\":\"minor\",\"liveRelease\":\"${version}\",\"dbMode\":\"shared\",\"readOnlyLive\":false}"
+  json_write "${RELEASES_META}" "{\"history\":[{\"version\":\"${version}\",\"path\":\"${RELEASES_DIR}/${version}\",\"env\":\"${RELEASES_DIR}/${version}/.env\",\"installedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}"
+
+  write_nginx_upstream "${LIVE_API_PORT}"
+  echo "Init complete. Live release: ${version}"
+  if ! uses_user_systemd; then
+    echo "Admin one-time (enables passwordless deploy for qtask, no sudo for qtask user):"
+    echo "  sudo ${LIVE_LINK}/deploy/migrate-to-user-systemd.sh"
+  fi
+  echo "Enable daily backups: sudo cp ${LIVE_LINK}/deploy/qtask-backup.* /etc/systemd/system/ && sudo systemctl enable --now qtask-backup.timer"
+}
+
+cmd_status() {
+  ensure_layout
+  echo "QTask deployment status"
+  echo "  QTASK_ROOT: ${QTASK_ROOT}"
+  echo "  QTASK_DATA: ${QTASK_DATA}"
+  if [[ -L "${LIVE_LINK}" ]]; then
+    echo "  live: $(readlink -f "${LIVE_LINK}") ($(read_version_from_dir "${LIVE_LINK}"))"
+  fi
+  if [[ -L "${CANDIDATE_LINK}" ]]; then
+    echo "  candidate: $(readlink -f "${CANDIDATE_LINK}") ($(read_version_from_dir "${CANDIDATE_LINK}"))"
+  else
+    echo "  candidate: (none)"
+  fi
+  if [[ -f "${STATE_FILE}" ]]; then
+    echo ""
+    cat "${STATE_FILE}"
+  fi
+  echo ""
+  curl -sf "http://127.0.0.1:${LIVE_API_PORT}/health" 2>/dev/null | head -c 300 || echo "  live health: unreachable"
+  echo ""
+  if [[ -L "${CANDIDATE_LINK}" ]]; then
+    curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" 2>/dev/null | head -c 300 || echo "  candidate health: unreachable"
+    echo ""
+  fi
+}
+
+cmd_releases_list() {
+  ensure_layout
+  echo "Installed releases under ${RELEASES_DIR}:"
+  for dir in "${RELEASES_DIR}"/*/; do
+    [[ -d "${dir}" ]] || continue
+    ver="$(basename "${dir}")"
+    tags=""
+    [[ "$(readlink -f "${LIVE_LINK}" 2>/dev/null)" == "$(readlink -f "${dir}")" ]] && tags="${tags} [live]"
+    [[ -L "${CANDIDATE_LINK}" && "$(readlink -f "${CANDIDATE_LINK}")" == "$(readlink -f "${dir}")" ]] && tags="${tags} [candidate]"
+    echo "  ${ver}${tags}"
+  done
+}
+
+resolve_tarball() {
+  local arg="$1"
+  if [[ -f "${arg}" ]]; then
+    printf '%s' "${arg}"
+    return
+  fi
+  local candidate="${QTASK_ROOT}/${arg}"
+  [[ -f "${candidate}" ]] && printf '%s' "${candidate}" && return
+  candidate="${HOME}/${arg}"
+  [[ -f "${candidate}" ]] && printf '%s' "${candidate}" && return
+  die "release not found: ${arg}"
+}
+
+extract_version() {
+  local tarball="$1"
+  local ver
+  ver="$(basename "${tarball}" | sed -n 's/^qtask-\([0-9.]*\)-linux\.tar\.gz$/\1/p')"
+  [[ -n "${ver}" ]] || die "could not parse version from ${tarball}"
+  printf '%s' "${ver}"
+}
+
+warn_pending_migrations() {
+  local release_dir="$1"
+  local manifest="${release_dir}/deploy/migrations.manifest.json"
+  [[ -f "${manifest}" ]] || return 0
+  echo "==> Checking migration manifest (informational)"
+  python3 - "${manifest}" "$(live_env)" <<'PY' || true
+import json, subprocess, sys, os
+manifest_path, env_path = sys.argv[1], sys.argv[2]
+with open(manifest_path) as f:
+    migrations = json.load(f).get("migrations", [])
+if not migrations:
+    sys.exit(0)
+env = {}
+if os.path.isfile(env_path):
+    for line in open(env_path):
+        if line.strip() and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"')
+uri = env.get("MONGODB_URI", "mongodb://127.0.0.1:27017/qtask")
+try:
+    from pymongo import MongoClient
+except ImportError:
+    print("  (install python3-pymongo to check pending migrations on server)")
+    sys.exit(0)
+client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+meta = {d["key"] for d in client.qtask.app_meta.find({}, {"key": 1})}
+pending = [m["key"] for m in migrations if m["key"] not in meta]
+if pending:
+    print("  ⚠ Candidate has pending migrations:", ", ".join(pending))
+    print("    Re-run with --major to enable read-only + DB snapshot.")
+PY
+}
+
+cmd_backup() {
+  ensure_layout
+  local label="manual" retention=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --label) label="$2"; shift 2 ;;
+      --retention-daily) retention="$2"; shift 2 ;;
+      *) die "unknown backup option: $1" ;;
+    esac
+  done
+
+  local ts dest
+  ts="$(date +%Y%m%d-%H%M%S)"
+  if [[ "${label}" == "daily" ]]; then
+    dest="${BACKUP_DIR}/daily/${ts}"
+  else
+    dest="${BACKUP_DIR}/${ts}-${label}"
+  fi
+
+  mongo_backup_dump "${dest}" "qtask" "$(live_env)"
+  echo "Backup written: ${dest}"
+
+  if [[ -n "${retention}" && "${label}" == "daily" ]]; then
+    ls -1dt "${BACKUP_DIR}/daily/"* 2>/dev/null | tail -n +"$((retention + 1))" | xargs -r rm -rf
+  fi
+}
+
+cmd_backups_list() {
+  ensure_layout
+  echo "Backups under ${BACKUP_DIR}:"
+  find "${BACKUP_DIR}" -mindepth 1 -maxdepth 2 -type d 2>/dev/null | sort | while read -r dir; do
+    du -sh "${dir}" 2>/dev/null | awk -v p="${dir}" '{print "  " $2 "\t" $1 "\t" p}'
+  done
+}
+
+cmd_restore_db() {
+  ensure_layout
+  local path="${1:?backup path required}"
+  [[ -d "${path}" ]] || die "not a directory: ${path}"
+  read -r -p "Restore live qtask DB from ${path}? Type YES: " confirm
+  [[ "${confirm}" == "YES" ]] || die "aborted"
+  mongo_backup_restore "${path}" "qtask" "$(live_env)" "true"
+  echo "Restore complete."
+}
+
+cmd_prepare() {
+  ensure_layout
+  need_cmd node npm tar
+
+  local major=false skip_backup=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --major) major=true; shift ;;
+      --skip-backup) skip_backup=true; shift ;;
+      -*) die "unknown option: $1" ;;
+      *) break ;;
+    esac
+  done
+
+  [[ $# -ge 1 ]] || die "prepare requires tarball or version"
+  local tarball version release_dir backup_path="" tier="minor" db_mode="shared"
+
+  tarball="$(resolve_tarball "$1")"
+  version="$(extract_version "${tarball}")"
+  release_dir="${RELEASES_DIR}/${version}"
+
+  [[ -L "${CANDIDATE_LINK}" ]] && die "candidate already exists — run promote or abort first"
+
+  if [[ "${skip_backup}" != true ]]; then
+    backup_path="${BACKUP_DIR}/$(date +%Y%m%d-%H%M%S)-pre-${version}"
+    mongo_backup_dump "${backup_path}" "qtask" "$(live_env)"
+    echo "Pre-release backup: ${backup_path}"
+  fi
+
+  echo "==> Extracting ${version} to ${release_dir}"
+  rm -rf "${release_dir}"
+  tar xzf "${tarball}" -C "${RELEASES_DIR}"
+  if [[ -d "${RELEASES_DIR}/qtask-${version}" ]]; then
+    mv "${RELEASES_DIR}/qtask-${version}" "${release_dir}"
+  elif [[ ! -d "${release_dir}" ]]; then
+    die "extract failed — expected ${RELEASES_DIR}/qtask-${version}"
+  fi
+
+  chmod +x "${release_dir}/deploy/"*.sh 2>/dev/null || true
+
+  if [[ "${major}" == true ]]; then
+    tier="major"
+    db_mode="snapshot"
+    [[ -n "${backup_path}" ]] || die "major prepare requires backup — remove --skip-backup"
+    echo "==> Major release: read-only live + candidate DB snapshot"
+    set_env_kv "$(live_env)" READ_ONLY_MODE "true"
+    set_env_kv "$(live_env)" DEPLOYMENT_PHASE "major-deploy"
+    set_env_kv "$(live_env)" EMBEDDING_WORKER_ENABLED "false"
+    systemctl_stack live restart
+    mongo_snapshot_to_candidate "${backup_path}" "$(live_env)"
+    copy_env_for_candidate "$(live_env)" "${release_dir}/.env" "major"
+  else
+    warn_pending_migrations "${release_dir}"
+    copy_env_for_candidate "$(live_env)" "${release_dir}/.env" "minor"
+  fi
+
+  echo "==> Installing candidate dependencies"
+  (cd "${release_dir}" && npm ci --omit=dev)
+
+  ln -sfn "${release_dir}" "${CANDIDATE_LINK}"
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate enable --now
+
+  for _ in $(seq 1 30); do
+    if curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+  curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" >/dev/null 2>&1 \
+    || die "candidate API not healthy on port ${CAND_API_PORT} — check: systemctl status qtask@candidate"
+
+  local live_ver phase py_read_only
+  live_ver="$(read_version_from_dir "${LIVE_LINK}")"
+  phase="preparing"
+  py_read_only="False"
+  if [[ "${major}" == true ]]; then
+    phase="major-deploy"
+    py_read_only="True"
+  fi
+  json_write "${STATE_FILE}" "$(python3 - <<PY
+import json
+print(json.dumps({
+  "phase": "${phase}",
+  "tier": "${tier}",
+  "liveRelease": "${live_ver}",
+  "candidateRelease": "${version}",
+  "livePorts": {"api": ${LIVE_API_PORT}, "admin": ${LIVE_ADMIN_PORT}},
+  "candidatePorts": {"api": ${CAND_API_PORT}, "admin": ${CAND_ADMIN_PORT}},
+  "dbMode": "${db_mode}",
+  "readOnlyLive": ${py_read_only},
+  "preReleaseBackup": "${backup_path}",
+}))
+PY
+)"
+
+  echo ""
+  echo "Candidate ready:"
+  echo "  API:   http://127.0.0.1:${CAND_API_PORT}"
+  echo "  Admin: http://127.0.0.1:${CAND_ADMIN_PORT}"
+  echo "Run: qtask-deploy test"
+  echo "Then: qtask-deploy promote$([[ "${major}" == true ]] && echo ' --promote-db')"
+}
+
+cmd_start_candidate() {
+  ensure_layout
+  [[ -L "${CANDIDATE_LINK}" ]] || die "no candidate — run prepare first"
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate enable --now
+  for _ in $(seq 1 30); do
+    if curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" >/dev/null 2>&1; then
+      echo "Candidate API healthy on port ${CAND_API_PORT}"
+      curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" | head -c 300
+      echo ""
+      return 0
+    fi
+    sleep 2
+  done
+  die "candidate API not healthy on port ${CAND_API_PORT} — check: systemctl status qtask@candidate"
+}
+
+cmd_test() {
+  ensure_layout
+  [[ -L "${CANDIDATE_LINK}" ]] || die "no candidate — run prepare first"
+  BASE_URL="http://127.0.0.1:${CAND_API_PORT}" bash "${CANDIDATE_LINK}/deploy/smoke-test.sh"
+}
+
+cmd_promote() {
+  ensure_layout
+  local promote_db=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --promote-db) promote_db=true; shift ;;
+      *) die "unknown promote option: $1" ;;
+    esac
+  done
+
+  [[ -L "${CANDIDATE_LINK}" ]] || die "no candidate to promote"
+  cmd_test
+
+  local old_live new_live tier="minor"
+  old_live="$(readlink -f "${LIVE_LINK}")"
+  new_live="$(readlink -f "${CANDIDATE_LINK}")"
+  if [[ -f "${STATE_FILE}" ]]; then
+    tier="$(json_read "${STATE_FILE}" tier 2>/dev/null || echo minor)"
+  fi
+
+  echo "==> Promoting candidate to live"
+  systemctl_stack live stop
+  systemctl_stack candidate stop
+
+  if [[ "${promote_db}" == true || "${tier}" == "major" ]]; then
+    mongo_promote_candidate_db "$(live_env)"
+  fi
+
+  ln -sfn "${new_live}" "${LIVE_LINK}"
+  rm -f "${CANDIDATE_LINK}"
+
+  prepare_live_env_ports "$(live_env)"
+  write_nginx_upstream "${LIVE_API_PORT}"
+
+  systemctl_stack live start
+
+  local prev_ver
+  prev_ver="$(basename "${old_live}")"
+  json_write "${STATE_FILE}" "{\"phase\":\"normal\",\"tier\":\"minor\",\"liveRelease\":\"$(basename "${new_live}")\",\"previousRelease\":\"${prev_ver}\",\"dbMode\":\"shared\",\"readOnlyLive\":false}"
+
+  echo "Promote complete. Live: $(basename "${new_live}")"
+}
+
+cmd_abort() {
+  ensure_layout
+  [[ -L "${CANDIDATE_LINK}" ]] || die "no candidate to abort"
+  systemctl_stack candidate stop
+  rm -f "${CANDIDATE_LINK}"
+
+  if [[ -f "${STATE_FILE}" ]] && [[ "$(json_read "${STATE_FILE}" tier 2>/dev/null || echo minor)" == "major" ]]; then
+    set_env_kv "$(live_env)" READ_ONLY_MODE "false"
+    set_env_kv "$(live_env)" DEPLOYMENT_PHASE "normal"
+    set_env_kv "$(live_env)" EMBEDDING_WORKER_ENABLED "true"
+    systemctl_stack live restart
+  fi
+
+  json_write "${STATE_FILE}" "{\"phase\":\"normal\",\"tier\":\"minor\",\"liveRelease\":\"$(read_version_from_dir "${LIVE_LINK}")\",\"dbMode\":\"shared\",\"readOnlyLive\":false}"
+  echo "Abort complete."
+}
+
+cmd_rollback() {
+  ensure_layout
+  local restore_db="" version=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --restore-db) restore_db="$2"; shift 2 ;;
+      -*) die "unknown rollback option: $1" ;;
+      *) version="$1"; shift ;;
+    esac
+  done
+
+  [[ -z "${version}" && -f "${STATE_FILE}" ]] && version="$(json_read "${STATE_FILE}" previousRelease 2>/dev/null || true)"
+  [[ -n "${version}" ]] || die "rollback requires version or previousRelease in state"
+
+  local target="${RELEASES_DIR}/${version}"
+  [[ -d "${target}" ]] || die "release not found: ${version}"
+
+  systemctl_stack live stop
+  [[ -L "${CANDIDATE_LINK}" ]] && systemctl_stack candidate stop && rm -f "${CANDIDATE_LINK}"
+
+  ln -sfn "${target}" "${LIVE_LINK}"
+  prepare_live_env_ports "$(live_env)"
+  write_nginx_upstream "${LIVE_API_PORT}"
+
+  if [[ -n "${restore_db}" ]]; then
+    mongo_backup_restore "${restore_db}" "qtask" "$(live_env)" "true"
+  fi
+
+  systemctl_stack live start
+  json_write "${STATE_FILE}" "{\"phase\":\"normal\",\"tier\":\"minor\",\"liveRelease\":\"${version}\",\"dbMode\":\"shared\",\"readOnlyLive\":false}"
+  echo "Rollback complete: ${version}"
+}
+
+cmd_retire() {
+  ensure_layout
+  local version="${1:?version required}"
+  local target="${RELEASES_DIR}/${version}"
+  [[ -d "${target}" ]] || die "not found: ${version}"
+  [[ "$(readlink -f "${LIVE_LINK}")" != "$(readlink -f "${target}")" ]] || die "cannot retire live release"
+  [[ ! -L "${CANDIDATE_LINK}" || "$(readlink -f "${CANDIDATE_LINK}")" != "$(readlink -f "${target}")" ]] || die "cannot retire candidate"
+  rm -rf "${target}"
+  echo "Retired ${version}"
+}
+
+main() {
+  need_cmd python3 curl docker
+  local cmd="${1:-}"
+  shift || true
+  case "${cmd}" in
+    init) cmd_init "$@" ;;
+    status) cmd_status ;;
+    releases)
+      [[ "${1:-}" == "list" ]] || die "usage: qtask-deploy releases list"
+      cmd_releases_list ;;
+    prepare) cmd_prepare "$@" ;;
+    start-candidate) cmd_start_candidate ;;
+    test) cmd_test ;;
+    promote) cmd_promote "$@" ;;
+    abort) cmd_abort ;;
+    rollback) cmd_rollback "$@" ;;
+    retire) cmd_retire "$@" ;;
+    backup) cmd_backup "$@" ;;
+    backups)
+      [[ "${1:-}" == "list" ]] || die "usage: qtask-deploy backups list"
+      cmd_backups_list ;;
+    restore-db) cmd_restore_db "$@" ;;
+    repair) cmd_repair ;;
+    -h|--help|help|"") usage ;;
+    *) die "unknown command: ${cmd}" ;;
+  esac
+}
+
+main "$@"

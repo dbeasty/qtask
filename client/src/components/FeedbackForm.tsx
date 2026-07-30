@@ -1,15 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
-import { submitFeedback } from '../api/client';
+import { getFeedbackStatus, submitFeedback } from '../api/client';
 
 type FeedbackCategory = 'bug' | 'feature' | 'other';
 
 interface FeedbackFormProps {
   contextUrl?: string;
   compact?: boolean;
+  imagesEnabled?: boolean;
   onSuccess?: () => void;
+  onRejected?: (message: string) => void;
+  disabled?: boolean;
 }
 
-export function FeedbackForm({ contextUrl, compact = false, onSuccess }: FeedbackFormProps) {
+const REJECTION_MESSAGE =
+  'Your feedback screenshot was not accepted. Please send a UI screenshot (not a photo or unrelated image).';
+
+export function FeedbackForm({
+  contextUrl,
+  compact = false,
+  imagesEnabled = true,
+  onSuccess,
+  onRejected,
+  disabled = false,
+}: FeedbackFormProps) {
   const [message, setMessage] = useState('');
   const [category, setCategory] = useState<FeedbackCategory>('bug');
   const [files, setFiles] = useState<File[]>([]);
@@ -39,6 +52,7 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
   }
 
   function handlePaste(event: ClipboardEvent) {
+    if (!imagesEnabled) return;
     const items = event.clipboardData?.items;
     if (!items) return;
     const pasted: File[] = [];
@@ -55,6 +69,7 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
   }
 
   useEffect(() => {
+    if (!imagesEnabled) return;
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
   });
@@ -63,8 +78,29 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
     setFiles((current) => current.filter((_, i) => i !== index));
   }
 
+  function pollValidationStatus(feedbackId: string) {
+    const startedAt = Date.now();
+    const poll = async () => {
+      if (Date.now() - startedAt > 30_000) return;
+      try {
+        const status = await getFeedbackStatus(feedbackId);
+        if (status.validationStatus === 'rejected') {
+          onRejected?.(REJECTION_MESSAGE);
+          return;
+        }
+        if (status.validationStatus === 'pending') {
+          window.setTimeout(() => void poll(), 2000);
+        }
+      } catch {
+        // ignore polling errors
+      }
+    };
+    void poll();
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (disabled) return;
     setError(null);
     setSuccess(null);
 
@@ -72,7 +108,7 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
       setError('Please describe the issue or suggestion.');
       return;
     }
-    if (files.length === 0) {
+    if (imagesEnabled && files.length === 0) {
       setError('Please attach at least one screenshot.');
       return;
     }
@@ -88,10 +124,13 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
 
     setSubmitting(true);
     try {
-      await submitFeedback(formData);
+      const result = await submitFeedback(formData);
       setMessage('');
       setCategory('bug');
       setFiles([]);
+      if (imagesEnabled && result.validationStatus === 'pending') {
+        pollValidationStatus(result.id);
+      }
       if (onSuccess) {
         onSuccess();
       } else {
@@ -108,13 +147,17 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
     <form className="feedback-form" onSubmit={(event) => void handleSubmit(event)}>
       {!compact ? (
         <p className="muted feedback-form-intro">
-          Send bug reports and suggestions with a screenshot. You can paste a screenshot from your
-          clipboard or choose a file.
+          {imagesEnabled
+            ? 'Send bug reports and suggestions with a screenshot. You can paste a screenshot from your clipboard or choose a file.'
+            : 'Send bug reports and suggestions.'}
         </p>
       ) : null}
 
       {error ? <p className="error-banner">{error}</p> : null}
       {success ? <p className="success-banner">{success}</p> : null}
+      {disabled ? (
+        <p className="warning-banner">Feedback is unavailable while a major update is in progress.</p>
+      ) : null}
 
       <label className="field-label" htmlFor="feedback-category">
         Category
@@ -123,7 +166,7 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
         id="feedback-category"
         value={category}
         onChange={(event) => setCategory(event.target.value as FeedbackCategory)}
-        disabled={submitting}
+        disabled={submitting || disabled}
       >
         <option value="bug">Bug</option>
         <option value="feature">Feature request</option>
@@ -139,46 +182,48 @@ export function FeedbackForm({ contextUrl, compact = false, onSuccess }: Feedbac
         value={message}
         onChange={(event) => setMessage(event.target.value)}
         placeholder="What happened? What did you expect?"
-        disabled={submitting}
+        disabled={submitting || disabled}
       />
 
-      <div className="feedback-form-files">
-        <label className="field-label" htmlFor="feedback-screenshot">
-          Screenshot
-        </label>
-        <input
-          ref={fileInputRef}
-          id="feedback-screenshot"
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          multiple
-          disabled={submitting}
-          onChange={(event) => {
-            addFiles(Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        {files.length > 0 ? (
-          <ul className="feedback-preview-list">
-            {files.map((file, index) => (
-              <li key={`${file.name}-${index}`}>
-                <img src={previews[index]} alt={file.name || `Screenshot ${index + 1}`} />
-                <div className="feedback-preview-meta">
-                  <span>{file.name || `Screenshot ${index + 1}`}</span>
-                  <button type="button" className="secondary-button" onClick={() => removeFile(index)}>
-                    Remove
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="muted">No screenshot selected yet.</p>
-        )}
-      </div>
+      {imagesEnabled ? (
+        <div className="feedback-form-files">
+          <label className="field-label" htmlFor="feedback-screenshot">
+            Screenshot
+          </label>
+          <input
+            ref={fileInputRef}
+            id="feedback-screenshot"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            disabled={submitting || disabled}
+            onChange={(event) => {
+              addFiles(Array.from(event.target.files ?? []));
+              event.target.value = '';
+            }}
+          />
+          {files.length > 0 ? (
+            <ul className="feedback-preview-list">
+              {files.map((file, index) => (
+                <li key={`${file.name}-${index}`}>
+                  <img src={previews[index]} alt={file.name || `Screenshot ${index + 1}`} />
+                  <div className="feedback-preview-meta">
+                    <span>{file.name || `Screenshot ${index + 1}`}</span>
+                    <button type="button" className="secondary-button" onClick={() => removeFile(index)}>
+                      Remove
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No screenshot selected yet.</p>
+          )}
+        </div>
+      ) : null}
 
       <div className="feedback-form-actions">
-        <button type="submit" className="primary-button" disabled={submitting}>
+        <button type="submit" className="primary-button" disabled={submitting || disabled}>
           {submitting ? 'Submitting…' : 'Send feedback'}
         </button>
       </div>

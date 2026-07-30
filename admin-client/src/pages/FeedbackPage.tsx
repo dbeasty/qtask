@@ -148,6 +148,7 @@ export function FeedbackPage() {
               <th>User</th>
               <th>Category</th>
               <th>Status</th>
+              <th>Validation</th>
               <th>Message</th>
               <th className="num">Screenshots</th>
             </tr>
@@ -155,13 +156,13 @@ export function FeedbackPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} className="muted">
+                <td colSpan={7} className="muted">
                   Loading…
                 </td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={6} className="muted">
+                <td colSpan={7} className="muted">
                   No feedback yet.
                 </td>
               </tr>
@@ -177,6 +178,11 @@ export function FeedbackPage() {
                   <td>{item.category}</td>
                   <td>
                     <span className={`badge badge--${item.status}`}>{item.status}</span>
+                  </td>
+                  <td>
+                    <span className={`badge badge--${item.validationStatus ?? 'validated'}`}>
+                      {item.validationStatus ?? 'validated'}
+                    </span>
                   </td>
                   <td className="cell-truncate">{item.message}</td>
                   <td className="num">{formatNumber(item.attachmentCount)}</td>
@@ -210,7 +216,8 @@ export function FeedbackPage() {
               {detail.userDisplayName ? ` (${detail.userDisplayName})` : ''}
             </p>
             <p className="muted">
-              {formatDate(detail.createdAt)} · {detail.category}
+              {formatDate(detail.createdAt)} · {detail.category} · validation{' '}
+              {detail.validationStatus ?? 'validated'}
             </p>
             <label className="field-label" htmlFor="feedback-status">
               Status
@@ -250,7 +257,9 @@ export function FeedbackPage() {
                       {attachment.contentType} · {formatNumber(attachment.sizeBytes)} bytes
                       {attachment.visionCheck?.confidence != null
                         ? ` · confidence ${Math.round(attachment.visionCheck.confidence * 100)}%`
-                        : ''}
+                        : attachment.visionCheck
+                          ? ''
+                          : ' · validation pending'}
                     </figcaption>
                   </figure>
                 ))}

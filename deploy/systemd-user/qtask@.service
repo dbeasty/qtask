@@ -1,0 +1,15 @@
+[Unit]
+Description=QTask API and web client (%i stack)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/qtask/%i
+EnvironmentFile=/opt/qtask/%i/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

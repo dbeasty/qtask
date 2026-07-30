@@ -1,0 +1,22 @@
+[Unit]
+Description=QTask Admin Application (%i stack)
+After=network.target
+
+[Service]
+Type=simple
+User=qtask
+Group=qtask
+WorkingDirectory=/opt/qtask/%i
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/qtask/%i/.env
+ExecStart=/usr/bin/node dist/admin/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/qtask /var/lib/qtask
+
+[Install]
+WantedBy=multi-user.target

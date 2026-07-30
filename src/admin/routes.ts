@@ -541,6 +541,7 @@ router.get('/feedback', async (req, res, next) => {
         message: item.message,
         category: item.category,
         status: item.status,
+        validationStatus: item.validationStatus ?? 'validated',
         createdAt: item.createdAt,
         attachmentCount: item.attachments?.length ?? 0,
       })),
@@ -570,6 +571,7 @@ router.get('/feedback/:id', async (req, res, next) => {
       message: feedback.message,
       category: feedback.category,
       status: feedback.status,
+      validationStatus: feedback.validationStatus ?? 'validated',
       context: feedback.context,
       attachments: (feedback.attachments ?? []).map((attachment, index) => ({
         index,

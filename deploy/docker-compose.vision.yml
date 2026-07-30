@@ -1,0 +1,23 @@
+# Ollama for feedback screenshot validation on the app server (CPU).
+# Binds to loopback only — not exposed on the service VLAN.
+# Agent + embeddings stay on Jetson; set OLLAMA_VISION_BASE_URL=http://127.0.0.1:11434.
+#
+#   ./deploy/start-ollama-vision.sh
+#   docker exec qtask-ollama-vision ollama pull moondream
+
+services:
+  ollama-vision:
+    image: ollama/ollama:latest
+    container_name: qtask-ollama-vision
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes:
+      - qtask_ollama_vision_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+
+volumes:
+  qtask_ollama_vision_data:
+    name: qtask_ollama_vision_data

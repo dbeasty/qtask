@@ -18,6 +18,8 @@ process.env.ADMIN_AUTH_MODE = 'password';
 process.env.HASH_ADMIN_PASSWORD = 'false';
 process.env.ADMIN_COOKIE_SECURE = 'false';
 process.env.SERVE_CLIENT = 'false';
+process.env.FEEDBACK_ENABLED = 'true';
+process.env.FEEDBACK_IMAGES_ENABLED = 'true';
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -32,7 +34,11 @@ let storage: import('../src/services/storage/local.js').LocalObjectStorage;
 let userToken: string;
 let userId: string;
 let FeedbackModel: typeof import('../src/models/index.js').FeedbackModel;
-let setScreenshotClassifierForTests: typeof import('../src/services/feedbackService.js').setScreenshotClassifierForTests;
+let FeedbackVisionJobModel: typeof import('../src/models/index.js').FeedbackVisionJobModel;
+let NotificationModel: typeof import('../src/models/index.js').NotificationModel;
+let setScreenshotClassifierForTests: typeof import('../src/services/feedbackVisionService.js').setScreenshotClassifierForTests;
+let startFeedbackVisionWorker: typeof import('../src/services/feedbackVisionQueue.js').startFeedbackVisionWorker;
+let stopFeedbackVisionWorker: typeof import('../src/services/feedbackVisionQueue.js').stopFeedbackVisionWorker;
 
 function acceptScreenshot(): Promise<VisionCheckResult> {
   return Promise.resolve({
@@ -53,6 +59,17 @@ function rejectScreenshot(): Promise<VisionCheckResult> {
   });
 }
 
+async function waitForJob(feedbackId: string, expected: 'completed' | 'failed', timeoutMs = 3000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const job = await FeedbackVisionJobModel.findOne({ feedbackId }).lean();
+    if (job?.status === expected) return job;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const job = await FeedbackVisionJobModel.findOne({ feedbackId }).lean();
+  assert.fail(`Expected job status ${expected}, got ${job?.status ?? 'missing'}`);
+}
+
 before(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
@@ -62,25 +79,38 @@ before(async () => {
     { setObjectStorageForTests },
     { setScreenshotClassifierForTests: setClassifier },
     { FeedbackModel: feedbackModel },
+    { FeedbackVisionJobModel: visionJobModel },
+    { NotificationModel: notificationModel },
     { createApp },
     { createAdminApp },
     { signToken },
+    { startFeedbackVisionWorker: startWorker },
+    { stopFeedbackVisionWorker: stopWorker },
   ] = await Promise.all([
     import('../src/services/storage/local.js'),
     import('../src/services/storage/index.js'),
-    import('../src/services/feedbackService.js'),
+    import('../src/services/feedbackVisionService.js'),
+    import('../src/models/index.js'),
+    import('../src/models/index.js'),
     import('../src/models/index.js'),
     import('../src/app.js'),
     import('../src/admin/app.js'),
     import('../src/auth/jwt.js'),
+    import('../src/services/feedbackVisionQueue.js'),
+    import('../src/services/feedbackVisionQueue.js'),
   ]);
   storage = new LocalObjectStorage(storageRoot);
   setObjectStorageForTests(storage);
   setScreenshotClassifierForTests = setClassifier;
   setScreenshotClassifierForTests(acceptScreenshot);
   FeedbackModel = feedbackModel;
+  FeedbackVisionJobModel = visionJobModel;
+  NotificationModel = notificationModel;
+  startFeedbackVisionWorker = startWorker;
+  stopFeedbackVisionWorker = stopWorker;
 
   app = await createApp({ connect: true, startWorker: false });
+  startFeedbackVisionWorker();
   adminApp = await createAdminApp({ connect: false, serveClient: false });
 
   const { UserModel } = await import('../src/models/index.js');
@@ -95,6 +125,8 @@ before(async () => {
 });
 
 after(async () => {
+  stopFeedbackVisionWorker();
+  await new Promise((resolve) => setTimeout(resolve, 100));
   const { setObjectStorageForTests } = await import('../src/services/storage/index.js');
   setScreenshotClassifierForTests(null);
   setObjectStorageForTests(null);
@@ -117,7 +149,21 @@ describe('feedback API', () => {
     await request(app).post('/api/feedback').expect(401);
   });
 
-  it('rejects submissions without attachments', async () => {
+  it('returns 503 when feedback is disabled', async () => {
+    process.env.FEEDBACK_ENABLED = 'false';
+    try {
+      await request(app)
+        .post('/api/feedback')
+        .set('Authorization', `Bearer ${userToken}`)
+        .field('message', 'Something broke')
+        .attach('attachments', PNG, { filename: 'screen.png', contentType: 'image/png' })
+        .expect(503);
+    } finally {
+      process.env.FEEDBACK_ENABLED = 'true';
+    }
+  });
+
+  it('rejects submissions without attachments when images are enabled', async () => {
     await request(app)
       .post('/api/feedback')
       .set('Authorization', `Bearer ${userToken}`)
@@ -125,7 +171,24 @@ describe('feedback API', () => {
       .expect(400);
   });
 
-  it('creates feedback when screenshot validation passes', async () => {
+  it('accepts text-only feedback when images are disabled', async () => {
+    process.env.FEEDBACK_IMAGES_ENABLED = 'false';
+    try {
+      const response = await request(app)
+        .post('/api/feedback')
+        .set('Authorization', `Bearer ${userToken}`)
+        .field('message', 'Text only feedback')
+        .field('category', 'feature')
+        .expect(201);
+
+      assert.equal(response.body.validationStatus, 'validated');
+      assert.equal(response.body.attachmentCount, 0);
+    } finally {
+      process.env.FEEDBACK_IMAGES_ENABLED = 'true';
+    }
+  });
+
+  it('creates feedback with pending validation and completes asynchronously', async () => {
     const response = await request(app)
       .post('/api/feedback')
       .set('Authorization', `Bearer ${userToken}`)
@@ -135,26 +198,59 @@ describe('feedback API', () => {
       .expect(201);
 
     assert.equal(response.body.category, 'bug');
+    assert.equal(response.body.validationStatus, 'pending');
     assert.equal(response.body.attachmentCount, 1);
+
+    await waitForJob(response.body.id, 'completed');
 
     const doc = await FeedbackModel.findById(response.body.id).lean();
     assert.ok(doc);
+    assert.equal(doc?.validationStatus, 'validated');
     assert.equal(doc?.attachments?.length, 1);
+    assert.ok(doc?.attachments?.[0]?.visionCheck);
     const stored = await storage.get(doc!.attachments![0].storageKey);
     assert.ok(stored);
   });
 
-  it('rejects non-screenshot images with 422', async () => {
+  it('rejects non-screenshot images asynchronously with notification', async () => {
     setScreenshotClassifierForTests(rejectScreenshot);
     const response = await request(app)
       .post('/api/feedback')
       .set('Authorization', `Bearer ${userToken}`)
       .field('message', 'Bad upload')
       .attach('attachments', PNG, { filename: 'photo.png', contentType: 'image/png' })
-      .expect(422);
+      .expect(201);
 
-    assert.match(response.body.error, /screenshot/i);
+    assert.equal(response.body.validationStatus, 'pending');
+    await waitForJob(response.body.id, 'completed');
+
+    const doc = await FeedbackModel.findById(response.body.id).lean();
+    assert.equal(doc?.validationStatus, 'rejected');
+    assert.equal(doc?.attachments?.length, 0);
+
+    const notification = await NotificationModel.findOne({ userId, type: 'feedback_rejected' }).lean();
+    assert.ok(notification);
     setScreenshotClassifierForTests(acceptScreenshot);
+  });
+
+  it('exposes validation status for the submitting user', async () => {
+    const doc = await FeedbackModel.findOne({ userId, message: 'Button does not work' }).lean();
+    assert.ok(doc);
+
+    const response = await request(app)
+      .get(`/api/feedback/${String(doc!._id)}`)
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(200);
+
+    assert.equal(response.body.validationStatus, 'validated');
+  });
+});
+
+describe('health features', () => {
+  it('includes feedback feature flags', async () => {
+    const response = await request(app).get('/health').expect(200);
+    assert.equal(response.body.features.feedback, true);
+    assert.equal(response.body.features.feedbackImages, true);
   });
 });
 
@@ -164,15 +260,17 @@ describe('admin feedback API', () => {
     const response = await agent.get('/api/admin/feedback').expect(200);
     assert.ok(response.body.total >= 1);
     assert.ok(Array.isArray(response.body.items));
+    assert.ok(response.body.items[0].validationStatus);
   });
 
   it('returns feedback detail and attachment bytes', async () => {
-    const doc = await FeedbackModel.findOne({ userId }).lean();
+    const doc = await FeedbackModel.findOne({ userId, message: 'Button does not work' }).lean();
     assert.ok(doc);
     const { agent } = await adminSession();
 
     const detail = await agent.get(`/api/admin/feedback/${String(doc!._id)}`).expect(200);
     assert.equal(detail.body.message, 'Button does not work');
+    assert.equal(detail.body.validationStatus, 'validated');
 
     const attachment = await agent
       .get(`/api/admin/feedback/${String(doc!._id)}/attachments/0`)
@@ -182,7 +280,7 @@ describe('admin feedback API', () => {
   });
 
   it('updates feedback status with CSRF', async () => {
-    const doc = await FeedbackModel.findOne({ userId }).lean();
+    const doc = await FeedbackModel.findOne({ userId, message: 'Button does not work' }).lean();
     assert.ok(doc);
     const { agent, csrf } = await adminSession();
 
@@ -199,7 +297,7 @@ describe('admin feedback API', () => {
 
 describe('admin user delete cascades feedback', () => {
   it('deletes feedback documents and storage objects', async () => {
-    const doc = await FeedbackModel.findOne({ userId }).lean();
+    const doc = await FeedbackModel.findOne({ userId, message: 'Button does not work' }).lean();
     assert.ok(doc);
     const storageKey = doc!.attachments![0].storageKey;
     const { agent, csrf } = await adminSession();

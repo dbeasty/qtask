@@ -55,22 +55,12 @@ sudo mkdir -p "${INSTALL_DIR}/.ssh" "${INSTALL_DIR}/run"
 sudo chmod 700 "${INSTALL_DIR}/.ssh" "${INSTALL_DIR}/run"
 sudo chown qtask:qtask "${INSTALL_DIR}/.ssh" "${INSTALL_DIR}/run"
 
-SUDOERS_EXAMPLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qtask-deploy.sudoers.example"
-if [[ -f "${SUDOERS_EXAMPLE}" ]]; then
-  echo "Installing qtask deploy sudoers (passwordless systemd for qtask user)..."
-  sudo cp "${SUDOERS_EXAMPLE}" /etc/sudoers.d/qtask-deploy
-  sudo chmod 440 /etc/sudoers.d/qtask-deploy
-  if ! sudo visudo -cf /etc/sudoers.d/qtask-deploy; then
-    echo "Error: sudoers validation failed — removing /etc/sudoers.d/qtask-deploy" >&2
-    sudo rm -f /etc/sudoers.d/qtask-deploy
-    exit 1
-  fi
-fi
-
 echo ""
 echo "Bootstrap complete."
 echo "Next:"
-echo "  1. ssh-copy-id -i ~/.ssh/id_ed25519.pub qtask@192.168.13.13"
+echo "  1. ssh-copy-id -i ~/.ssh/id_ed25519.pub qtask@${HOSTNAME:-192.168.13.13}"
 echo "  2. On dev machine: npm run publish:app"
-echo "  3. Edit ${INSTALL_DIR}/.env (JWT, admin secrets, domain) if this is first install"
-echo "  4. Re-run publish:app or on server: ${INSTALL_DIR}/deploy/deploy-app.sh"
+echo "  3. Edit ${INSTALL_DIR}/live/.env (or ${INSTALL_DIR}/.env on first install)"
+echo "  4. After first publish + qtask-deploy init, run once as admin:"
+echo "       sudo ${INSTALL_DIR}/live/deploy/migrate-to-user-systemd.sh"
+echo "     (or: sudo ${INSTALL_DIR}/live/deploy/repair-ab-deploy.sh for nginx + systemd)"

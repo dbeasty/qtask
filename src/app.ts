@@ -14,9 +14,11 @@ import { invitesRouter, invitePreviewHandler } from './routes/invites.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { feedbackRouter } from './routes/feedback.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
+import { readOnlyMiddleware, getDeploymentHealthPayload } from './middleware/readOnly.js';
 import { requireAuth } from './middleware/auth.js';
 import { startEmbeddingWorker } from './services/embeddingQueue.js';
-import { config } from './config/index.js';
+import { startFeedbackVisionWorker } from './services/feedbackVisionQueue.js';
+import { config, getHealthFeaturesPayload } from './config/index.js';
 import { initEmail, getEmailStatus } from './services/emailService.js';
 import { APP_VERSION } from './version.js';
 import { fetchAiStackVersion } from './services/aiStackVersion.js';
@@ -35,8 +37,11 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     await runDataMigrations();
   }
   await initEmail();
-  if (shouldStartWorker) {
+  if (shouldStartWorker && config.embeddingWorkerEnabled && process.env.EMBEDDING_WORKER_ENABLED !== 'false') {
     startEmbeddingWorker();
+  }
+  if (shouldStartWorker && config.feedbackVisionWorkerEnabled) {
+    startFeedbackVisionWorker();
   }
 
   const express = (await import('express')).default;
@@ -83,21 +88,42 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     try {
       if (mongoose.connection.readyState !== 1) {
         checks.mongodb = 'disconnected';
-        res.status(503).json({ status: 'degraded', version: APP_VERSION, checks });
+        res.status(503).json({
+          status: 'degraded',
+          version: APP_VERSION,
+          checks,
+          deployment: getDeploymentHealthPayload(),
+        });
         return;
       }
       await mongoose.connection.db?.admin().ping();
       checks.mongodb = 'ok';
     } catch {
       checks.mongodb = 'error';
-      res.status(503).json({ status: 'degraded', version: APP_VERSION, checks });
+      res.status(503).json({
+        status: 'degraded',
+        version: APP_VERSION,
+        checks,
+        deployment: getDeploymentHealthPayload(),
+      });
       return;
     }
 
     checks.email = getEmailStatus();
     const aiVersion = await fetchAiStackVersion();
-    res.json({ status: 'ok', service: 'qtask', version: APP_VERSION, aiVersion, checks });
+    const deployment = getDeploymentHealthPayload();
+    res.json({
+      status: 'ok',
+      service: 'qtask',
+      version: APP_VERSION,
+      aiVersion,
+      checks,
+      features: getHealthFeaturesPayload(),
+      ...(deployment.readOnly || deployment.phase !== 'normal' ? { deployment } : {}),
+    });
   });
+
+  app.use(readOnlyMiddleware);
 
   app.use('/api/auth', authLimiter, authRouter);
 

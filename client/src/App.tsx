@@ -89,6 +89,10 @@ export function App() {
   const { user, loading, mustChangePassword, logout, updateProfile, updatePreferences } = useAuth();
   const [view, setView] = useState<View>('projects');
   const [healthy, setHealthy] = useState<boolean | null>(null);
+  const [deploymentReadOnly, setDeploymentReadOnly] = useState(false);
+  const [deploymentMessage, setDeploymentMessage] = useState<string | null>(null);
+  const [feedbackEnabled, setFeedbackEnabled] = useState(true);
+  const [feedbackImagesEnabled, setFeedbackImagesEnabled] = useState(true);
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [aiVersion, setAiVersion] = useState<string | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
@@ -210,8 +214,18 @@ export function App() {
         setHealthy(true);
         if (result.version) setApiVersion(result.version);
         setAiVersion(result.aiVersion ?? null);
+        setDeploymentReadOnly(result.deployment?.readOnly === true);
+        setDeploymentMessage(result.deployment?.readOnly ? result.deployment.message : null);
+        setFeedbackEnabled(result.features?.feedback !== false);
+        setFeedbackImagesEnabled(result.features?.feedbackImages !== false);
       })
-      .catch(() => setHealthy(false));
+      .catch(() => {
+        setHealthy(false);
+        setDeploymentReadOnly(false);
+        setDeploymentMessage(null);
+        setFeedbackEnabled(true);
+        setFeedbackImagesEnabled(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -527,6 +541,7 @@ export function App() {
                   setFeedbackDialogOpen(true);
                   setUserMenuOpen(false);
                 }}
+                feedbackEnabled={feedbackEnabled}
                 onOpenAbout={() => setView('about')}
                 onUpdateDisplayName={(displayName) => updateProfile({ displayName })}
                 onUpdatePreferences={updatePreferences}
@@ -573,9 +588,16 @@ export function App() {
         </div>
       ) : null}
 
+      {deploymentReadOnly && deploymentMessage ? (
+        <div className="warning-banner deployment-banner" role="status">
+          {deploymentMessage}
+        </div>
+      ) : null}
+
       <main>
         <div className={view === 'agent' ? 'view-panel' : 'view-panel view-panel--hidden'}>
           <AgentPage
+            editsDisabled={deploymentReadOnly}
             activeProjectId={activeProjectId}
             onActiveProjectChange={setActiveProjectId}
             onTasksChanged={handleTasksChanged}
@@ -604,6 +626,7 @@ export function App() {
         </div>
         {view === 'projects' ? (
           <ProjectsPage
+            editsDisabled={deploymentReadOnly}
             activeProjectId={activeProjectId}
             onActiveProjectChange={(projectId) => {
               setActiveProjectId(projectId);
@@ -644,12 +667,14 @@ export function App() {
           <HelpPage
             onBack={() => setAppView('projects')}
             onStartTour={handleStartTour}
-            onOpenFeedback={() => setFeedbackDialogOpen(true)}
+            onOpenFeedback={feedbackEnabled ? () => setFeedbackDialogOpen(true) : undefined}
+            feedbackEnabled={feedbackEnabled}
           />
         ) : view === 'about' ? (
           <AboutPage apiVersion={apiVersion} aiVersion={aiVersion} onBack={() => setAppView('projects')} />
         ) : view === 'tasks' ? (
           <TasksPage
+            editsDisabled={deploymentReadOnly}
             activeProjectId={activeProjectId}
             onActiveProjectChange={setActiveProjectId}
             externalRefreshKey={tasksVersion}
@@ -670,7 +695,9 @@ export function App() {
       {feedbackDialogOpen ? (
         <FeedbackDialog
           onClose={() => setFeedbackDialogOpen(false)}
+          disabled={deploymentReadOnly}
           contextUrl={window.location.href}
+          imagesEnabled={feedbackImagesEnabled}
         />
       ) : null}
       {showTourPrompt ? (

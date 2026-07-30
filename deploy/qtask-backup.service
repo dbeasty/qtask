@@ -1,0 +1,10 @@
+[Unit]
+Description=QTask daily MongoDB backup
+
+[Service]
+Type=oneshot
+User=qtask
+Group=qtask
+Environment=QTASK_ROOT=/opt/qtask
+Environment=QTASK_DATA=/var/lib/qtask
+ExecStart=/opt/qtask/live/deploy/qtask-deploy backup --label daily --retention-daily 14

@@ -24,19 +24,38 @@ REMOTE_TAR="qtask-${VERSION}-linux.tar.gz"
 
 echo ""
 echo "==> Uploading to ${APP_SSH}"
-scp "${ARCHIVE}" "${APP_SSH}:~/${REMOTE_TAR}"
+scp -o BatchMode=yes "${ARCHIVE}" "${APP_SSH}:~/${REMOTE_TAR}"
 
 echo "==> Deploying on app server"
-ssh "${APP_SSH}" "set -euo pipefail
-  cd ~
-  rm -rf qtask-${VERSION}
-  tar xzf ${REMOTE_TAR}
-  cd qtask-${VERSION}
-  ./deploy/deploy-app.sh
+MAJOR_FLAG=""
+if [[ "${QTASK_DEPLOY_MAJOR:-}" == "1" ]]; then
+  MAJOR_FLAG="--major"
+fi
+
+ssh -o BatchMode=yes "${APP_SSH}" "set -euo pipefail
+  TAR=\"\${HOME}/${REMOTE_TAR}\"
+  DEPLOY=\"/opt/qtask/live/deploy/qtask-deploy\"
+  if [[ -x \"\${DEPLOY}\" ]]; then
+    \"\${DEPLOY}\" prepare ${MAJOR_FLAG} \"\${TAR}\"
+    echo ''
+    echo 'Candidate is ready. On the server:'
+    echo '  qtask-deploy test'
+    echo '  qtask-deploy promote${MAJOR_FLAG:+ --promote-db}'
+  else
+    cd ~
+    rm -rf qtask-${VERSION}
+    tar xzf ${REMOTE_TAR}
+    cd qtask-${VERSION}
+    ./deploy/deploy-app.sh
+    echo ''
+    echo 'First install complete. For A/B deploys, run once on the server:'
+    echo '  qtask-deploy init'
+  fi
 "
 
 echo ""
 echo "Publish complete (${APP_SSH})."
 echo ""
-echo "First install? Edit /opt/qtask/.env on the app server, then run publish:app again."
+echo "On the server after first init: qtask-deploy repair  (or sudo repair-ab-deploy.sh as admin)"
+echo "First install? Edit /opt/qtask/live/.env on the app server, then run publish:app again."
 echo "Jetson Ollama (separate): npm run publish:jetson"

@@ -1,0 +1,16 @@
+[Unit]
+Description=QTask Admin Application (%i stack)
+After=network-online.target qtask@%i.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/qtask/%i
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/qtask/%i/.env
+ExecStart=/usr/bin/node dist/admin/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -70,6 +70,8 @@ interface TasksPageProps {
   restoredSelection?: Selection | null;
   restoredTaskListExpanded?: boolean;
   onSessionRestoreConsumed?: () => void;
+  /** When true (major deploy read-only), all task/project edits are disabled in UI. */
+  editsDisabled?: boolean;
 }
 
 type PendingConfirm = {
@@ -270,6 +272,7 @@ export function TasksPage({
   restoredSelection,
   restoredTaskListExpanded,
   onSessionRestoreConsumed,
+  editsDisabled = false,
 }: TasksPageProps) {
   const { user, updatePreferences, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
@@ -543,7 +546,7 @@ export function TasksPage({
       // Un-checking also resets progress so the indicator doesn't stay at 100%.
       // Executors may only send status; the server rejects other fields for them.
       const patch =
-        !done && activeProject?.canEdit
+        !done && taskCanEdit
           ? { status, percentComplete: 0, lastProgressField: 'percent' as const }
           : { status };
       const { task } =
@@ -773,6 +776,9 @@ export function TasksPage({
     [projects, resolvedActiveProjectId]
   );
 
+  const taskCanEdit = Boolean(activeProject?.canEdit) && !editsDisabled;
+  const taskCanUpdateStatus = Boolean(activeProject?.canUpdateStatus) && !editsDisabled;
+
   const canDeleteTask = useCallback(
     (task: Task) => {
       if (!activeProject || !user) return false;
@@ -811,7 +817,7 @@ export function TasksPage({
       forSelection: Selection,
       forTask: Task
     ): Promise<TaskFormValues> => {
-      const statusOnly = !activeProject?.canEdit && Boolean(activeProject?.canUpdateStatus);
+      const statusOnly = !taskCanEdit && taskCanUpdateStatus;
 
       if (forSelection.kind === 'task') {
         if (statusOnly) {
@@ -980,11 +986,11 @@ export function TasksPage({
                   className="primary-button"
                   data-demo-step="add-task"
                   onClick={handleAddTaskClick}
-                  disabled={saving || !resolvedActiveProjectId || !activeProject?.canEdit}
+                  disabled={saving || !resolvedActiveProjectId || !taskCanEdit}
                 >
                   {addTaskLabel}
                 </button>
-                {hasSelection && activeProject?.canEdit ? (
+                {hasSelection && taskCanEdit ? (
                   <button
                     type="button"
                     className="primary-button"
@@ -1006,14 +1012,14 @@ export function TasksPage({
                 saving={saving}
                 onDelete={handleDelete}
                 onSelect={handleSelect}
-                canToggleDone={Boolean(activeProject?.canEdit || activeProject?.canUpdateStatus)}
+                canToggleDone={Boolean(taskCanEdit || taskCanUpdateStatus)}
                 onToggleDone={handleToggleDone}
                 onMoveSubtask={handleMoveSubtask}
                 onMoveUp={handleMoveUp}
                 onPromoteSubtask={handlePromoteSubtask}
                 onMoveTask={handleMoveTask}
                 onAttachTask={handleAttachTask}
-                canManageProjects={Boolean(activeProject?.canEdit)}
+                canManageProjects={taskCanEdit}
                 onOpenProjectDialog={setProjectDialogTaskId}
                 canDeleteTask={canDeleteTask}
               />
@@ -1089,7 +1095,7 @@ export function TasksPage({
                   costRollup={detailCostRollup}
                   userHourlyRate={user?.hourlyRate}
                   projectId={resolvedActiveProjectId ?? undefined}
-                  canEditProject={Boolean(activeProject?.canEdit)}
+                  canEditProject={taskCanEdit}
                   onProjectRateChange={async (rate) => {
                     if (!resolvedActiveProjectId) return;
                     const { project } = await updateProject(resolvedActiveProjectId, {
@@ -1103,8 +1109,8 @@ export function TasksPage({
                     await updateProfile({ hourlyRate: rate });
                   }}
                   projects={projects}
-                  disabled={!activeProject?.canEdit}
-                  statusEditable={Boolean(activeProject?.canUpdateStatus)}
+                  disabled={!taskCanEdit}
+                  statusEditable={taskCanUpdateStatus}
                   autoSave={taskDetailAutoSave}
                 />
 
@@ -1113,8 +1119,8 @@ export function TasksPage({
                     taskId={selection.taskId}
                     subtaskPath={selection.kind === 'subtask' ? selection.path : undefined}
                     currentUserId={user.id}
-                    canComment={Boolean(activeProject?.canUpdateStatus)}
-                    canModerate={Boolean(activeProject?.canEdit)}
+                    canComment={taskCanUpdateStatus}
+                    canModerate={taskCanEdit}
                     refreshKey={externalRefreshKey}
                   />
                 )}

@@ -2,6 +2,7 @@ import { config } from './config/index.js';
 import { createApp } from './app.js';
 import { disconnectDb } from './db/connection.js';
 import { stopEmbeddingWorker } from './services/embeddingQueue.js';
+import { stopFeedbackVisionWorker } from './services/feedbackVisionQueue.js';
 import { stagingService } from './services/stagingService.js';
 
 async function main() {
@@ -15,6 +16,7 @@ async function main() {
   const shutdown = async () => {
     console.log('Shutting down...');
     stopEmbeddingWorker();
+    stopFeedbackVisionWorker();
     stagingService.stopSweep();
     server.close();
     await disconnectDb();
