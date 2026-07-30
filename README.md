@@ -39,6 +39,7 @@ Create an account on first visit. For local secrets (e.g. Resend API key), use *
 
 | Doc | Audience |
 |-----|----------|
+| [docs/MCP.md](docs/MCP.md) | External AI clients — API keys, Claude Desktop, staging |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | End users — projects, tasks, agent, sharing |
 | [docs/QTask_Product_Requirements.md](docs/QTask_Product_Requirements.md) | Product specification |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Operators — local and production deployment |
@@ -52,7 +53,8 @@ In the web app, signed-in users can open **Help** from the account menu.
 | `npm run dev` | Backend API only |
 | `npm run dev:client` | React web client only |
 | `npm run dev:all` | Backend + web client |
-| `npm run mcp` | MCP stdio server (for Cursor) |
+| `npm run mcp` | MCP stdio server (local dev / Cursor) |
+| `npm run mcp:bridge` | Stdio bridge to hosted `/api/mcp` |
 | `npm test` | Run integration tests |
 | `npm run build` | Build API |
 | `npm start` | Start production API (serves web client) |
@@ -64,3 +66,5 @@ Email/password accounts with JWT. All API routes except `/health` and `/api/auth
 ## MCP in Cursor
 
 Log in via the web client, copy your JWT, and set `MCP_JWT` in your Cursor MCP config. See `mcp-config.example.json`.
+
+For **hosted qtask.dev**, create an MCP API key in **Account menu → External AI (MCP)** and use `npm run mcp:bridge`. See [docs/MCP.md](docs/MCP.md).

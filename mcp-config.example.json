@@ -1,13 +1,22 @@
 {
   "mcpServers": {
-    "qtask": {
+    "qtask-local": {
       "command": "npm",
       "args": ["run", "mcp"],
-      "cwd": "/Users/davidj/devel/qtask",
+      "cwd": "/path/to/qtask",
       "env": {
-        "MONGODB_URI": "mongodb://localhost:27017/qtask",
+        "MONGODB_URI": "mongodb://127.0.0.1:27017/qtask",
         "JWT_SECRET": "dev-jwt-secret-change-me",
         "MCP_JWT": "paste-your-jwt-from-login-here"
+      }
+    },
+    "qtask-hosted": {
+      "command": "npm",
+      "args": ["run", "mcp:bridge"],
+      "cwd": "/path/to/qtask",
+      "env": {
+        "QTASK_MCP_URL": "https://qtask.dev/api/mcp",
+        "QTASK_MCP_KEY": "qtk_paste-key-from-settings-here"
       }
     }
   }

@@ -529,3 +529,109 @@ feedbackVisionJobSchema.index({ feedbackId: 1 }, { unique: true });
 export const FeedbackVisionJobModel = model('FeedbackVisionJob', feedbackVisionJobSchema);
 
 export const FeedbackModel = model('Feedback', feedbackSchema);
+
+const mcpApiKeySchema = new Schema(
+  {
+    userId: { type: String, required: true, index: true },
+    name: { type: String, required: true, trim: true },
+    prefix: { type: String, required: true },
+    keyHash: { type: String, required: true, unique: true, index: true },
+    scope: { type: String, enum: ['read', 'read_write'], required: true },
+    lastUsedAt: { type: Date },
+    revokedAt: { type: Date },
+  },
+  { timestamps: true }
+);
+
+mcpApiKeySchema.index({ userId: 1, createdAt: -1 });
+
+export const McpApiKeyModel = model('McpApiKey', mcpApiKeySchema);
+
+const mcpSessionSchema = new Schema(
+  {
+    _id: { type: String },
+    userId: { type: String, required: true, index: true },
+    keyId: { type: String, required: true, index: true },
+    activeProjectId: { type: String },
+    pendingProposals: { type: [Schema.Types.Mixed], default: [] },
+  },
+  { timestamps: true }
+);
+
+mcpSessionSchema.index({ userId: 1, updatedAt: -1 });
+
+export const McpSessionModel = model('McpSession', mcpSessionSchema);
+
+const mcpOAuthClientSchema = new Schema(
+  {
+    clientId: { type: String, required: true, unique: true, index: true },
+    clientSecretHash: { type: String },
+    name: { type: String, required: true, trim: true },
+    userId: { type: String, index: true },
+    redirectUris: { type: [String], default: [] },
+    source: { type: String, enum: ['registered', 'dcr', 'cimd'], required: true },
+    clientName: { type: String },
+    revokedAt: { type: Date },
+  },
+  { timestamps: true }
+);
+
+mcpOAuthClientSchema.index({ userId: 1, createdAt: -1 });
+
+export const McpOAuthClientModel = model('McpOAuthClient', mcpOAuthClientSchema);
+
+const mcpOAuthAuthorizationCodeSchema = new Schema(
+  {
+    codeHash: { type: String, required: true, unique: true, index: true },
+    clientId: { type: String, required: true, index: true },
+    userId: { type: String, required: true, index: true },
+    scope: { type: String, required: true },
+    codeChallenge: { type: String, required: true },
+    codeChallengeMethod: { type: String, required: true, default: 'S256' },
+    redirectUri: { type: String, required: true },
+    resource: { type: String, required: true },
+    expiresAt: { type: Date, required: true, index: true },
+  },
+  { timestamps: true }
+);
+
+export const McpOAuthAuthorizationCodeModel = model(
+  'McpOAuthAuthorizationCode',
+  mcpOAuthAuthorizationCodeSchema
+);
+
+const mcpOAuthRefreshTokenSchema = new Schema(
+  {
+    tokenHash: { type: String, required: true, unique: true, index: true },
+    clientId: { type: String, required: true, index: true },
+    userId: { type: String, required: true, index: true },
+    scope: { type: String, required: true },
+    resource: { type: String, required: true },
+    revokedAt: { type: Date },
+    expiresAt: { type: Date, required: true, index: true },
+  },
+  { timestamps: true }
+);
+
+export const McpOAuthRefreshTokenModel = model('McpOAuthRefreshToken', mcpOAuthRefreshTokenSchema);
+
+const mcpOAuthPendingConsentSchema = new Schema(
+  {
+    state: { type: String, required: true, unique: true, index: true },
+    clientId: { type: String, required: true },
+    clientName: { type: String, required: true },
+    redirectUri: { type: String, required: true },
+    scope: { type: String, required: true },
+    stateParam: { type: String },
+    codeChallenge: { type: String, required: true },
+    codeChallengeMethod: { type: String, required: true, default: 'S256' },
+    resource: { type: String, required: true },
+    expiresAt: { type: Date, required: true, index: true },
+  },
+  { timestamps: true }
+);
+
+export const McpOAuthPendingConsentModel = model(
+  'McpOAuthPendingConsent',
+  mcpOAuthPendingConsentSchema
+);

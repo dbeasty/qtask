@@ -3,7 +3,13 @@ export type SessionExpiryReason = 'missing' | 'expired' | 'invalid';
 export const REFRESH_LEAD_MS = 24 * 60 * 60 * 1000;
 export const REFRESH_GRACE_MS = 5 * 60 * 1000;
 
-export const AUTH_PATHS = new Set(['/login', '/register', '/verify-email', '/reset-password']);
+export const AUTH_PATHS = new Set([
+  '/login',
+  '/register',
+  '/verify-email',
+  '/reset-password',
+  '/oauth/consent',
+]);
 
 const SESSION_MESSAGE_KEY = 'qtask_session_message';
 
@@ -98,6 +104,15 @@ export function consumeSessionMessage(): string | null {
 
 export function getAuthPathname(): string {
   return window.location.pathname.replace(/\/+$/, '') || '/';
+}
+
+export function getReturnToPath(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const returnTo = params.get('returnTo');
+  if (!returnTo || !returnTo.startsWith('/')) {
+    return null;
+  }
+  return returnTo;
 }
 
 export function isAuthPath(pathname?: string): boolean {

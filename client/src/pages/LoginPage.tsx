@@ -1,6 +1,6 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
-import { consumeSessionMessage } from '../auth/session';
+import { consumeSessionMessage, getReturnToPath } from '../auth/session';
 import { PasswordInput } from '../components/PasswordInput';
 import { forgotPassword, getAuthConfig, resendVerification } from '../auth/storage';
 import { usePendingInvitePreview } from '../hooks/usePendingInvitePreview';
@@ -59,6 +59,10 @@ export function LoginPage() {
     try {
       if (mode === 'login') {
         await login(email, password);
+        const returnTo = getReturnToPath();
+        if (returnTo) {
+          window.location.replace(returnTo);
+        }
       } else {
         const result = await forgotPassword(email);
         setInfo(result.message);

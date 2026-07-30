@@ -333,6 +333,164 @@ button {
   box-shadow: 0 8px 24px var(--color-shadow);
 }
 
+.auth-dialog-wide {
+  width: min(100%, 560px);
+}
+
+.mcp-settings-dialog {
+  width: min(100%, 560px);
+  max-height: min(90vh, 720px);
+  overflow-y: auto;
+}
+
+.mcp-settings-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.mcp-settings-tab {
+  flex: 1;
+  padding: 0.55rem 0.75rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.mcp-settings-tab:hover {
+  color: var(--color-text);
+}
+
+.mcp-settings-tab-active {
+  color: var(--color-text);
+  border-bottom-color: var(--color-accent, var(--color-text));
+}
+
+.mcp-settings-panel {
+  padding-top: 1rem;
+}
+
+.mcp-settings-section {
+  margin: 1.25rem 0;
+}
+
+.mcp-settings-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.mcp-settings-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mcp-settings-create input,
+.mcp-settings-create select {
+  flex: 1 1 140px;
+}
+
+.mcp-secret-block {
+  display: block;
+  padding: 0.75rem;
+  margin: 0.5rem 0;
+  border-radius: 0.5rem;
+  background: var(--color-bg-muted);
+  word-break: break-all;
+  font-size: 0.85rem;
+}
+
+.mcp-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mcp-key-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mcp-key-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.mcp-key-revoked {
+  opacity: 0.6;
+}
+
+.mcp-localhost-note {
+  margin: 0.5rem 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--color-bg-muted);
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.mcp-setup-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.mcp-setup-toggle-row h3 {
+  margin: 0;
+}
+
+.mcp-setup-details {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+}
+
+.mcp-setup-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.mcp-setup-steps {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+  line-height: 1.5;
+}
+
+.mcp-setup-steps li {
+  margin-bottom: 0.5rem;
+}
+
+.mcp-setup-steps ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.mcp-inline-copy {
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
+.auth-dialog-footer {
+  margin-top: 1rem;
+}
+
 .auth-dialog h2 {
   margin: 0 0 1rem;
   font-size: 1.2rem;

@@ -724,4 +724,90 @@ export async function getFeedbackStatus(feedbackId: string): Promise<{
   return request(`/api/feedback/${encodeURIComponent(feedbackId)}`);
 }
 
+export type McpKeyScope = 'read' | 'read_write';
+
+export interface McpApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  scope: McpKeyScope;
+  createdAt: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+}
+
+export async function listMcpKeys(): Promise<{ keys: McpApiKey[] }> {
+  return request('/api/mcp-keys');
+}
+
+export async function createMcpKey(
+  name: string,
+  scope: McpKeyScope
+): Promise<{ key: McpApiKey; secret: string }> {
+  return request('/api/mcp-keys', {
+    method: 'POST',
+    body: JSON.stringify({ name, scope }),
+  });
+}
+
+export async function revokeMcpKey(keyId: string): Promise<{ key: McpApiKey }> {
+  return request(`/api/mcp-keys/${encodeURIComponent(keyId)}`, { method: 'DELETE' });
+}
+
+export interface McpOAuthClient {
+  id: string;
+  clientId: string;
+  name: string;
+  source: 'registered' | 'dcr' | 'cimd';
+  createdAt: string;
+  revokedAt?: string;
+}
+
+export interface McpOAuthConsentDetails {
+  state: string;
+  clientName: string;
+  scopes: string[];
+  resource: string;
+}
+
+export async function listMcpOAuthClients(): Promise<{ clients: McpOAuthClient[] }> {
+  return request('/api/mcp-oauth-clients');
+}
+
+export async function createMcpOAuthClient(
+  name: string
+): Promise<{ client: McpOAuthClient; clientId: string; clientSecret: string }> {
+  return request('/api/mcp-oauth-clients', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function revokeMcpOAuthClient(clientId: string): Promise<{ client: McpOAuthClient }> {
+  return request(`/api/mcp-oauth-clients/${encodeURIComponent(clientId)}`, { method: 'DELETE' });
+}
+
+export async function fetchOAuthConsent(
+  state: string
+): Promise<{ consent: McpOAuthConsentDetails }> {
+  return request(`/oauth/consent?state=${encodeURIComponent(state)}`);
+}
+
+export async function submitOAuthConsent(
+  state: string,
+  action: 'approve'
+): Promise<{ redirectUrl: string }> {
+  return request('/oauth/consent', {
+    method: 'POST',
+    body: JSON.stringify({ state, action }),
+  });
+}
+
+export async function denyOAuthConsent(state: string): Promise<{ redirectUrl: string }> {
+  return request('/oauth/consent', {
+    method: 'POST',
+    body: JSON.stringify({ state, action: 'deny' }),
+  });
+}
+
 export { isTokenExpired, msUntilRefresh, REFRESH_LEAD_MS } from '../auth/session';

@@ -13,6 +13,11 @@ import { searchRouter } from './routes/search.js';
 import { invitesRouter, invitePreviewHandler } from './routes/invites.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { feedbackRouter } from './routes/feedback.js';
+import { mcpKeysRouter } from './routes/mcpKeys.js';
+import { mcpOAuthClientsRouter } from './routes/mcpOAuthClients.js';
+import { mcpRouter } from './routes/mcp.js';
+import { oauthRouter } from './routes/oauth.js';
+import { mountWellKnownRoutes } from './routes/wellKnown.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
 import { readOnlyMiddleware, getDeploymentHealthPayload } from './middleware/readOnly.js';
 import { requireAuth } from './middleware/auth.js';
@@ -73,6 +78,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     })
   );
   app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: false }));
 
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -125,6 +131,10 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
 
   app.use(readOnlyMiddleware);
 
+  mountWellKnownRoutes(app);
+
+  app.use('/oauth', authLimiter, oauthRouter);
+
   app.use('/api/auth', authLimiter, authRouter);
 
   app.get('/api/invites/preview/:token', authLimiter, invitePreviewHandler);
@@ -134,6 +144,9 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   app.use('/api/invites', requireAuth, invitesRouter);
   app.use('/api/notifications', requireAuth, notificationsRouter);
   app.use('/api/feedback', requireAuth, feedbackRouter);
+  app.use('/api/mcp-keys', requireAuth, mcpKeysRouter);
+  app.use('/api/mcp-oauth-clients', requireAuth, mcpOAuthClientsRouter);
+  app.use('/api/mcp', mcpRouter);
   app.use('/api/search', requireAuth, searchRouter);
   app.use('/api', requireAuth, agentRouter);
 

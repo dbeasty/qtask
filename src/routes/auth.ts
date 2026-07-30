@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authService } from '../services/authService.js';
 import { isRegistrationEnabled } from '../services/emailService.js';
+import { config, getMcpPublicConfig } from '../config/index.js';
+import { getMcpPublicOAuthConfig } from '../oauth/metadata.js';
 import { requireAuth, requireAuthForRefresh, requirePasswordChangeAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { getUserId } from '../middleware/index.js';
@@ -60,7 +62,11 @@ const updateProfileSchema = z.object({
 });
 
 authRouter.get('/config', (_req, res) => {
-  res.json({ registrationEnabled: isRegistrationEnabled() });
+  const mcp = getMcpPublicConfig();
+  res.json({
+    registrationEnabled: isRegistrationEnabled(),
+    mcp: config.mcpOAuth.enabled ? { ...mcp, oauth: getMcpPublicOAuthConfig() } : mcp,
+  });
 });
 
 authRouter.post('/register', validateBody(registerSchema), async (req, res, next) => {

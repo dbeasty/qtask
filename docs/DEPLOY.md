@@ -165,7 +165,7 @@ QTask uses email/password accounts with signed JWTs. New accounts must verify th
 | Endpoint | Description |
 |----------|-------------|
 | `POST /api/auth/register` | `{ email, password, displayName?, acceptLegal: true }` → `{ message }` (503 if registration disabled) |
-| `GET /api/auth/config` | `{ registrationEnabled }` — public; used by the create-account page |
+| `GET /api/auth/config` | `{ registrationEnabled, mcp: { url, cloudUrl, oauth?, … } }` — public |
 | `POST /api/auth/verify-email` | `{ token }` → `{ message }` |
 | `POST /api/auth/resend-verification` | `{ email }` → `{ message }` |
 | `POST /api/auth/login` | `{ email, password }` → `{ token, user }` (403 if email unverified) |
@@ -244,7 +244,7 @@ One Node process on **3003** serves both the React web UI (static JS/CSS) and th
 
 Forward only **80** and **443** on your router. Do not forward 3003, 3004, 27017, 11434, or 2375.
 
-**MCP in Cursor** runs locally on your machine via stdio — it does not need a server port opened for remote access. Use the web UI at `https://qtask.dev` for browser-based agent access.
+**Remote MCP** is at `POST /api/mcp` on the same HTTPS port as the web app (443). Claude web uses **OAuth** (automatic discovery); Desktop/bridge uses **API keys** — see §6 and [MCP.md](../docs/MCP.md). Use the web Agent UI for in-browser access without MCP setup.
 
 ### 4.1 Docker (recommended)
 
@@ -1234,12 +1234,31 @@ caddy run --config Caddyfile
 
 ---
 
-## 6. MCP in Cursor
+## 6. MCP (Cursor, Claude Desktop, Claude web)
+
+Remote MCP is available at **`POST /api/mcp`** on the same HTTPS port as the web app (443). No extra firewall ports.
+
+**Claude web (OAuth):** Add custom connector with `https://qtask.dev/api/mcp`, leave OAuth Advanced fields empty, approve access in browser. QTask serves OAuth at `/.well-known/oauth-*` and `/oauth/*` on the same origin — nginx `location /` proxy covers these paths.
+
+### Hosted (qtask.dev) — Desktop bridge (API key)
+
+1. Sign in → **Account menu → External AI (MCP)** → create an API key.
+2. Use `npm run mcp:bridge` with `QTASK_MCP_URL=https://qtask.dev/api/mcp` and `QTASK_MCP_KEY`.
+3. See [docs/MCP.md](../docs/MCP.md) and `mcp-config.example.json` (`qtask-hosted` block).
+
+**Production env:**
+
+```bash
+MCP_OAUTH_ENABLED=true
+MCP_OAUTH_JWT_SECRET=<long-random-secret>
+```
+
+### Local stdio (Cursor / self-host)
 
 1. Ensure MongoDB is running.
 2. Log in via the web client or `POST /api/auth/login`.
 3. Copy the `token` from the response.
-4. Copy `mcp-config.example.json` into your Cursor MCP settings.
+4. Copy `mcp-config.example.json` into your Cursor MCP settings (`qtask-local` block).
 5. Set `MCP_JWT` to your token and `JWT_SECRET` to match your server.
 
 ```json
@@ -1250,7 +1269,7 @@ caddy run --config Caddyfile
       "args": ["run", "mcp"],
       "cwd": "/path/to/qtask",
       "env": {
-        "MONGODB_URI": "mongodb://localhost:27017/qtask",
+        "MONGODB_URI": "mongodb://127.0.0.1:27017/qtask",
         "JWT_SECRET": "your-jwt-secret",
         "MCP_JWT": "eyJ..."
       }
@@ -1259,7 +1278,9 @@ caddy run --config Caddyfile
 }
 ```
 
-Tokens expire after `JWT_EXPIRES_IN` (default 7 days). Refresh by logging in again.
+JWT tokens expire after `JWT_EXPIRES_IN` (default 7 days). MCP API keys are revocable in Settings and do not expire with session JWT.
+
+**nginx:** `/api/mcp`, `/oauth/*`, and `/.well-known/*` use the same proxy as other app routes. Keep `proxy_buffering off` if SSE responses are used.
 
 ---
 

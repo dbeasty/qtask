@@ -79,12 +79,18 @@ async function parseAuthResponse(response: Response, fallbackError: string) {
   return body;
 }
 
-export async function getAuthConfig(): Promise<{ registrationEnabled: boolean }> {
+export async function getAuthConfig(): Promise<{
+  registrationEnabled: boolean;
+  mcp?: import('../utils/mcpUrl').McpPublicConfig;
+}> {
   const response = await fetch('/api/auth/config');
   if (!response.ok) {
     return { registrationEnabled: false };
   }
-  return response.json() as Promise<{ registrationEnabled: boolean }>;
+  return response.json() as Promise<{
+    registrationEnabled: boolean;
+    mcp?: import('../utils/mcpUrl').McpPublicConfig;
+  }>;
 }
 
 export async function register(

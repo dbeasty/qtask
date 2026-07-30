@@ -7,6 +7,7 @@ interface UserMenuProps {
   user: AuthUser;
   anchorRef: RefObject<HTMLButtonElement | null>;
   onChangePassword: () => void;
+  onOpenMcpSettings: () => void;
   onOpenHelp: () => void;
   onStartTour?: () => void;
   onOpenFeedback: () => void;
@@ -22,6 +23,7 @@ export function UserMenu({
   user,
   anchorRef,
   onChangePassword,
+  onOpenMcpSettings,
   onOpenHelp,
   onStartTour,
   onOpenFeedback,
@@ -346,6 +348,18 @@ export function UserMenu({
           Send feedback
         </button>
       ) : null}
+
+      <button
+        type="button"
+        className="user-menu-item"
+        role="menuitem"
+        onClick={() => {
+          onOpenMcpSettings();
+          onClose();
+        }}
+      >
+        External AI (MCP)
+      </button>
 
       <button
         type="button"

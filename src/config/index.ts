@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { SITE_URL } from '../constants/brand.js';
 import { loadSecrets, resolveSecretsBackend } from './secrets.js';
 
 export {
@@ -179,6 +180,18 @@ export const config = {
   feedbackVisionWorkerEnabled:
     process.env.FEEDBACK_VISION_WORKER_ENABLED !== 'false' &&
     process.env.FEEDBACK_IMAGES_ENABLED !== 'false',
+  mcpOAuth: {
+    enabled: process.env.MCP_OAUTH_ENABLED !== 'false',
+    jwtSecret: requireSecret(
+      'MCP_OAUTH_JWT_SECRET',
+      process.env.MCP_OAUTH_JWT_SECRET,
+      'dev-mcp-oauth-jwt-secret-change-me'
+    ),
+    accessTokenTtlSec: Math.max(
+      60,
+      parseInt(process.env.MCP_OAUTH_ACCESS_TOKEN_TTL_SEC ?? '3600', 10)
+    ),
+  },
 } as const;
 
 export function getHealthFeaturesPayload(): {
@@ -188,6 +201,28 @@ export function getHealthFeaturesPayload(): {
   return {
     feedback: process.env.FEEDBACK_ENABLED !== 'false',
     feedbackImages: process.env.FEEDBACK_IMAGES_ENABLED !== 'false',
+  };
+}
+
+export function getMcpPublicConfig(): {
+  url: string;
+  cloudUrl: string;
+  authHeader: 'Authorization';
+  authScheme: 'Bearer';
+  isLocalhost: boolean;
+} {
+  const url =
+    config.nodeEnv === 'production'
+      ? `${new URL(config.appUrl).origin}/api/mcp`
+      : `http://localhost:${config.port}/api/mcp`;
+  const cloudUrl =
+    config.nodeEnv === 'production' ? url : `${SITE_URL}/api/mcp`;
+  return {
+    url,
+    cloudUrl,
+    authHeader: 'Authorization',
+    authScheme: 'Bearer',
+    isLocalhost: config.nodeEnv !== 'production',
   };
 }
 

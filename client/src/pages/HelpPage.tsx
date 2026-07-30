@@ -148,6 +148,26 @@ export function HelpPage({ onBack, onStartTour, onOpenFeedback, feedbackEnabled 
         </section>
 
         <section className="help-section">
+          <h3>External AI (MCP)</h3>
+          <p>
+            Connect Claude (web or macOS app) via OAuth, or Cursor/scripts via an API key (
+            <strong>Account menu → External AI (MCP)</strong>). Claude: paste the HTTPS MCP URL on
+            the <strong>Claude connector</strong> tab, leave OAuth Advanced fields empty, and approve
+            access when prompted. Cursor: use an API key on the <strong>Cursor &amp; scripts</strong>{' '}
+            tab with the stdio bridge. Use the <strong>qtask-system</strong> prompt at session start.
+            Details in{' '}
+            <a
+              href={`${GITHUB_REPO_URL}/blob/main/docs/MCP.md`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              docs/MCP.md
+            </a>
+            .
+          </p>
+        </section>
+
+        <section className="help-section">
           <h3>Send feedback</h3>
           {feedbackEnabled ? (
             <>

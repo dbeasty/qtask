@@ -3,6 +3,7 @@ import { useAuth } from './auth/AuthContext';
 import { getAuthPathname, isAuthPath } from './auth/session';
 import { getUserPreferences } from './auth/storage';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
+import { McpSettingsDialog } from './components/McpSettingsDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
 import { DemoTourPrompt, useDemoTour } from './components/DemoTour';
 import { UserMenu } from './components/UserMenu';
@@ -10,6 +11,7 @@ import { AboutPage } from './pages/AboutPage';
 import { AgentPage } from './pages/AgentPage';
 import { HelpPage } from './pages/HelpPage';
 import { LoginPage } from './pages/LoginPage';
+import { OAuthConsentPage } from './pages/OAuthConsentPage';
 import { PrivacyPage } from './pages/PrivacyPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
@@ -107,6 +109,7 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [mcpSettingsOpen, setMcpSettingsOpen] = useState(false);
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false);
   const [demoPrompt, setDemoPrompt] = useState<string | null>(null);
   const [demoPromptGeneration, setDemoPromptGeneration] = useState(0);
@@ -383,6 +386,15 @@ export function App() {
   }
 
   if (!user) {
+    if (pathname === '/oauth/consent') {
+      const returnTo = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(
+        null,
+        '',
+        `/login?returnTo=${encodeURIComponent(returnTo)}`
+      );
+      return <LoginPage />;
+    }
     if (pathname === '/verify-email') {
       return <VerifyEmailPage />;
     }
@@ -419,6 +431,10 @@ export function App() {
         <ChangePasswordDialog forced />
       </div>
     );
+  }
+
+  if (pathname === '/oauth/consent') {
+    return <OAuthConsentPage />;
   }
 
   if (inviteAcceptToken) {
@@ -535,6 +551,7 @@ export function App() {
                 user={user}
                 anchorRef={userMenuTriggerRef}
                 onChangePassword={() => setChangePasswordOpen(true)}
+                onOpenMcpSettings={() => setMcpSettingsOpen(true)}
                 onOpenHelp={() => setView('help')}
                 onStartTour={handleStartTour}
                 onOpenFeedback={() => {
@@ -692,6 +709,7 @@ export function App() {
       </main>
 
       {changePasswordOpen && <ChangePasswordDialog onClose={() => setChangePasswordOpen(false)} />}
+      {mcpSettingsOpen && <McpSettingsDialog onClose={() => setMcpSettingsOpen(false)} />}
       {feedbackDialogOpen ? (
         <FeedbackDialog
           onClose={() => setFeedbackDialogOpen(false)}
