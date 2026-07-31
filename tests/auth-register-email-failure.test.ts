@@ -23,8 +23,12 @@ before(async () => {
 after(async () => {
   delete process.env.TEST_EMAIL_SEND_FAIL;
   const { stopEmbeddingWorker } = await import('../src/services/embeddingQueue.js');
+  const { stopFeedbackVisionWorker } = await import('../src/services/feedbackVisionQueue.js');
   stopEmbeddingWorker();
-  await mongoose.disconnect();
+  stopFeedbackVisionWorker();
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.disconnect();
+  }
   await mongo.stop();
 });
 

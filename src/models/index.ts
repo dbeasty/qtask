@@ -559,6 +559,8 @@ const mcpSessionSchema = new Schema(
 );
 
 mcpSessionSchema.index({ userId: 1, updatedAt: -1 });
+mcpSessionSchema.index({ userId: 1, keyId: 1, updatedAt: -1 });
+mcpSessionSchema.index({ userId: 1, keyId: 1, 'pendingProposals.id': 1 });
 
 export const McpSessionModel = model('McpSession', mcpSessionSchema);
 

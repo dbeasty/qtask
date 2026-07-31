@@ -28,33 +28,46 @@ function isInitializeRequest(body: unknown): boolean {
   );
 }
 
-async function createSessionEntry(
+function findInMemorySession(userId: string, keyId: string): SessionEntry | undefined {
+  for (const entry of sessions.values()) {
+    if (entry.ctx.userId === userId && entry.ctx.keyId === keyId) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+async function buildSessionEntry(
   userId: string,
   keyId: string,
-  scope: McpServerContext['scope']
+  scope: McpServerContext['scope'],
+  sessionId: string,
+  isNewMongoSession: boolean
 ): Promise<SessionEntry> {
   const { StreamableHTTPServerTransport } = await import(
     '@modelcontextprotocol/sdk/server/streamableHttp.js'
   );
 
-  const sessionId = randomUUID();
-  await mcpSessionService.createSession(userId, keyId, sessionId);
+  if (isNewMongoSession) {
+    await mcpSessionService.createSession(userId, keyId, sessionId);
+  } else {
+    await mcpSessionService.touchSession(userId, sessionId);
+  }
 
+  const mongoSession = await mcpSessionService.getSessionByKey(userId, keyId, sessionId);
   const ctx: McpServerContext = {
     userId,
     sessionId,
     scope,
     keyId,
+    activeProjectId: mongoSession?.activeProjectId ?? undefined,
   };
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => sessionId,
     onsessionclosed: async (id) => {
-      const entry = sessions.get(id);
-      if (entry) {
-        await mcpSessionService.closeSession(entry.ctx.userId, entry.ctx.sessionId).catch(() => {});
-        sessions.delete(id);
-      }
+      sessions.delete(id);
+      log.info('MCP transport closed (session persisted)', { sessionId: id, userId, keyId });
     },
   });
 
@@ -66,6 +79,28 @@ async function createSessionEntry(
   return entry;
 }
 
+async function getOrCreateSessionEntry(
+  userId: string,
+  keyId: string,
+  scope: McpServerContext['scope'],
+  existingSessionId?: string
+): Promise<{ entry: SessionEntry; reused: boolean; source?: 'memory' | 'mongo' }> {
+  if (existingSessionId) {
+    const mongoSession = await mcpSessionService.getSessionByKey(userId, keyId, existingSessionId);
+    if (!mongoSession) {
+      throw new Error('MCP session not found');
+    }
+
+    sessions.delete(existingSessionId);
+    const entry = await buildSessionEntry(userId, keyId, scope, existingSessionId, false);
+    return { entry, reused: true, source: 'mongo' };
+  }
+
+  const sessionId = randomUUID();
+  const entry = await buildSessionEntry(userId, keyId, scope, sessionId, true);
+  return { entry, reused: false };
+}
+
 export async function handleMcpHttpRequest(req: Request, res: Response): Promise<void> {
   if (!req.mcpAuth?.keyId) {
     res.status(401).json({ error: 'MCP authorization required' });
@@ -74,6 +109,7 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
 
   const sessionHeader = req.headers['mcp-session-id'];
   const sessionId = typeof sessionHeader === 'string' ? sessionHeader : undefined;
+  const { userId, keyId, scope } = req.mcpAuth;
 
   try {
     if (sessionId && sessions.has(sessionId)) {
@@ -89,17 +125,48 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
       return;
     }
 
+    if (sessionId && !sessions.has(sessionId)) {
+      const mongoSession = await mcpSessionService.getSessionByKey(userId, keyId, sessionId);
+      if (mongoSession) {
+        const { entry } = await getOrCreateSessionEntry(userId, keyId, scope, sessionId);
+        log.info('MCP session rehydrated', { userId, keyId, sessionId: entry.ctx.sessionId });
+        await entry.transport.handleRequest(
+          req as unknown as IncomingMessage,
+          res as ServerResponse,
+          req.body
+        );
+        return;
+      }
+    }
+
     if (!sessionId && isInitializeRequest(req.body)) {
-      const entry = await createSessionEntry(
-        req.mcpAuth.userId,
-        req.mcpAuth.keyId,
-        req.mcpAuth.scope
-      );
-      log.info('MCP session initialized', {
-        userId: req.mcpAuth.userId,
-        keyId: req.mcpAuth.keyId,
-        sessionId: entry.ctx.sessionId,
-      });
+      const inMemory = findInMemorySession(userId, keyId);
+      if (inMemory) {
+        sessions.delete(inMemory.ctx.sessionId);
+      }
+
+      const reusableSessionId =
+        inMemory?.ctx.sessionId ??
+        (await mcpSessionService.findReusableMongoSession(userId, keyId));
+
+      const { entry, reused, source } = reusableSessionId
+        ? await getOrCreateSessionEntry(userId, keyId, scope, reusableSessionId)
+        : await getOrCreateSessionEntry(userId, keyId, scope);
+
+      if (reused) {
+        log.info('MCP session reused', {
+          userId,
+          keyId,
+          sessionId: entry.ctx.sessionId,
+          source: source ?? (inMemory ? 'memory' : 'mongo'),
+        });
+      } else {
+        log.info('MCP session initialized', {
+          userId,
+          keyId,
+          sessionId: entry.ctx.sessionId,
+        });
+      }
       await entry.transport.handleRequest(
         req as unknown as IncomingMessage,
         res as ServerResponse,
@@ -124,4 +191,12 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
 
 export function _resetMcpSessionsForTests(): void {
   sessions.clear();
+}
+
+export function _getMcpSessionsForTests(): Map<string, SessionEntry> {
+  return sessions;
+}
+
+export function _closeMcpTransportForTests(sessionId: string): void {
+  sessions.delete(sessionId);
 }

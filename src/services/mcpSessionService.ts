@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { McpSessionModel } from '../models/index.js';
 import type { PendingProposal } from '../types/conversation.js';
 import { HttpError } from '../utils/httpError.js';
@@ -10,6 +9,17 @@ import { createLogger } from '../utils/logger.js';
 const log = createLogger('mcpSession');
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_REUSE_WINDOW_MS = 60 * 60 * 1000;
+
+export interface PendingProposalWithSession extends PendingProposal {
+  sessionId: string;
+}
+
+interface ResolvedPendingProposal {
+  ownerSessionId: string;
+  proposal: PendingProposal;
+  proposals: PendingProposal[];
+}
 
 export class McpSessionService {
   async createSession(userId: string, keyId: string, sessionId?: string): Promise<string> {
@@ -24,6 +34,10 @@ export class McpSessionService {
 
   async getSession(userId: string, sessionId: string) {
     return McpSessionModel.findOne({ _id: sessionId, userId }).lean();
+  }
+
+  async getSessionByKey(userId: string, keyId: string, sessionId: string) {
+    return McpSessionModel.findOne({ _id: sessionId, userId, keyId }).lean();
   }
 
   async touchSession(userId: string, sessionId: string): Promise<void> {
@@ -43,12 +57,72 @@ export class McpSessionService {
     }
   }
 
-  async getPendingProposals(userId: string, sessionId: string): Promise<PendingProposal[]> {
-    const session = await this.getSession(userId, sessionId);
-    if (!session) {
-      throw new HttpError(404, 'MCP session not found');
+  async findReusableMongoSession(
+    userId: string,
+    keyId: string,
+    reuseWindowMs: number = SESSION_REUSE_WINDOW_MS
+  ): Promise<string | undefined> {
+    const cutoff = new Date(Date.now() - reuseWindowMs);
+    const sessions = await McpSessionModel.find({
+      userId,
+      keyId,
+      updatedAt: { $gte: cutoff },
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    if (sessions.length === 0) return undefined;
+
+    const withPending = sessions.filter((session) =>
+      (session.pendingProposals ?? []).some((proposal) => proposal.status === 'pending')
+    );
+    const chosen = withPending[0] ?? sessions[0];
+    return chosen ? String(chosen._id) : undefined;
+  }
+
+  async getPendingProposals(userId: string, keyId: string): Promise<PendingProposalWithSession[]> {
+    const sessions = await McpSessionModel.find({ userId, keyId })
+      .select('pendingProposals')
+      .lean();
+
+    const pending: PendingProposalWithSession[] = [];
+    for (const session of sessions) {
+      const sessionId = String(session._id);
+      for (const proposal of (session.pendingProposals ?? []) as PendingProposal[]) {
+        if (proposal.status === 'pending') {
+          pending.push({ ...proposal, sessionId });
+        }
+      }
     }
-    return (session.pendingProposals ?? []).filter((p) => p.status === 'pending');
+    return pending;
+  }
+
+  private async findPendingProposal(
+    userId: string,
+    keyId: string,
+    proposalId: string
+  ): Promise<ResolvedPendingProposal> {
+    const session = await McpSessionModel.findOne({
+      userId,
+      keyId,
+      'pendingProposals.id': proposalId,
+    }).lean();
+
+    if (!session) {
+      throw new HttpError(404, 'Proposal not found or already resolved');
+    }
+
+    const proposals = [...((session.pendingProposals ?? []) as PendingProposal[])];
+    const proposal = proposals.find((p) => p.id === proposalId && p.status === 'pending');
+    if (!proposal) {
+      throw new HttpError(404, 'Proposal not found or already resolved');
+    }
+
+    return {
+      ownerSessionId: String(session._id),
+      proposal,
+      proposals,
+    };
   }
 
   private async saveProposals(
@@ -118,23 +192,38 @@ export class McpSessionService {
     };
   }
 
-  async approveProposal(userId: string, sessionId: string, proposalId: string): Promise<string> {
-    const session = await this.getSession(userId, sessionId);
-    if (!session) {
-      throw new HttpError(404, 'MCP session not found');
+  async approveProposal(
+    userId: string,
+    keyId: string,
+    proposalId: string,
+    requestSessionId?: string
+  ): Promise<string> {
+    const { ownerSessionId, proposal, proposals } = await this.findPendingProposal(
+      userId,
+      keyId,
+      proposalId
+    );
+
+    if (requestSessionId && requestSessionId !== ownerSessionId) {
+      log.warn('MCP proposal resolved across sessions', {
+        userId,
+        keyId,
+        proposalId,
+        requestSessionId,
+        ownerSessionId,
+      });
     }
 
-    const proposals = [...(session.pendingProposals ?? [])] as PendingProposal[];
-    const proposal = proposals.find((p) => p.id === proposalId && p.status === 'pending');
-    if (!proposal) {
-      throw new HttpError(404, 'Proposal not found or already resolved');
-    }
-
-    log.info('MCP proposal approved', { userId, sessionId, proposalId, tool: proposal.name });
+    log.info('MCP proposal approved', {
+      userId,
+      sessionId: ownerSessionId,
+      proposalId,
+      tool: proposal.name,
+    });
 
     let resultText: string;
     if (proposal.stagedEntity) {
-      resultText = await stagingService.commitProposal(userId, sessionId, proposal);
+      resultText = await stagingService.commitProposal(userId, ownerSessionId, proposal);
     } else {
       const validation = validateToolProposal(proposal.name, proposal.arguments);
       if (!validation.success) {
@@ -148,33 +237,48 @@ export class McpSessionService {
     }
 
     proposal.status = 'approved';
-    await this.saveProposals(userId, sessionId, proposals);
+    await this.saveProposals(userId, ownerSessionId, proposals);
     return resultText;
   }
 
-  async rejectProposal(userId: string, sessionId: string, proposalId: string): Promise<string> {
-    const session = await this.getSession(userId, sessionId);
-    if (!session) {
-      throw new HttpError(404, 'MCP session not found');
+  async rejectProposal(
+    userId: string,
+    keyId: string,
+    proposalId: string,
+    requestSessionId?: string
+  ): Promise<string> {
+    const { ownerSessionId, proposal, proposals } = await this.findPendingProposal(
+      userId,
+      keyId,
+      proposalId
+    );
+
+    if (requestSessionId && requestSessionId !== ownerSessionId) {
+      log.warn('MCP proposal resolved across sessions', {
+        userId,
+        keyId,
+        proposalId,
+        requestSessionId,
+        ownerSessionId,
+      });
     }
 
-    const proposals = [...(session.pendingProposals ?? [])] as PendingProposal[];
-    const proposal = proposals.find((p) => p.id === proposalId && p.status === 'pending');
-    if (!proposal) {
-      throw new HttpError(404, 'Proposal not found or already resolved');
-    }
-
-    log.info('MCP proposal rejected', { userId, sessionId, proposalId, tool: proposal.name });
+    log.info('MCP proposal rejected', {
+      userId,
+      sessionId: ownerSessionId,
+      proposalId,
+      tool: proposal.name,
+    });
 
     let resultText: string;
     if (proposal.stagedEntity) {
-      resultText = await stagingService.rollbackProposal(userId, sessionId, proposal);
+      resultText = await stagingService.rollbackProposal(userId, ownerSessionId, proposal);
     } else {
       resultText = `Proposal ${proposalId} for ${proposal.name} discarded`;
     }
 
     proposal.status = 'rejected';
-    await this.saveProposals(userId, sessionId, proposals);
+    await this.saveProposals(userId, ownerSessionId, proposals);
     return resultText;
   }
 

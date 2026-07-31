@@ -5,6 +5,21 @@ import mongoose from 'mongoose';
 import request from 'supertest';
 import type { Express } from 'express';
 import { randomUUID } from 'node:crypto';
+import {
+  MCP_READ_TOOLS,
+  MCP_SESSION_TOOLS,
+  MCP_WRITE_TOOLS,
+} from '../src/mcp/toolGroups.js';
+import {
+  createMcpContext,
+  mcpCallTool,
+  mcpInitialize,
+  mcpRpc,
+  parseProposal,
+  parseToolResult,
+  registerUser,
+  resetMcpTestData,
+} from './helpers/mcp.js';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-mcp-jwt-secret';
@@ -12,6 +27,12 @@ process.env.SERVE_CLIENT = 'false';
 
 let mongo: MongoMemoryServer;
 let app: Express;
+
+const ALL_MCP_TOOL_NAMES = new Set([
+  ...MCP_READ_TOOLS,
+  ...MCP_WRITE_TOOLS,
+  ...MCP_SESSION_TOOLS,
+]);
 
 before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -22,37 +43,13 @@ before(async () => {
 });
 
 beforeEach(async () => {
-  const { UserModel, McpApiKeyModel, McpSessionModel, TaskModel, ProjectModel } =
-    await import('../src/models/index.js');
-  await Promise.all([
-    UserModel.deleteMany({}),
-    McpApiKeyModel.deleteMany({}),
-    McpSessionModel.deleteMany({}),
-    TaskModel.deleteMany({}),
-    ProjectModel.deleteMany({}),
-  ]);
-  const { _resetMcpSessionsForTests } = await import('../src/mcp/httpHandler.js');
-  _resetMcpSessionsForTests();
+  await resetMcpTestData();
 });
 
 after(async () => {
   await mongoose.disconnect();
   await mongo.stop();
 });
-
-async function registerUser(email: string) {
-  const { UserModel } = await import('../src/models/index.js');
-  const user = await UserModel.create({
-    email,
-    passwordHash: 'unused',
-    emailVerified: true,
-  });
-  const { signToken } = await import('../src/auth/jwt.js');
-  return {
-    userId: String(user._id),
-    jwt: signToken({ sub: String(user._id), email }),
-  };
-}
 
 describe('MCP auth config', () => {
   it('exposes localhost MCP URL in test environment', async () => {
@@ -110,18 +107,10 @@ describe('MCP API keys', () => {
 
 describe('MCP tool handler', () => {
   it('blocks write tools for read-only keys', async () => {
-    const { userId } = await registerUser(`mcp-ro-${randomUUID()}@example.com`);
-    const { mcpKeyService } = await import('../src/services/mcpKeyService.js');
-    const { executeMcpTool } = await import('../src/mcp/mcpToolHandler.js');
-    const { mcpSessionService } = await import('../src/services/mcpSessionService.js');
+    const { ctx } = await createMcpContext('read');
 
-    const { secret } = await mcpKeyService.createKey(userId, 'read key', 'read');
-    const auth = await mcpKeyService.authenticate(secret);
-    assert.ok(auth);
-    const sessionId = await mcpSessionService.createSession(userId, auth.keyId);
-
-    const result = await executeMcpTool(
-      { userId, sessionId, scope: 'read', keyId: auth.keyId },
+    const result = await (await import('../src/mcp/mcpToolHandler.js')).executeMcpTool(
+      ctx,
       'create_task',
       { title: 'Test task' }
     );
@@ -131,22 +120,13 @@ describe('MCP tool handler', () => {
   });
 
   it('stages create_task and commits via approve_proposal', async () => {
-    const { userId } = await registerUser(`mcp-stage-${randomUUID()}@example.com`);
-    const { mcpKeyService } = await import('../src/services/mcpKeyService.js');
-    const { executeMcpTool } = await import('../src/mcp/mcpToolHandler.js');
-    const { mcpSessionService } = await import('../src/services/mcpSessionService.js');
+    const { ctx, userId } = await createMcpContext();
     const { TaskModel } = await import('../src/models/index.js');
-
-    const { secret } = await mcpKeyService.createKey(userId, 'write key', 'read_write');
-    const auth = await mcpKeyService.authenticate(secret);
-    assert.ok(auth);
-    const sessionId = await mcpSessionService.createSession(userId, auth.keyId);
-    const ctx = { userId, sessionId, scope: 'read_write' as const, keyId: auth.keyId };
+    const { executeMcpTool } = await import('../src/mcp/mcpToolHandler.js');
 
     const staged = await executeMcpTool(ctx, 'create_task', { title: 'Buy milk' });
     assert.equal(staged.success, true);
-    const parsed = JSON.parse(staged.text) as { proposalId: string };
-    assert.ok(parsed.proposalId);
+    const parsed = parseProposal(staged.text);
 
     const hidden = await TaskModel.find({ userId, title: 'Buy milk' });
     assert.equal(hidden.length, 1);
@@ -180,3 +160,66 @@ describe('MCP HTTP endpoint', () => {
       .expect(401);
   });
 });
+
+describe('MCP HTTP protocol', () => {
+  it('initializes a session and lists all MCP tools', async () => {
+    const { secret } = await createMcpContextWithSecret();
+    const sessionId = await mcpInitialize(app, secret);
+    const listed = await mcpRpc(app, secret, sessionId, 'tools/list', {}, 2);
+    assert.equal(listed.status, 200);
+
+    const tools = (listed.result as { tools: Array<{ name: string }> }).tools;
+    const names = new Set(tools.map((tool) => tool.name));
+    for (const name of ALL_MCP_TOOL_NAMES) {
+      assert.ok(names.has(name), `Missing tool in tools/list: ${name}`);
+    }
+  });
+
+  it('calls list_projects over HTTP', async () => {
+    const { secret } = await createMcpContextWithSecret();
+    const sessionId = await mcpInitialize(app, secret);
+
+    const { text, isError } = await mcpCallTool(app, secret, sessionId, 'list_projects');
+    assert.equal(isError, false);
+    const parsed = JSON.parse(text) as { projects: unknown[] };
+    assert.ok(Array.isArray(parsed.projects));
+  });
+
+  it('stages create_task and approves via HTTP tools/call', async () => {
+    const { secret } = await createMcpContextWithSecret();
+    const sessionId = await mcpInitialize(app, secret);
+
+    const stagedProject = await mcpCallTool(app, secret, sessionId, 'create_project', {
+      name: 'HTTP Project',
+    });
+    assert.equal(stagedProject.isError, false);
+    const projectProposal = parseProposal(stagedProject.text);
+    const approvedProject = await mcpCallTool(app, secret, sessionId, 'approve_proposal', {
+      proposalId: projectProposal.proposalId,
+    });
+    assert.equal(approvedProject.isError, false);
+    const projectId = (projectProposal.preview as { _id: string })._id;
+
+    const staged = await mcpCallTool(app, secret, sessionId, 'create_task', {
+      title: 'HTTP staged task',
+      projectId,
+    });
+    assert.equal(staged.isError, false);
+    const proposal = parseProposal(staged.text);
+
+    const approved = await mcpCallTool(app, secret, sessionId, 'approve_proposal', {
+      proposalId: proposal.proposalId,
+    });
+    assert.equal(approved.isError, false);
+
+    const taskId = (proposal.preview as { _id: string })._id;
+    const fetched = await mcpCallTool(app, secret, sessionId, 'get_task', { taskId });
+    assert.equal(fetched.isError, false);
+    assert.match(fetched.text, /HTTP staged task/);
+  });
+});
+
+async function createMcpContextWithSecret() {
+  const { ctx, secret } = await createMcpContext();
+  return { ctx, secret };
+}

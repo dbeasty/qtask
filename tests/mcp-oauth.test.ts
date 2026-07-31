@@ -5,6 +5,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import type { Express } from 'express';
+import { registerUser } from './helpers/mcp.js';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-mcp-jwt-secret';
@@ -59,20 +60,6 @@ after(async () => {
   await mongoose.disconnect();
   await mongo.stop();
 });
-
-async function registerUser(email: string) {
-  const { UserModel } = await import('../src/models/index.js');
-  const user = await UserModel.create({
-    email,
-    passwordHash: 'unused',
-    emailVerified: true,
-  });
-  const { signToken } = await import('../src/auth/jwt.js');
-  return {
-    userId: String(user._id),
-    jwt: signToken({ sub: String(user._id), email }),
-  };
-}
 
 describe('MCP OAuth metadata', () => {
   it('serves authorization server metadata', async () => {

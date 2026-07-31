@@ -26,6 +26,13 @@ function err(text: string): ToolResult {
   return { success: false, text };
 }
 
+function requireKeyId(ctx: McpServerContext): string | ToolResult {
+  if (!ctx.keyId) {
+    return err('MCP key id is required for this operation');
+  }
+  return ctx.keyId;
+}
+
 function readOnlyBlocked(name: string): ToolResult | null {
   if (!isReadOnlyMode()) return null;
   if (MCP_READ_TOOLS.has(name)) return null;
@@ -63,8 +70,10 @@ export async function executeMcpTool(
   }
 
   if (name === 'list_pending_proposals') {
+    const keyId = requireKeyId(ctx);
+    if (typeof keyId !== 'string') return keyId;
     try {
-      const pending = await mcpSessionService.getPendingProposals(ctx.userId, ctx.sessionId);
+      const pending = await mcpSessionService.getPendingProposals(ctx.userId, keyId);
       return ok(JSON.stringify({ proposals: pending }, null, 2));
     } catch (error) {
       return err(error instanceof Error ? error.message : 'Could not list proposals');
@@ -72,10 +81,17 @@ export async function executeMcpTool(
   }
 
   if (name === 'approve_proposal') {
+    const keyId = requireKeyId(ctx);
+    if (typeof keyId !== 'string') return keyId;
     const proposalId = String(input.proposalId ?? '');
     if (!proposalId) return err('proposalId is required');
     try {
-      const text = await mcpSessionService.approveProposal(ctx.userId, ctx.sessionId, proposalId);
+      const text = await mcpSessionService.approveProposal(
+        ctx.userId,
+        keyId,
+        proposalId,
+        ctx.sessionId
+      );
       return ok(text);
     } catch (error) {
       return err(error instanceof Error ? error.message : 'Could not approve proposal');
@@ -83,10 +99,17 @@ export async function executeMcpTool(
   }
 
   if (name === 'reject_proposal') {
+    const keyId = requireKeyId(ctx);
+    if (typeof keyId !== 'string') return keyId;
     const proposalId = String(input.proposalId ?? '');
     if (!proposalId) return err('proposalId is required');
     try {
-      const text = await mcpSessionService.rejectProposal(ctx.userId, ctx.sessionId, proposalId);
+      const text = await mcpSessionService.rejectProposal(
+        ctx.userId,
+        keyId,
+        proposalId,
+        ctx.sessionId
+      );
       return ok(text);
     } catch (error) {
       return err(error instanceof Error ? error.message : 'Could not reject proposal');
@@ -133,12 +156,14 @@ export const mcpInternalToolDefinitions = [
   },
   {
     name: 'list_pending_proposals',
-    description: 'List staged write proposals awaiting user confirmation in the LLM chat.',
+    description:
+      'List all staged write proposals for this MCP key awaiting user confirmation (across reconnects).',
     zodShape: {},
   },
   {
     name: 'approve_proposal',
-    description: 'Commit a staged proposal after the user confirms in chat.',
+    description:
+      'Commit a staged proposal after the user confirms in chat. proposalId works even if the HTTP session changed since staging.',
     zodShape: {
       proposalId: z.string().min(1),
     },

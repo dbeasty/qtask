@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { Resend } from 'resend';
-import { config } from '../config/index.js';
+import { config, resolveMailProvider } from '../config/index.js';
 import { GITHUB_REPO_URL } from '../constants/brand.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -65,6 +65,12 @@ function getResendClient(): Resend | null {
   return resendClient;
 }
 
+export function _resetEmailForTests(): void {
+  emailReady = false;
+  transporter = null;
+  resendClient = null;
+}
+
 export async function initEmail(): Promise<void> {
   if (process.env.REGISTRATION_ENABLED === 'false') {
     logger.warn('REGISTRATION_ENABLED=false; new account creation is disabled');
@@ -74,13 +80,18 @@ export async function initEmail(): Promise<void> {
     logger.warn('Both MAIL_RESEND and MAIL_SMTP are true; using Resend');
   }
 
-  if (config.nodeEnv === 'test' || config.nodeEnv === 'development') {
+  const nodeEnv = process.env.NODE_ENV ?? config.nodeEnv;
+  if (nodeEnv === 'test' || nodeEnv === 'development') {
     emailReady = true;
     return;
   }
 
-  if (config.mail.provider === 'resend') {
-    if (!config.mail.resendApiKey) {
+  const provider = resolveMailProvider();
+  const resendApiKey = process.env.RESEND_API_KEY || config.mail.resendApiKey;
+  const smtpHost = process.env.SMTP_HOST || config.smtp.host;
+
+  if (provider === 'resend') {
+    if (!resendApiKey) {
       emailReady = false;
       logger.warn('MAIL_RESEND is set but RESEND_API_KEY is missing; registration and password-reset emails are disabled');
       return;
@@ -91,8 +102,8 @@ export async function initEmail(): Promise<void> {
     return;
   }
 
-  if (config.mail.provider === 'smtp') {
-    if (!config.smtp.host) {
+  if (provider === 'smtp') {
+    if (!smtpHost) {
       emailReady = false;
       logger.warn('MAIL_SMTP is set but SMTP_HOST is missing; registration and password-reset emails are disabled');
       return;
@@ -170,12 +181,13 @@ async function sendEmail(to: string, subject: string, text: string): Promise<voi
   }
 
   try {
-    if (config.mail.provider === 'resend') {
+    const provider = resolveMailProvider();
+    if (provider === 'resend') {
       await sendViaResend(to, subject, text);
       return;
     }
 
-    if (config.mail.provider === 'smtp') {
+    if (provider === 'smtp') {
       await sendViaSmtp(to, subject, text);
       return;
     }
