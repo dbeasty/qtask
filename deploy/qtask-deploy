@@ -532,7 +532,8 @@ cmd_prepare() {
   (cd "${release_dir}" && npm ci --omit=dev)
 
   ln -sfn "${release_dir}" "${CANDIDATE_LINK}"
-  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate enable --now
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate enable
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate restart
 
   for _ in $(seq 1 30); do
     if curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" >/dev/null 2>&1; then
@@ -543,26 +544,33 @@ cmd_prepare() {
   curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" >/dev/null 2>&1 \
     || die "candidate API not healthy on port ${CAND_API_PORT} — check: systemctl status qtask@candidate"
 
-  local live_ver phase py_read_only
+  local live_ver phase
   live_ver="$(read_version_from_dir "${LIVE_LINK}")"
   phase="preparing"
-  py_read_only="False"
   if [[ "${major}" == true ]]; then
     phase="major-deploy"
-    py_read_only="True"
   fi
-  json_write "${STATE_FILE}" "$(python3 - <<PY
-import json
+  json_write "${STATE_FILE}" "$(python3 - \
+    "${phase}" "${tier}" "${live_ver}" "${version}" \
+    "${LIVE_API_PORT}" "${LIVE_ADMIN_PORT}" \
+    "${CAND_API_PORT}" "${CAND_ADMIN_PORT}" \
+    "${db_mode}" "${major}" "${backup_path}" <<'PY'
+import json, sys
+(
+  phase, tier, live_ver, version,
+  live_api, live_admin, cand_api, cand_admin,
+  db_mode, major, backup,
+) = sys.argv[1:]
 print(json.dumps({
-  "phase": "${phase}",
-  "tier": "${tier}",
-  "liveRelease": "${live_ver}",
-  "candidateRelease": "${version}",
-  "livePorts": {"api": ${LIVE_API_PORT}, "admin": ${LIVE_ADMIN_PORT}},
-  "candidatePorts": {"api": ${CAND_API_PORT}, "admin": ${CAND_ADMIN_PORT}},
-  "dbMode": "${db_mode}",
-  "readOnlyLive": ${py_read_only},
-  "preReleaseBackup": "${backup_path}",
+  "phase": phase,
+  "tier": tier,
+  "liveRelease": live_ver,
+  "candidateRelease": version,
+  "livePorts": {"api": int(live_api), "admin": int(live_admin)},
+  "candidatePorts": {"api": int(cand_api), "admin": int(cand_admin)},
+  "dbMode": db_mode,
+  "readOnlyLive": major == "true",
+  "preReleaseBackup": backup,
 }))
 PY
 )"
@@ -578,7 +586,8 @@ PY
 cmd_start_candidate() {
   ensure_layout
   [[ -L "${CANDIDATE_LINK}" ]] || die "no candidate — run prepare first"
-  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate enable --now
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate enable
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate restart
   for _ in $(seq 1 30); do
     if curl -sf "http://127.0.0.1:${CAND_API_PORT}/health" >/dev/null 2>&1; then
       echo "Candidate API healthy on port ${CAND_API_PORT}"
@@ -618,8 +627,8 @@ cmd_promote() {
   fi
 
   echo "==> Promoting candidate to live"
-  systemctl_stack live stop
-  systemctl_stack candidate stop
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack live stop
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate stop
 
   if [[ "${promote_db}" == true || "${tier}" == "major" ]]; then
     mongo_promote_candidate_db "$(live_env)"
@@ -631,7 +640,16 @@ cmd_promote() {
   prepare_live_env_ports "$(live_env)"
   write_nginx_upstream "${LIVE_API_PORT}"
 
-  systemctl_stack live start
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack live restart
+
+  for _ in $(seq 1 30); do
+    if curl -sf "http://127.0.0.1:${LIVE_API_PORT}/health" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+  curl -sf "http://127.0.0.1:${LIVE_API_PORT}/health" >/dev/null 2>&1 \
+    || die "live API not healthy on port ${LIVE_API_PORT} after promote — check: systemctl status qtask@live"
 
   local prev_ver
   prev_ver="$(basename "${old_live}")"
@@ -674,8 +692,8 @@ cmd_rollback() {
   local target="${RELEASES_DIR}/${version}"
   [[ -d "${target}" ]] || die "release not found: ${version}"
 
-  systemctl_stack live stop
-  [[ -L "${CANDIDATE_LINK}" ]] && systemctl_stack candidate stop && rm -f "${CANDIDATE_LINK}"
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack live stop
+  [[ -L "${CANDIDATE_LINK}" ]] && SYSTEMCTL_STACK_STRICT=true systemctl_stack candidate stop && rm -f "${CANDIDATE_LINK}"
 
   ln -sfn "${target}" "${LIVE_LINK}"
   prepare_live_env_ports "$(live_env)"
@@ -685,7 +703,7 @@ cmd_rollback() {
     mongo_backup_restore "${restore_db}" "qtask" "$(live_env)" "true"
   fi
 
-  systemctl_stack live start
+  SYSTEMCTL_STACK_STRICT=true systemctl_stack live restart
   json_write "${STATE_FILE}" "{\"phase\":\"normal\",\"tier\":\"minor\",\"liveRelease\":\"${version}\",\"dbMode\":\"shared\",\"readOnlyLive\":false}"
   echo "Rollback complete: ${version}"
 }

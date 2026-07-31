@@ -34,8 +34,16 @@ fi
 
 ssh -o BatchMode=yes "${APP_SSH}" "set -euo pipefail
   TAR=\"\${HOME}/${REMOTE_TAR}\"
-  DEPLOY=\"/opt/qtask/live/deploy/qtask-deploy\"
-  if [[ -x \"\${DEPLOY}\" ]]; then
+  DEPLOY=\"\"
+  EXTRACT_DIR=\"\$(mktemp -d)\"
+  trap 'rm -rf \"\${EXTRACT_DIR}\"' EXIT
+  tar xzf \"\${TAR}\" -C \"\${EXTRACT_DIR}\" qtask-${VERSION}/deploy/ 2>/dev/null || true
+  if [[ -x \"\${EXTRACT_DIR}/qtask-${VERSION}/deploy/qtask-deploy\" ]]; then
+    DEPLOY=\"\${EXTRACT_DIR}/qtask-${VERSION}/deploy/qtask-deploy\"
+  elif [[ -x /opt/qtask/live/deploy/qtask-deploy ]]; then
+    DEPLOY=\"/opt/qtask/live/deploy/qtask-deploy\"
+  fi
+  if [[ -n \"\${DEPLOY}\" ]]; then
     \"\${DEPLOY}\" prepare ${MAJOR_FLAG} \"\${TAR}\"
     echo ''
     echo 'Candidate is ready. On the server:'

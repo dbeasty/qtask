@@ -25,6 +25,19 @@ head -c 80 /tmp/qtask-smoke-index.html | grep -qi '<!doctype html\|<html' || fai
 pass "web UI"
 
 echo ""
+echo "2b. OAuth consent page (SPA, not API JSON)"
+status="$(curl -sS -o /tmp/qtask-smoke-consent.html -w "%{http_code}" "${BASE_URL}/oauth/consent?state=smoke")"
+if [[ "${status}" != "200" ]]; then
+  preview="$(tr -d '\n' < /tmp/qtask-smoke-consent.html | head -c 120)"
+  fail "GET /oauth/consent returned ${status} (expected 200 HTML): ${preview}"
+fi
+if ! head -c 80 /tmp/qtask-smoke-consent.html | grep -qi '<!doctype html\|<html'; then
+  preview="$(tr -d '\n' < /tmp/qtask-smoke-consent.html | head -c 120)"
+  fail "GET /oauth/consent did not return HTML: ${preview}"
+fi
+pass "oauth consent page"
+
+echo ""
 echo "3. Auth config"
 auth_config="$(curl -fsS "${BASE_URL}/api/auth/config")"
 echo "   ${auth_config}"

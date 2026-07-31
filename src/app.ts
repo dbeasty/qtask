@@ -16,7 +16,7 @@ import { feedbackRouter } from './routes/feedback.js';
 import { mcpKeysRouter } from './routes/mcpKeys.js';
 import { mcpOAuthClientsRouter } from './routes/mcpOAuthClients.js';
 import { mcpRouter } from './routes/mcp.js';
-import { oauthRouter } from './routes/oauth.js';
+import { oauthConsentRouter, oauthRouter } from './routes/oauth.js';
 import { mountWellKnownRoutes } from './routes/wellKnown.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
 import { readOnlyMiddleware, getDeploymentHealthPayload } from './middleware/readOnly.js';
@@ -133,6 +133,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
 
   mountWellKnownRoutes(app);
 
+  // /oauth/consent is a public SPA route (client/dist); consent API lives at /api/oauth/consent.
   app.use('/oauth', authLimiter, oauthRouter);
 
   app.use('/api/auth', authLimiter, authRouter);
@@ -146,6 +147,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   app.use('/api/feedback', requireAuth, feedbackRouter);
   app.use('/api/mcp-keys', requireAuth, mcpKeysRouter);
   app.use('/api/mcp-oauth-clients', requireAuth, mcpOAuthClientsRouter);
+  app.use('/api/oauth', authLimiter, requireAuth, oauthConsentRouter);
   app.use('/api/mcp', mcpRouter);
   app.use('/api/search', requireAuth, searchRouter);
   app.use('/api', requireAuth, agentRouter);

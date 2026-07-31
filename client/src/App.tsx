@@ -265,7 +265,10 @@ export function App() {
 
   useEffect(() => {
     if (!user) return;
-    if (isAuthPath(getAuthPathname())) {
+    const pathname = getAuthPathname();
+    // OAuth consent must stay on this page so the user can approve and return to the MCP client.
+    if (pathname === '/oauth/consent') return;
+    if (isAuthPath(pathname)) {
       window.history.replaceState(null, '', '/');
     }
   }, [user]);

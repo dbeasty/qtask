@@ -148,14 +148,14 @@ describe('MCP OAuth authorization code flow', () => {
     assert.ok(state);
 
     const consentDetails = await request(app)
-      .get('/oauth/consent')
+      .get('/api/oauth/consent')
       .query({ state })
       .set('Authorization', `Bearer ${jwt}`)
       .expect(200);
     assert.equal(consentDetails.body.consent.clientName, 'Test MCP Client');
 
     const approved = await request(app)
-      .post('/oauth/consent')
+      .post('/api/oauth/consent')
       .set('Authorization', `Bearer ${jwt}`)
       .send({ state, action: 'approve' })
       .expect(200);
@@ -196,6 +196,12 @@ describe('MCP OAuth authorization code flow', () => {
       });
 
     assert.notEqual(mcpRes.status, 401);
+  });
+
+  it('does not expose authenticated consent API at /oauth/consent', async () => {
+    const res = await request(app).get('/oauth/consent').query({ state: 'test-state' });
+    assert.notEqual(res.status, 401);
+    assert.notEqual(res.body?.error, 'Authentication required');
   });
 });
 

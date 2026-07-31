@@ -2,13 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { config } from '../config/index.js';
 import { getUserId } from '../middleware/index.js';
-import { requireAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { mcpOAuthClientService } from '../services/mcpOAuthClientService.js';
 import { mcpOAuthService } from '../services/mcpOAuthService.js';
 import { HttpError } from '../utils/httpError.js';
 
 export const oauthRouter = Router();
+export const oauthConsentRouter = Router();
 
 function parseTokenBody(req: { body: unknown; headers: { authorization?: string } }) {
   const body =
@@ -87,7 +87,7 @@ const consentActionSchema = z.object({
   action: z.enum(['approve', 'deny']),
 });
 
-oauthRouter.get('/consent', requireAuth, async (req, res, next) => {
+oauthConsentRouter.get('/consent', async (req, res, next) => {
   try {
     const state = typeof req.query.state === 'string' ? req.query.state : '';
     if (!state) {
@@ -105,7 +105,7 @@ oauthRouter.get('/consent', requireAuth, async (req, res, next) => {
   }
 });
 
-oauthRouter.post('/consent', requireAuth, validateBody(consentActionSchema), async (req, res, next) => {
+oauthConsentRouter.post('/consent', validateBody(consentActionSchema), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const redirectUrl =

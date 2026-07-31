@@ -790,21 +790,21 @@ export async function revokeMcpOAuthClient(clientId: string): Promise<{ client: 
 export async function fetchOAuthConsent(
   state: string
 ): Promise<{ consent: McpOAuthConsentDetails }> {
-  return request(`/oauth/consent?state=${encodeURIComponent(state)}`);
+  return request(`/api/oauth/consent?state=${encodeURIComponent(state)}`);
 }
 
 export async function submitOAuthConsent(
   state: string,
   action: 'approve'
 ): Promise<{ redirectUrl: string }> {
-  return request('/oauth/consent', {
+  return request('/api/oauth/consent', {
     method: 'POST',
     body: JSON.stringify({ state, action }),
   });
 }
 
 export async function denyOAuthConsent(state: string): Promise<{ redirectUrl: string }> {
-  return request('/oauth/consent', {
+  return request('/api/oauth/consent', {
     method: 'POST',
     body: JSON.stringify({ state, action: 'deny' }),
   });
