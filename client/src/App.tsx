@@ -666,6 +666,8 @@ export function App() {
               setPendingCreateForProjectId(projectId);
               setAppView('tasks');
             }}
+            onTasksChanged={handleTasksChanged}
+            onProjectsChanged={handleProjectsChanged}
             externalRefreshKey={projectsVersion}
             restoredListExpanded={sessionRestore?.projects?.listExpanded}
             onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}

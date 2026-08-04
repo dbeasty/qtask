@@ -3308,6 +3308,23 @@ button.expense-tree-meta:hover {
   color: var(--color-text-muted);
 }
 
+.task-form-readonly-field {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.task-form-readonly-label {
+  color: var(--color-text-muted);
+}
+
+.task-form-readonly-value {
+  color: var(--color-text);
+}
+
 .task-form-field input,
 .task-form-field textarea,
 .task-form-field select {

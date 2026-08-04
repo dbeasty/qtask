@@ -3,15 +3,18 @@ import type { Project, Subtask, Task, TaskStatus } from '../types';
 import { taskBelongsToProject } from '../utils/project';
 import { buildProjectTree, type ProjectTreeNode } from '../utils/projectTree';
 import { buildSubtaskPath, nodeKey } from '../utils/taskTree';
-import { TaskProgressIndicator } from './TaskProgressIndicator';
+import { TaskDoneToggle } from './TaskDoneToggle';
 
 interface ProjectTasksListProps {
   projectId: string;
   projects: Project[];
   tasks: Task[];
   canEdit: boolean;
+  canToggleDone: boolean;
+  saving: boolean;
   onOpenTask: (taskId: string, path: string[], projectId: string) => void;
   onAddTask: (projectId: string) => void;
+  onToggleDone: (taskId: string, path: string[], done: boolean) => void;
 }
 
 function findProjectNode(nodes: ProjectTreeNode[], projectId: string): ProjectTreeNode | null {
@@ -79,14 +82,24 @@ function collectProjectTaskExpandKeys(
 function ProjectTaskProgress({
   status,
   percentComplete,
+  saving,
+  canToggle,
+  onToggle,
 }: {
   status: TaskStatus;
   percentComplete: number;
+  saving: boolean;
+  canToggle: boolean;
+  onToggle: (done: boolean) => void;
 }) {
   return (
-    <span className="task-done-toggle task-done-toggle--static" aria-hidden="true">
-      <TaskProgressIndicator status={status} percentComplete={percentComplete} />
-    </span>
+    <TaskDoneToggle
+      status={status}
+      percentComplete={percentComplete}
+      saving={saving}
+      canToggle={canToggle}
+      onToggle={onToggle}
+    />
   );
 }
 
@@ -97,6 +110,9 @@ interface ProjectTasksContentProps {
   onOpenTask: (taskId: string, path: string[], projectId: string) => void;
   expanded: Set<string>;
   onToggleExpand: (key: string) => void;
+  canToggleDone: boolean;
+  saving: boolean;
+  onToggleDone: (taskId: string, path: string[], done: boolean) => void;
 }
 
 function SubtaskRows({
@@ -107,6 +123,9 @@ function SubtaskRows({
   onOpenTask,
   expanded,
   onToggleExpand,
+  canToggleDone,
+  saving,
+  onToggleDone,
 }: {
   taskId: string;
   projectId: string;
@@ -115,6 +134,9 @@ function SubtaskRows({
   onOpenTask: (taskId: string, path: string[], projectId: string) => void;
   expanded: Set<string>;
   onToggleExpand: (key: string) => void;
+  canToggleDone: boolean;
+  saving: boolean;
+  onToggleDone: (taskId: string, path: string[], done: boolean) => void;
 }) {
   return (
     <>
@@ -143,7 +165,13 @@ function SubtaskRows({
               ) : (
                 <span className="task-tree-chevron-spacer" aria-hidden="true" />
               )}
-              <ProjectTaskProgress status={subtask.status} percentComplete={subtask.percentComplete} />
+              <ProjectTaskProgress
+                status={subtask.status}
+                percentComplete={subtask.percentComplete}
+                saving={saving}
+                canToggle={canToggleDone}
+                onToggle={(done) => onToggleDone(taskId, path, done)}
+              />
               <button
                 type="button"
                 className="project-task-title"
@@ -162,6 +190,9 @@ function SubtaskRows({
                   onOpenTask={onOpenTask}
                   expanded={expanded}
                   onToggleExpand={onToggleExpand}
+                  canToggleDone={canToggleDone}
+                  saving={saving}
+                  onToggleDone={onToggleDone}
                 />
               </ul>
             )}
@@ -179,6 +210,9 @@ function ProjectTasksContent({
   onOpenTask,
   expanded,
   onToggleExpand,
+  canToggleDone,
+  saving,
+  onToggleDone,
 }: ProjectTasksContentProps) {
   const directTasks = projectTasksForProject(tasks, projectId);
   const childProjects = projectNode?.children ?? [];
@@ -209,7 +243,13 @@ function ProjectTasksContent({
               ) : (
                 <span className="task-tree-chevron-spacer" aria-hidden="true" />
               )}
-              <ProjectTaskProgress status={task.status} percentComplete={task.percentComplete} />
+              <ProjectTaskProgress
+                status={task.status}
+                percentComplete={task.percentComplete}
+                saving={saving}
+                canToggle={canToggleDone}
+                onToggle={(done) => onToggleDone(task._id, [], done)}
+              />
               <button
                 type="button"
                 className="project-task-title"
@@ -228,6 +268,9 @@ function ProjectTasksContent({
                   onOpenTask={onOpenTask}
                   expanded={expanded}
                   onToggleExpand={onToggleExpand}
+                  canToggleDone={canToggleDone}
+                  saving={saving}
+                  onToggleDone={onToggleDone}
                 />
               </ul>
             )}
@@ -269,6 +312,9 @@ function ProjectTasksContent({
                   onOpenTask={onOpenTask}
                   expanded={expanded}
                   onToggleExpand={onToggleExpand}
+                  canToggleDone={canToggleDone}
+                  saving={saving}
+                  onToggleDone={onToggleDone}
                 />
               </ul>
             )}
@@ -284,8 +330,11 @@ export function ProjectTasksList({
   projects,
   tasks,
   canEdit,
+  canToggleDone,
+  saving,
   onOpenTask,
   onAddTask,
+  onToggleDone,
 }: ProjectTasksListProps) {
   const [sectionOpen, setSectionOpen] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -360,6 +409,9 @@ export function ProjectTasksList({
               onOpenTask={onOpenTask}
               expanded={expanded}
               onToggleExpand={toggleExpand}
+              canToggleDone={canToggleDone}
+              saving={saving}
+              onToggleDone={onToggleDone}
             />
           </ul>
         </div>

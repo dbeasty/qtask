@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   approveProposal,
   deleteConversation,
@@ -17,7 +17,7 @@ import { AgentEntityLink } from '../components/AgentEntityLink';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ConversationMenu } from '../components/ConversationMenu';
 import { CurrentProjectBar } from '../components/CurrentProjectBar';
-import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, UiMessage, UiProposal } from '../types';
+import type { AgentStreamEvent, ConversationSummary, Project, StoredMessage, TaskStatus, UiMessage, UiProposal } from '../types';
 import { displayMessageContent, proposalDisplayLabel, type DisplayMessageContentOptions } from '../utils/agentContent';
 import {
   aggregateDedupedEntityLinks,
@@ -43,6 +43,38 @@ import {
   type AgentCommandPaletteItem,
 } from '../utils/agentCommandPalette';
 import { findProjectByName, parseActiveProjectSwitchCommand, projectForSwitchPrompt, projectNameFromProposal, shouldOfferSwitchAfterCreateProject, type ProjectSwitchTarget } from '../utils/agentProjectSwitch';
+import { toggleTaskDone } from '../utils/taskDoneToggle';
+
+function applyTaskStatusToMessages(
+  messages: UiMessage[],
+  taskId: string,
+  status: TaskStatus,
+  percentComplete: number
+): UiMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    toolCalls: message.toolCalls?.map((call) => ({
+      ...call,
+      entityLinks: call.entityLinks?.map((link) =>
+        link.kind === 'task' && link.id === taskId
+          ? { ...link, status, percentComplete }
+          : link
+      ),
+    })),
+    proposals: message.proposals?.map((proposal) => {
+      const proposalTaskId = proposal.arguments.taskId;
+      if (typeof proposalTaskId !== 'string' || proposalTaskId !== taskId) return proposal;
+      return {
+        ...proposal,
+        arguments: {
+          ...proposal.arguments,
+          status,
+          percentComplete,
+        },
+      };
+    }),
+  }));
+}
 
 interface AgentPageProps {
   onTasksChanged: () => void;
@@ -487,6 +519,7 @@ export function AgentPage({
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [expandedProposalKeys, setExpandedProposalKeys] = useState<Set<string>>(() => new Set());
+  const [togglingTaskId, setTogglingTaskId] = useState<string | null>(null);
   const [expandedAssistantKeys, setExpandedAssistantKeys] = useState<Set<string>>(() => new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1222,6 +1255,47 @@ export function AgentPage({
     () => projects.find((project) => project._id === activeProjectId) ?? null,
     [projects, activeProjectId]
   );
+
+  const canToggleTaskLink = useCallback(
+    (projectId: string | undefined) => {
+      if (editsDisabled || !projectId) return false;
+      const project = projects.find((item) => item._id === projectId);
+      return Boolean(project?.canEdit || project?.canUpdateStatus);
+    },
+    [editsDisabled, projects]
+  );
+
+  const canEditTaskLink = useCallback(
+    (projectId: string | undefined) => {
+      if (editsDisabled || !projectId) return false;
+      const project = projects.find((item) => item._id === projectId);
+      return Boolean(project?.canEdit);
+    },
+    [editsDisabled, projects]
+  );
+
+  const handleToggleTaskLinkDone = async (
+    taskId: string,
+    projectId: string | undefined,
+    done: boolean
+  ) => {
+    setTogglingTaskId(taskId);
+    setError(null);
+    try {
+      const canEdit = canEditTaskLink(projectId);
+      const task = await toggleTaskDone(taskId, [], done, canEdit);
+      setMessages((current) =>
+        applyTaskStatusToMessages(current, taskId, task.status, task.percentComplete)
+      );
+      onTasksChanged();
+      onProjectsChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update status');
+    } finally {
+      setTogglingTaskId(null);
+    }
+  };
+
   const conversationActionsBusy =
     sending ||
     approvingId !== null ||
@@ -1387,6 +1461,9 @@ export function AgentPage({
                       <AgentEntityLink
                         key={`${link.kind}-${link.id}`}
                         link={link}
+                        canToggleDone={canToggleTaskLink(link.projectId)}
+                        saving={togglingTaskId === link.id}
+                        onToggleDone={handleToggleTaskLinkDone}
                         onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
                         onOpenProject={(projectId) => onOpenProject?.(projectId)}
                       />
@@ -1401,6 +1478,9 @@ export function AgentPage({
                     <AgentEntityLink
                       key={`approved-${link.kind}-${link.id}`}
                       link={link}
+                      canToggleDone={canToggleTaskLink(link.projectId)}
+                      saving={togglingTaskId === link.id}
+                      onToggleDone={handleToggleTaskLinkDone}
                       onOpenTask={(taskId, projectId) => onOpenTask?.(taskId, projectId)}
                       onOpenProject={(projectId) => onOpenProject?.(projectId)}
                     />

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent, type RefObject } from 'react';
+import { TaskDoneToggle } from './TaskDoneToggle';
 import { TaskMoveMenu } from './TaskMoveMenu';
-import { TaskProgressIndicator } from './TaskProgressIndicator';
-import type { Subtask, Task, TaskStatus } from '../types';
+import type { Subtask, Task } from '../types';
 import {
   ancestorKeys,
   buildSubtaskPath,
@@ -69,43 +69,6 @@ function isSelectionActive(selection: Selection | null, taskId: string, path: st
 
 function stopDragPropagation(event: DragEvent) {
   event.stopPropagation();
-}
-
-interface DoneToggleProps {
-  status: TaskStatus;
-  percentComplete: number;
-  saving: boolean;
-  canToggle: boolean;
-  onToggle: (done: boolean) => void;
-}
-
-function DoneToggle({ status, percentComplete, saving, canToggle, onToggle }: DoneToggleProps) {
-  const indicator = <TaskProgressIndicator status={status} percentComplete={percentComplete} />;
-
-  if (!canToggle) {
-    return <span className="task-done-toggle task-done-toggle--static">{indicator}</span>;
-  }
-
-  const isDone = status === 'done';
-  const label = isDone ? 'Mark as not done' : 'Mark as done';
-
-  return (
-    <button
-      type="button"
-      className={`task-done-toggle${isDone ? ' task-done-toggle--done' : ''}`}
-      title={label}
-      aria-label={label}
-      disabled={saving}
-      draggable={false}
-      onDragStart={stopDragPropagation}
-      onClick={(event) => {
-        event.stopPropagation();
-        onToggle(!isDone);
-      }}
-    >
-      {indicator}
-    </button>
-  );
 }
 
 interface UseTreeDragDropOptions {
@@ -311,7 +274,7 @@ function SubtaskTreeNode({
           ) : (
             <span className="task-tree-chevron-spacer" />
           )}
-          <DoneToggle
+          <TaskDoneToggle
             status={subtask.status}
             percentComplete={subtask.percentComplete}
             saving={saving}
@@ -515,7 +478,7 @@ export function TaskHierarchyTree({
                 ) : (
                   <span className="task-tree-chevron-spacer" />
                 )}
-                <DoneToggle
+                <TaskDoneToggle
                   status={task.status}
                   percentComplete={task.percentComplete}
                   saving={saving}

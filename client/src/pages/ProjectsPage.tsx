@@ -30,12 +30,15 @@ import { getDefaultProject } from '../utils/project';
 import { buildProjectTree } from '../utils/projectTree';
 import { shouldExpandProjectTrackingOnLoad } from '../utils/trackingExpand';
 import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
+import { toggleTaskDone } from '../utils/taskDoneToggle';
 
 interface ProjectsPageProps {
   activeProjectId: string | null;
   onActiveProjectChange: (projectId: string | null) => void;
   onOpenTask?: (taskId: string, path: string[], projectId: string) => void;
   onAddTask?: (projectId: string) => void;
+  onTasksChanged?: () => void;
+  onProjectsChanged?: () => void;
   externalRefreshKey?: number;
   restoredListExpanded?: boolean;
   onSessionRestoreConsumed?: () => void;
@@ -60,6 +63,8 @@ export function ProjectsPage({
   onActiveProjectChange,
   onOpenTask,
   onAddTask,
+  onTasksChanged,
+  onProjectsChanged,
   externalRefreshKey = 0,
   restoredListExpanded,
   onSessionRestoreConsumed,
@@ -168,6 +173,7 @@ export function ProjectsPage({
   );
 
   const projectCanEdit = Boolean(activeProject?.canEdit) && !editsDisabled;
+  const projectCanUpdateStatus = Boolean(activeProject?.canUpdateStatus) && !editsDisabled;
   const projectCanManageStructure = Boolean(activeProject?.canManageStructure) && !editsDisabled;
 
   const pendingDeleteProject = useMemo(
@@ -219,6 +225,25 @@ export function ProjectsPage({
 
   const replaceProject = (project: Project) => {
     setProjects((current) => current.map((item) => (item._id === project._id ? project : item)));
+  };
+
+  const applyTaskUpdate = useCallback((updatedTask: Task) => {
+    setTasks((current) => current.map((task) => (task._id === updatedTask._id ? updatedTask : task)));
+  }, []);
+
+  const handleToggleDone = async (taskId: string, path: string[], done: boolean) => {
+    setSaving(true);
+    setActionError(null);
+    try {
+      const task = await toggleTaskDone(taskId, path, done, projectCanEdit);
+      applyTaskUpdate(task);
+      onTasksChanged?.();
+      onProjectsChanged?.();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update status');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSelect = (projectId: string) => {
@@ -633,8 +658,11 @@ export function ProjectsPage({
                       projects={projects}
                       tasks={tasks}
                       canEdit={projectCanEdit}
+                      canToggleDone={Boolean(projectCanEdit || projectCanUpdateStatus)}
+                      saving={saving}
                       onOpenTask={onOpenTask}
                       onAddTask={onAddTask}
+                      onToggleDone={handleToggleDone}
                     />
                   )}
 
@@ -645,21 +673,17 @@ export function ProjectsPage({
                     disabled={saving || !projectCanManageStructure}
                   />
 
-                  <div className="task-form-field">
-                    <span>Status</span>
-                    <input
-                      value={STATUS_LABELS[activeProject.status ?? 'todo']}
-                      disabled
-                      readOnly
-                    />
+                  <div className="task-form-readonly-field">
+                    <span className="task-form-readonly-label">Status</span>
+                    <span className="task-form-readonly-value">
+                      {STATUS_LABELS[activeProject.status ?? 'todo']}
+                    </span>
                   </div>
-                  <div className="task-form-field">
-                    <span>Progress</span>
-                    <input
-                      value={`${activeProject.percentComplete ?? 0}%`}
-                      disabled
-                      readOnly
-                    />
+                  <div className="task-form-readonly-field">
+                    <span className="task-form-readonly-label">Progress</span>
+                    <span className="task-form-readonly-value">
+                      {activeProject.percentComplete ?? 0}%
+                    </span>
                   </div>
                   {activeProject.parentId && (
                     <div className="task-form-field">

@@ -37,7 +37,8 @@ import { TaskListPanel } from '../components/TaskListPanel';
 import { TaskActivitySection } from '../components/TaskActivitySection';
 import { TaskCommentsSection } from '../components/TaskCommentsSection';
 import { type Selection } from '../components/TaskHierarchyTree';
-import type { MaterialLine, Project, Subtask, Task, TaskStatus, UpdateTaskInput } from '../types';
+import type { MaterialLine, Project, Subtask, Task, UpdateTaskInput } from '../types';
+import { toggleTaskDone } from '../utils/taskDoneToggle';
 import { buildExpenseTree, computeTaskCostRollup } from '../utils/costRollup';
 import {
   getDefaultProject,
@@ -542,17 +543,7 @@ export function TasksPage({
     setSaving(true);
     setActionError(null);
     try {
-      const status: TaskStatus = done ? 'done' : 'todo';
-      // Un-checking also resets progress so the indicator doesn't stay at 100%.
-      // Executors may only send status; the server rejects other fields for them.
-      const patch =
-        !done && taskCanEdit
-          ? { status, percentComplete: 0, lastProgressField: 'percent' as const }
-          : { status };
-      const { task } =
-        path.length === 0
-          ? await updateTask(taskId, patch)
-          : await updateSubtask(taskId, path, patch);
+      const task = await toggleTaskDone(taskId, path, done, taskCanEdit);
       applyTaskUpdate(task);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to update status');
