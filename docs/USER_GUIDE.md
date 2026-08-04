@@ -113,7 +113,7 @@ Projects group related tasks. They can form a **tree**: a project may sit under 
 ### Nest and move
 
 - Create a child under any project you can edit.
-- Drag a project in the tree to reorder or reparent it, or use **Move** from the project menu.
+- Drag a project in the tree to reorder or reparent it, or select it and open the **⋮ Actions** menu to move, nest, or delete it.
 - You cannot move a project under one of its own descendants (that would create a cycle).
 
 ### Progress
@@ -189,12 +189,13 @@ Subtasks can nest further — a subtask can have its own subtasks. Parent progre
 ### Reorganize
 
 - **Drag** tasks or subtasks in the tree to reorder them.
-- Use the **Move** menu on an item to:
+- Select a task or subtask and open its **⋮ Actions** menu to:
   - Move up or down among siblings
   - Reparent a subtask under another task
   - **Promote** a subtask to a top-level task
   - Attach another task as a subtask
-- Delete via the Move menu or delete controls; you may choose to keep child subtasks when deleting.
+  - Mark done or manage project links (tasks)
+- Delete via the Actions menu or delete controls; you may choose to keep child subtasks when deleting.
 
 ### Work across projects
 
@@ -226,6 +227,8 @@ In the task detail panel, the **Steps** section is a simple checklist on the cur
 | Examples: “Buy screws”, “Call supplier” | Examples: “Install cabinets”, “Wire lighting” |
 
 Steps appear in search results alongside task titles and project names.
+
+Use the **⋮ Actions** menu on a step to reorder, duplicate, or delete checklist lines.
 
 ---
 

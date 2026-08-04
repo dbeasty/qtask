@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { TaskStep } from '../types';
+import { ActionMenuTrigger } from './ActionMenuTrigger';
 import { StepMoveMenu } from './StepMoveMenu';
 
 const OBJECT_ID_RE = /^[a-f0-9]{24}$/i;
@@ -181,17 +182,13 @@ export function TaskStepsEditor({ steps, onChange, onStepCommit, disabled = fals
                 />
               </div>
               <div className="task-tree-move-wrap">
-                <button
-                  type="button"
-                  className="task-tree-move-trigger"
+                <ActionMenuTrigger
                   ref={menuOpen ? moveTriggerRef : undefined}
-                  aria-label={`Step ${index + 1} actions`}
-                  aria-expanded={menuOpen}
+                  label={`Step ${index + 1} actions`}
+                  expanded={menuOpen}
                   disabled={disabled}
                   onClick={() => setOpenMenuIndex(menuOpen ? null : index)}
-                >
-                  ⋮
-                </button>
+                />
                 {menuOpen && (
                   <StepMoveMenu
                     anchorRef={moveTriggerRef}

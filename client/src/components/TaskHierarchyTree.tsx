@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent, type RefObject } from 'react';
+import { ActionMenuTrigger } from './ActionMenuTrigger';
 import { TaskDoneToggle } from './TaskDoneToggle';
 import { TaskMoveMenu } from './TaskMoveMenu';
 import type { Subtask, Task } from '../types';
@@ -295,18 +296,14 @@ function SubtaskTreeNode({
         </div>
         {isActive && selection?.kind === 'subtask' && (
           <div className="task-tree-move-wrap">
-            <button
-              type="button"
-              className="task-tree-move-trigger"
+            <ActionMenuTrigger
               ref={menuOpen ? moveTriggerRef : undefined}
-              aria-label="Move task"
-              aria-expanded={menuOpen}
+              label="Subtask actions"
+              expanded={menuOpen}
               draggable={false}
               onDragStart={stopDragPropagation}
               onClick={() => onToggleMoveMenu(menuOpen ? null : rowKey)}
-            >
-              ⋮
-            </button>
+            />
             {menuOpen && (
               <TaskMoveMenu
                 anchorRef={moveTriggerRef}
@@ -502,18 +499,14 @@ export function TaskHierarchyTree({
               </div>
               {isActive && selection?.kind === 'task' && (
                 <div className="task-tree-move-wrap">
-                  <button
-                    type="button"
-                    className="task-tree-move-trigger"
+                  <ActionMenuTrigger
                     ref={menuOpen ? moveTriggerRef : undefined}
-                    aria-label="Move task"
-                    aria-expanded={menuOpen}
+                    label="Task actions"
+                    expanded={menuOpen}
                     draggable={false}
                     onDragStart={stopDragPropagation}
                     onClick={() => setOpenMoveMenuKey(menuOpen ? null : rowKey)}
-                  >
-                    ⋮
-                  </button>
+                  />
                   {menuOpen && (
                     <TaskMoveMenu
                       anchorRef={moveTriggerRef}

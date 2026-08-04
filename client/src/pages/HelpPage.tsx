@@ -64,9 +64,10 @@ export function HelpPage({ onBack, onStartTour, onOpenFeedback, feedbackEnabled 
           <h3>Projects</h3>
           <p>
             Create a root project with <strong>+ Add project</strong> or a child with{' '}
-            <strong>+ Add sub project</strong>. Use <strong>Move</strong> or drag to reparent
-            (cycles are blocked). Deleting reparents sub-projects; tasks only in that project are
-            removed, while shared tasks stay and are unlinked.
+            <strong>+ Add sub project</strong>. Select a project, then open its{' '}
+            <strong>⋮ Actions</strong> menu to move, reorder, nest, or delete. You can also drag
+            projects in the tree (cycles are blocked). Deleting reparents sub-projects; tasks only
+            in that project are removed, while shared tasks stay and are unlinked.
           </p>
           <p>
             Leaf project progress averages linked tasks. Parent progress rolls up from sub-projects;
@@ -88,15 +89,17 @@ export function HelpPage({ onBack, onStartTour, onOpenFeedback, feedbackEnabled 
           <h3>Tasks and subtasks</h3>
           <p>
             Use <strong>+ Add task</strong> and <strong>+ Add subtask</strong>. Drag to reorder, or
-            use the Move menu to promote subtasks or attach tasks. A task can belong to multiple
-            projects — use the Projects dialog to move, link, unlink, or duplicate.
+            select an item and open its <strong>⋮ Actions</strong> menu to move, promote, attach, mark
+            done, or delete. A task can belong to multiple projects — use the Projects dialog to
+            move, link, unlink, or duplicate.
           </p>
         </section>
 
         <section className="help-section">
           <h3>Checklist steps</h3>
           <p>
-            Steps are checkbox lines in the task detail panel. Use steps for simple to-do lines; use
+            Steps are checkbox lines in the task detail panel. Use the <strong>⋮ Actions</strong>{' '}
+            menu on a step to reorder, duplicate, or delete it. Use steps for simple to-do lines; use
             subtasks when you need status, progress, or further nesting.
           </p>
         </section>

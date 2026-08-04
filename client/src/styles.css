@@ -2689,14 +2689,13 @@ button.task-done-toggle:not(.task-done-toggle--done):hover:not(:disabled)
 }
 
 .task-tree-move-trigger {
+  position: relative;
   border: none;
   background: transparent;
-  color: var(--color-text-muted-2);
-  width: 1.5rem;
-  height: 1.5rem;
+  color: var(--color-text-secondary);
+  width: 2rem;
+  height: 2rem;
   padding: 0;
-  font-size: 1rem;
-  font-weight: 700;
   line-height: 1;
   cursor: pointer;
   border-radius: 0.35rem;
@@ -2705,9 +2704,44 @@ button.task-done-toggle:not(.task-done-toggle--done):hover:not(:disabled)
   justify-content: center;
 }
 
-.task-tree-move-trigger:hover {
-  color: var(--color-text-secondary);
+.task-tree-move-trigger .action-menu-icon {
+  display: block;
+}
+
+.task-tree-move-trigger:hover,
+.task-tree-move-trigger[aria-expanded='true'] {
+  color: var(--color-text);
   background: var(--color-bg-hover);
+}
+
+.task-tree-move-trigger:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.task-tree-move-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.action-menu-tooltip {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.35rem;
+  background: var(--color-bg-hover);
+  border: 1px solid var(--color-border-strong);
+  box-shadow: 0 4px 12px var(--color-shadow);
+  color: var(--color-text);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1100;
+}
+
+.action-menu-tooltip--floating {
+  position: fixed;
+  transform: translateY(-50%);
 }
 
 .task-move-menu {

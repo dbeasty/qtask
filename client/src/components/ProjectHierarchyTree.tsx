@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type CSSProperties, type RefObject } from 'r
 import type { Project } from '../types';
 import type { ProjectTreeNode } from '../utils/projectTree';
 import { getProjectDescendantIds } from '../utils/projectTree';
+import { ActionMenuTrigger } from './ActionMenuTrigger';
 import { ProjectMoveMenu } from './ProjectMoveMenu';
 import { TaskProgressIndicator } from './TaskProgressIndicator';
 import { ProjectRoleIndicator, projectTreeRoleClass } from './ProjectRoleIndicator';
@@ -164,16 +165,12 @@ function ProjectTreeNodeView({
         </div>
         {isActive && canManageStructure && (
           <div className="task-tree-move-wrap">
-            <button
-              type="button"
-              className="task-tree-move-trigger"
+            <ActionMenuTrigger
               ref={menuOpen ? moveTriggerRef : undefined}
-              aria-label="Move project"
-              aria-expanded={menuOpen}
+              label="Project actions"
+              expanded={menuOpen}
               onClick={() => onToggleMoveMenu(menuOpen ? null : project._id)}
-            >
-              ⋮
-            </button>
+            />
             {menuOpen && (
               <ProjectMoveMenu
                 anchorRef={moveTriggerRef}

@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { useDismissibleMenu } from '../utils/dismissibleMenu';
 
 interface StepMoveMenuProps {
   anchorRef: RefObject<HTMLButtonElement | null>;
@@ -58,25 +59,7 @@ export function StepMoveMenu({
     setMenuStyle({ top, left, visibility: 'visible' });
   }, [anchorRef]);
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (menuRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
-      onClose();
-    };
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, [anchorRef, onClose]);
-
-  useEffect(() => {
-    const handleDismiss = () => onClose();
-    window.addEventListener('scroll', handleDismiss, true);
-    window.addEventListener('resize', handleDismiss);
-    return () => {
-      window.removeEventListener('scroll', handleDismiss, true);
-      window.removeEventListener('resize', handleDismiss);
-    };
-  }, [onClose]);
+  useDismissibleMenu(menuRef, anchorRef, onClose);
 
   const run = (action: () => void) => {
     action();

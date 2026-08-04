@@ -31,7 +31,7 @@ export const DEMO_STEPS: DemoStepDefinition[] = [
     view: 'projects',
     title: 'Create projects',
     description:
-      'Use + Add project for a root workspace, or + Add sub project under an existing one. Click a project in the tree to make it your active project.',
+      'Use + Add project for a root workspace, or + Add sub project under an existing one. Click a project in the tree to make it your active project. Select a project and open its ⋮ Actions menu to move, nest, or delete it.',
     side: 'right',
   },
   {
@@ -67,7 +67,7 @@ export const DEMO_STEPS: DemoStepDefinition[] = [
     view: 'tasks',
     title: 'Add tasks and subtasks',
     description:
-      'Click + Add task to create work in the active project. Select an item and use + Add subtask to break work down further.',
+      'Click + Add task to create work in the active project. Select an item and use + Add subtask to break work down further. Open the ⋮ Actions menu on a selected task or subtask to move, attach, mark done, or delete it.',
     side: 'right',
   },
   {
