@@ -30,7 +30,20 @@ interface TaskProgressIndicatorProps {
 const SIZE = 16;
 const RADIUS = 6;
 const CENTER = SIZE / 2;
-const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+
+function pieSlicePath(cx: number, cy: number, r: number, percent: number): string {
+  if (percent <= 0) return '';
+  const angle = (percent / 100) * 360;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const startAngle = -90;
+  const endAngle = startAngle + angle;
+  const x1 = cx + r * Math.cos(toRad(startAngle));
+  const y1 = cy + r * Math.sin(toRad(startAngle));
+  const x2 = cx + r * Math.cos(toRad(endAngle));
+  const y2 = cy + r * Math.sin(toRad(endAngle));
+  const largeArc = angle > 180 ? 1 : 0;
+  return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+}
 
 export function TaskProgressIndicator({ status, percentComplete }: TaskProgressIndicatorProps) {
   const percent = Math.max(0, Math.min(100, Math.round(percentComplete)));
@@ -76,24 +89,13 @@ export function TaskProgressIndicator({ status, percentComplete }: TaskProgressI
     );
   }
 
-  const dashOffset = CIRCUMFERENCE * (1 - percent / 100);
+  const fillPath = pieSlicePath(CENTER, CENTER, RADIUS, percent);
 
   return (
     <span className="task-progress-indicator task-progress-indicator--in-progress" aria-label={label} role="img">
       <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden="true">
-        <circle cx={CENTER} cy={CENTER} r={RADIUS} fill="none" stroke="#334155" strokeWidth="1.5" />
-        <circle
-          cx={CENTER}
-          cy={CENTER}
-          r={RADIUS}
-          fill="none"
-          stroke="#3b82f6"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeDasharray={CIRCUMFERENCE}
-          strokeDashoffset={dashOffset}
-          transform={`rotate(-90 ${CENTER} ${CENTER})`}
-        />
+        <circle cx={CENTER} cy={CENTER} r={RADIUS} fill="none" stroke="#64748b" strokeWidth="1.5" />
+        {fillPath && <path d={fillPath} fill="#3b82f6" />}
       </svg>
     </span>
   );

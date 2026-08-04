@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Project, Subtask, Task, TaskStatus } from '../types';
 import { taskBelongsToProject } from '../utils/project';
 import { buildProjectTree, type ProjectTreeNode } from '../utils/projectTree';
@@ -33,6 +33,47 @@ function sortTasks(items: Task[]): Task[] {
 
 function projectTasksForProject(tasks: Task[], projectId: string): Task[] {
   return sortTasks(tasks.filter((task) => taskBelongsToProject(task, projectId)));
+}
+
+function collectSubtaskExpandKeys(taskId: string, subtasks: Subtask[], parentPath: string[], keys: Set<string>) {
+  for (const subtask of subtasks) {
+    if (subtask.subtasks.length > 0) {
+      const path = buildSubtaskPath(parentPath, subtask._id);
+      keys.add(nodeKey(taskId, path));
+      collectSubtaskExpandKeys(taskId, subtask.subtasks, path, keys);
+    }
+  }
+}
+
+function collectProjectTaskExpandKeys(
+  projectId: string,
+  projectNode: ProjectTreeNode | null,
+  tasks: Task[]
+): Set<string> {
+  const keys = new Set<string>();
+  const directTasks = projectTasksForProject(tasks, projectId);
+
+  for (const task of directTasks) {
+    if (task.subtasks.length > 0) {
+      keys.add(nodeKey(task._id, []));
+      collectSubtaskExpandKeys(task._id, task.subtasks, [], keys);
+    }
+  }
+
+  for (const childNode of projectNode?.children ?? []) {
+    const childId = childNode.project._id;
+    const childDirectTasks = projectTasksForProject(tasks, childId);
+    const hasNestedProjects = childNode.children.length > 0;
+    const hasContent = childDirectTasks.length > 0 || hasNestedProjects;
+    if (hasContent) {
+      keys.add(`project:${childId}`);
+      for (const key of collectProjectTaskExpandKeys(childId, childNode, tasks)) {
+        keys.add(key);
+      }
+    }
+  }
+
+  return keys;
 }
 
 function ProjectTaskProgress({
@@ -246,13 +287,36 @@ export function ProjectTasksList({
   onOpenTask,
   onAddTask,
 }: ProjectTasksListProps) {
-  const [sectionOpen, setSectionOpen] = useState(false);
+  const [sectionOpen, setSectionOpen] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   const projectNode = useMemo(() => {
     const tree = buildProjectTree(projects);
     return findProjectNode(tree, projectId);
   }, [projects, projectId]);
+
+  const allExpandKeys = useMemo(
+    () => collectProjectTaskExpandKeys(projectId, projectNode, tasks),
+    [projectId, projectNode, tasks]
+  );
+
+  useEffect(() => {
+    setExpanded(new Set(allExpandKeys));
+  }, [projectId]);
+
+  useEffect(() => {
+    setExpanded((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const key of allExpandKeys) {
+        if (!next.has(key)) {
+          next.add(key);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [allExpandKeys]);
 
   const toggleExpand = (key: string) => {
     setExpanded((current) => {

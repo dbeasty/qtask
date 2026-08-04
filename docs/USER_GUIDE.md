@@ -9,6 +9,7 @@ Official site: **https://qtask.dev** · Source: [github.com/dbeasty/qtask](https
 ## Table of Contents
 
 1. [How QTask is organized](#1-how-qtask-is-organized)
+   - [Connect external AI (MCP)](#connect-external-ai-mcp)
 2. [Getting started](#2-getting-started)
 3. [Your first 10 minutes](#3-your-first-10-minutes)
 4. [Projects](#4-projects)
@@ -59,6 +60,12 @@ flowchart TB
 | **Task** | A work item. Tasks live in one or more projects and can have nested **subtasks**. |
 | **Subtask** | A breakdown item inside a task (or inside another subtask). Subtasks do not belong to projects directly — they inherit context from their parent task. |
 | **Step** | A checkbox checklist line on a task or subtask. Steps are **not** the same as subtasks — use steps for simple to-do lines; use subtasks when you need status, progress, or further nesting. |
+
+### Connect external AI (MCP)
+
+QTask includes a built-in **MCP server** so external AI tools can read and manage your tasks. **Claude Desktop** connects via OAuth; **Cursor** and other MCP clients use an API key and the stdio bridge. Changes proposed by external AI go through the same staged-write approval flow as the in-app agent — nothing is applied until you approve.
+
+For setup instructions, see the **[MCP setup guide](MCP.md)**.
 
 ---
 

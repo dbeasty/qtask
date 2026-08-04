@@ -573,7 +573,7 @@ export function App() {
         </div>
 
         <div className="header-row header-row-bottom">
-          <p className="header-tagline muted">AI-native task management</p>
+          <p className="header-tagline muted">AI-native task management · MCP server</p>
           <nav className="header-views-nav" aria-label="Views" data-demo-step="header-views">
             <span className="header-views-label">Views</span>
             <button
