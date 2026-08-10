@@ -12,6 +12,8 @@ import {
   REFRESH_LEAD_MS,
   getTokenExpiryMs,
   isAuthPath,
+  isTokenExpired,
+  isWithinRefreshGrace,
   msUntilRefresh,
   sessionMessageForReason,
   setSessionMessage,
@@ -105,6 +107,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           newTokenExp: getTokenExpiryMs(result.token) ?? undefined,
         });
       } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          logger.debug('Proactive refresh aborted', { trigger });
+          return;
+        }
         logger.warn('Proactive refresh failed', {
           trigger,
           error: err instanceof Error ? err.message : 'Refresh failed',
@@ -118,8 +124,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const scheduleProactiveRefresh = useCallback(
     (token: string) => {
       clearRefreshTimer();
-      const delay = msUntilRefresh(token, REFRESH_LEAD_MS);
+      let delay = msUntilRefresh(token, REFRESH_LEAD_MS);
       if (delay == null) return;
+
+      // Short-lived tokens (TTL < refresh lead window) otherwise refresh immediately
+      // on every login, which races with hard redirects such as OAuth callback.
+      if (delay === 0 && !isTokenExpired(token) && !isWithinRefreshGrace(token)) {
+        const expMs = getTokenExpiryMs(token);
+        if (expMs == null) return;
+        const refreshBeforeExpMs = 5 * 60 * 1000;
+        delay = Math.max(0, expMs - Date.now() - refreshBeforeExpMs);
+      }
 
       logger.debug('Proactive refresh scheduled', {
         refreshInMs: delay,

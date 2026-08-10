@@ -87,6 +87,8 @@ export function createOidcProviderAdapter(
         state,
         code_challenge: codeChallenge,
         code_challenge_method: 'S256',
+        // Always show Google's account chooser instead of silent prompt=none.
+        prompt: 'select_account',
       });
       return redirectTo.href;
     },

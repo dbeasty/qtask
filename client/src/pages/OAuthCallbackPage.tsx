@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { useAuth } from '../auth/AuthContext';
+import { useEffect, useState } from 'react';
 import { consumeSessionMessage, getReturnToPath, setSessionMessage } from '../auth/session';
-import { exchangeOAuthCode, type LoginResult } from '../auth/storage';
+import { exchangeOAuthCode, setStoredToken, type LoginResult } from '../auth/storage';
 
 /** Dedupe Strict Mode double-mount so a one-time code is only exchanged once. */
 const oauthExchangeByCode = new Map<string, Promise<LoginResult>>();
@@ -15,9 +14,6 @@ function exchangeOAuthCodeOnce(code: string): Promise<LoginResult> {
 }
 
 export function OAuthCallbackPage() {
-  const { applyLoginResult } = useAuth();
-  const applyLoginResultRef = useRef(applyLoginResult);
-  applyLoginResultRef.current = applyLoginResult;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -39,7 +35,10 @@ export function OAuthCallbackPage() {
     void exchangeOAuthCodeOnce(code)
       .then((result) => {
         if (cancelled) return;
-        applyLoginResultRef.current(result);
+        // Persist the token only — a full reload follows. Calling applyLoginResult here
+        // schedules an immediate proactive refresh that navigation aborts, which clears
+        // the session before the next page loads.
+        setStoredToken(result.token);
         const returnTo = params.get('returnTo') ?? getReturnToPath();
         window.location.replace(returnTo && returnTo.startsWith('/') ? returnTo : '/');
       })
