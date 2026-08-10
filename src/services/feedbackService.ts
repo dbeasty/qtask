@@ -3,6 +3,7 @@ import { config } from '../config/index.js';
 import { FeedbackModel } from '../models/index.js';
 import { enqueueFeedbackVisionJob } from './feedbackVisionQueue.js';
 import { SCREENSHOT_REJECTION_MESSAGE } from './feedbackVisionService.js';
+import { notificationService } from './notificationService.js';
 import {
   extensionForContentType,
   getObjectStorage,
@@ -262,6 +263,57 @@ export async function getAdminFeedbackById(id: string) {
 export async function updateFeedbackStatus(id: string, status: 'open' | 'read' | 'resolved') {
   const doc = await FeedbackModel.findByIdAndUpdate(id, { $set: { status } }, { new: true }).lean();
   return doc;
+}
+
+export async function replyToFeedback(id: string, replyMessage: string) {
+  const message = replyMessage.trim();
+  if (!message) {
+    throw new FeedbackValidationError('Reply message is required', 400);
+  }
+  if (message.length > 2000) {
+    throw new FeedbackValidationError('Reply message is too long', 400);
+  }
+
+  const existing = await FeedbackModel.findById(id).lean();
+  if (!existing) return null;
+  if (existing.adminReply) {
+    throw new FeedbackValidationError('Feedback already has a reply', 409);
+  }
+
+  const repliedAt = new Date();
+  const doc = await FeedbackModel.findByIdAndUpdate(
+    id,
+    {
+      $set: {
+        status: 'resolved',
+        adminReply: { message, repliedAt },
+      },
+    },
+    { new: true }
+  ).lean();
+
+  if (!doc) return null;
+
+  await notificationService.createNotification(existing.userId, 'feedback_reply', {
+    feedbackId: id,
+    message: existing.message.slice(0, 200),
+    reply: message,
+  });
+
+  return doc;
+}
+
+export async function updateAdminFeedback(
+  id: string,
+  input: { status?: 'open' | 'read' | 'resolved'; reply?: string }
+) {
+  if (input.reply !== undefined) {
+    return replyToFeedback(id, input.reply);
+  }
+  if (input.status !== undefined) {
+    return updateFeedbackStatus(id, input.status);
+  }
+  throw new FeedbackValidationError('Status or reply is required', 400);
 }
 
 export async function getFeedbackAttachment(id: string, index: number, storage?: ObjectStorage) {

@@ -21,8 +21,9 @@ import {
   getAdminFeedbackById,
   getFeedbackAttachment,
   listAdminFeedback,
-  updateFeedbackStatus,
+  updateAdminFeedback,
   deleteFeedbackForUser,
+  FeedbackValidationError,
 } from '../services/feedbackService.js';
 
 const BCRYPT_ROUNDS = 12;
@@ -504,6 +505,14 @@ router.get('/ollama/calls', async (req, res, next) => {
 });
 
 const feedbackStatusSchema = z.enum(['open', 'read', 'resolved']);
+const feedbackPatchSchema = z
+  .object({
+    status: feedbackStatusSchema.optional(),
+    reply: z.string().trim().min(1).max(2000).optional(),
+  })
+  .refine((body) => body.status !== undefined || body.reply !== undefined, {
+    message: 'Status or reply is required',
+  });
 
 router.get('/feedback', async (req, res, next) => {
   try {
@@ -579,6 +588,12 @@ router.get('/feedback/:id', async (req, res, next) => {
         sizeBytes: attachment.sizeBytes,
         visionCheck: attachment.visionCheck,
       })),
+      adminReply: feedback.adminReply
+        ? {
+            message: feedback.adminReply.message,
+            repliedAt: feedback.adminReply.repliedAt,
+          }
+        : null,
       createdAt: feedback.createdAt,
       updatedAt: feedback.updatedAt,
     });
@@ -594,8 +609,8 @@ router.patch('/feedback/:id', requireCsrf, async (req, res, next) => {
       res.status(404).json({ error: 'Feedback not found' });
       return;
     }
-    const status = feedbackStatusSchema.parse(req.body?.status);
-    const feedback = await updateFeedbackStatus(feedbackId, status);
+    const body = feedbackPatchSchema.parse(req.body);
+    const feedback = await updateAdminFeedback(feedbackId, body);
     if (!feedback) {
       res.status(404).json({ error: 'Feedback not found' });
       return;
@@ -603,11 +618,21 @@ router.patch('/feedback/:id', requireCsrf, async (req, res, next) => {
     res.json({
       id: String(feedback._id),
       status: feedback.status,
+      adminReply: feedback.adminReply
+        ? {
+            message: feedback.adminReply.message,
+            repliedAt: feedback.adminReply.repliedAt,
+          }
+        : null,
       updatedAt: feedback.updatedAt,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      res.status(400).json({ error: 'Invalid status' });
+      res.status(400).json({ error: 'Invalid request body' });
+      return;
+    }
+    if (error instanceof FeedbackValidationError) {
+      res.status(error.statusCode).json({ error: error.message });
       return;
     }
     next(error);

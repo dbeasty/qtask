@@ -293,6 +293,79 @@ describe('admin feedback API', () => {
     const updated = await FeedbackModel.findById(doc!._id).lean();
     assert.equal(updated?.status, 'read');
   });
+
+  it('updates feedback status without creating a notification', async () => {
+    process.env.FEEDBACK_IMAGES_ENABLED = 'false';
+    try {
+      const created = await request(app)
+        .post('/api/feedback')
+        .set('Authorization', `Bearer ${userToken}`)
+        .field('message', 'Status-only update test')
+        .expect(201);
+
+      const beforeCount = await NotificationModel.countDocuments({ userId, type: 'feedback_reply' });
+      const { agent, csrf } = await adminSession();
+
+      await agent
+        .patch(`/api/admin/feedback/${created.body.id}`)
+        .set('x-csrf-token', csrf)
+        .send({ status: 'resolved' })
+        .expect(200);
+
+      const updated = await FeedbackModel.findById(created.body.id).lean();
+      assert.equal(updated?.status, 'resolved');
+      assert.equal(await NotificationModel.countDocuments({ userId, type: 'feedback_reply' }), beforeCount);
+    } finally {
+      process.env.FEEDBACK_IMAGES_ENABLED = 'true';
+    }
+  });
+
+  it('admin reply resolves feedback and notifies the submitter', async () => {
+    process.env.FEEDBACK_IMAGES_ENABLED = 'false';
+    try {
+      const created = await request(app)
+        .post('/api/feedback')
+        .set('Authorization', `Bearer ${userToken}`)
+        .field('message', 'Please fix the sidebar')
+        .expect(201);
+
+      const { agent, csrf } = await adminSession();
+      const response = await agent
+        .patch(`/api/admin/feedback/${created.body.id}`)
+        .set('x-csrf-token', csrf)
+        .send({ reply: 'Fixed in the latest release.' })
+        .expect(200);
+
+      assert.equal(response.body.status, 'resolved');
+      assert.equal(response.body.adminReply.message, 'Fixed in the latest release.');
+
+      const updated = await FeedbackModel.findById(created.body.id).lean();
+      assert.equal(updated?.status, 'resolved');
+      assert.equal(updated?.adminReply?.message, 'Fixed in the latest release.');
+
+      const notification = await NotificationModel.findOne({
+        userId,
+        type: 'feedback_reply',
+        'payload.feedbackId': created.body.id,
+      }).lean();
+      assert.ok(notification);
+      assert.equal(notification?.payload.reply, 'Fixed in the latest release.');
+
+      const userView = await request(app)
+        .get(`/api/feedback/${created.body.id}`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+      assert.equal(userView.body.adminReply.message, 'Fixed in the latest release.');
+
+      await agent
+        .patch(`/api/admin/feedback/${created.body.id}`)
+        .set('x-csrf-token', csrf)
+        .send({ reply: 'Another reply' })
+        .expect(409);
+    } finally {
+      process.env.FEEDBACK_IMAGES_ENABLED = 'true';
+    }
+  });
 });
 
 describe('admin user delete cascades feedback', () => {

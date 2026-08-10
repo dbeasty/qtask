@@ -422,7 +422,8 @@ export type NotificationType =
   | 'project_share_declined'
   | 'task_comment'
   | 'task_comment_reply'
-  | 'feedback_rejected';
+  | 'feedback_rejected'
+  | 'feedback_reply';
 
 export interface AppNotification {
   _id: string;
@@ -446,6 +447,7 @@ export interface AppNotification {
     feedbackId?: string;
     message?: string;
     reason?: string;
+    reply?: string;
   };
   read: boolean;
   createdAt: string;

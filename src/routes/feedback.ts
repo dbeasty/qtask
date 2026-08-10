@@ -132,6 +132,12 @@ router.get('/:id', async (req, res, next) => {
       category: feedback.category,
       status: feedback.status,
       validationStatus: feedback.validationStatus ?? 'validated',
+      adminReply: feedback.adminReply
+        ? {
+            message: feedback.adminReply.message,
+            repliedAt: feedback.adminReply.repliedAt,
+          }
+        : null,
       createdAt: feedback.createdAt,
       attachmentCount: feedback.attachments?.length ?? 0,
     });

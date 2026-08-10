@@ -8,6 +8,10 @@ pass() { echo "  OK: $*"; }
 fail() { echo "  FAIL: $*" >&2; exit 1; }
 skip() { echo "  SKIP: $*"; }
 
+looks_like_html() {
+  tr -d '\n\r' < "$1" | head -c 256 | grep -qiE '<!doctype[[:space:]]+html|<html[[:space:]>]'
+}
+
 echo "QTask smoke test — ${BASE_URL}"
 echo ""
 
@@ -21,7 +25,7 @@ echo ""
 echo "2. Web UI (static client)"
 status="$(curl -sS -o /tmp/qtask-smoke-index.html -w "%{http_code}" "${BASE_URL}/")"
 [[ "${status}" == "200" ]] || fail "GET / returned ${status} (expected 200 HTML)"
-head -c 80 /tmp/qtask-smoke-index.html | grep -qi '<!doctype html\|<html' || fail "GET / did not return HTML"
+looks_like_html /tmp/qtask-smoke-index.html || fail "GET / did not return HTML"
 pass "web UI"
 
 echo ""
@@ -31,7 +35,7 @@ if [[ "${status}" != "200" ]]; then
   preview="$(tr -d '\n' < /tmp/qtask-smoke-consent.html | head -c 120)"
   fail "GET /oauth/consent returned ${status} (expected 200 HTML): ${preview}"
 fi
-if ! head -c 80 /tmp/qtask-smoke-consent.html | grep -qi '<!doctype html\|<html'; then
+if ! looks_like_html /tmp/qtask-smoke-consent.html; then
   preview="$(tr -d '\n' < /tmp/qtask-smoke-consent.html | head -c 120)"
   fail "GET /oauth/consent did not return HTML: ${preview}"
 fi

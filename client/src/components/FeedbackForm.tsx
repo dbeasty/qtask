@@ -88,6 +88,10 @@ export function FeedbackForm({
           onRejected?.(REJECTION_MESSAGE);
           return;
         }
+        if (status.adminReply?.message) {
+          setSuccess(`Thanks — your feedback was submitted. Update: ${status.adminReply.message}`);
+          return;
+        }
         if (status.validationStatus === 'pending') {
           window.setTimeout(() => void poll(), 2000);
         }

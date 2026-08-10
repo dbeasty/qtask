@@ -192,11 +192,16 @@ export async function getFeedback(id: string): Promise<AdminFeedbackDetail> {
 
 export async function updateFeedbackStatus(
   id: string,
-  status: FeedbackStatus
-): Promise<{ id: string; status: FeedbackStatus; updatedAt: string }> {
+  input: { status?: FeedbackStatus; reply?: string }
+): Promise<{
+  id: string;
+  status: FeedbackStatus;
+  adminReply?: { message: string; repliedAt: string } | null;
+  updatedAt: string;
+}> {
   return request(`/api/admin/feedback/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ status }),
+    body: JSON.stringify(input),
     csrf: true,
   });
 }

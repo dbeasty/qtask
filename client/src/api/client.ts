@@ -720,6 +720,7 @@ export async function getFeedbackStatus(feedbackId: string): Promise<{
   id: string;
   validationStatus: string;
   message: string;
+  adminReply?: { message: string; repliedAt: string } | null;
 }> {
   return request(`/api/feedback/${encodeURIComponent(feedbackId)}`);
 }

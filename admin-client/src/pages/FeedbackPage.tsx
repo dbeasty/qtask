@@ -3,9 +3,31 @@ import { AuthError, getFeedback, listFeedback, updateFeedbackStatus } from '../a
 import { useAuth } from '../auth/AuthContext';
 import { Pagination } from '../components/Pagination';
 import { formatDate, formatNumber } from '../utils/format';
-import type { AdminFeedbackDetail, AdminFeedbackItem } from '../types';
+import type { AdminFeedbackDetail, AdminFeedbackItem, FeedbackStatus } from '../types';
 
 const PAGE_SIZE = 20;
+
+function validationBadgeClass(status: AdminFeedbackItem['validationStatus']): string {
+  switch (status ?? 'validated') {
+    case 'validated':
+      return 'badge badge--ok';
+    case 'pending':
+      return 'badge badge--warn';
+    case 'rejected':
+    case 'failed':
+      return 'badge badge--bad';
+    default:
+      return 'badge badge--ok';
+  }
+}
+
+function statusBadgeClass(status: FeedbackStatus): string {
+  return `badge badge--${status}`;
+}
+
+function statusLabel(status: FeedbackStatus): string {
+  return status === 'resolved' ? 'handled' : status;
+}
 
 export function FeedbackPage() {
   const { handleSessionExpired } = useAuth();
@@ -14,13 +36,15 @@ export function FeedbackPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'read' | 'resolved'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | FeedbackStatus>('open');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AdminFeedbackDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [statusSaving, setStatusSaving] = useState(false);
+  const [replyDraft, setReplyDraft] = useState('');
+  const [replySaving, setReplySaving] = useState(false);
 
   const handleError = useCallback(
     (err: unknown) => {
@@ -31,6 +55,20 @@ export function FeedbackPage() {
       setError(err instanceof Error ? err.message : 'Request failed');
     },
     [handleSessionExpired]
+  );
+
+  const applyStatusUpdate = useCallback(
+    (id: string, nextStatus: FeedbackStatus, adminReply?: AdminFeedbackDetail['adminReply']) => {
+      setDetail((current) =>
+        current && current.id === id
+          ? { ...current, status: nextStatus, ...(adminReply !== undefined ? { adminReply } : {}) }
+          : current
+      );
+      setItems((current) =>
+        current.map((item) => (item.id === id ? { ...item, status: nextStatus } : item))
+      );
+    },
+    []
   );
 
   useEffect(() => {
@@ -62,13 +100,25 @@ export function FeedbackPage() {
   useEffect(() => {
     if (!selectedId) {
       setDetail(null);
+      setReplyDraft('');
       return;
     }
     let cancelled = false;
     setDetailLoading(true);
     getFeedback(selectedId)
-      .then((result) => {
-        if (!cancelled) setDetail(result);
+      .then(async (result) => {
+        if (cancelled) return;
+        setDetail(result);
+        setReplyDraft('');
+        if (result.status === 'open') {
+          try {
+            const updated = await updateFeedbackStatus(result.id, { status: 'read' });
+            if (cancelled) return;
+            applyStatusUpdate(result.id, updated.status);
+          } catch (err) {
+            if (!cancelled) handleError(err);
+          }
+        }
       })
       .catch((err) => {
         if (!cancelled) handleError(err);
@@ -79,22 +129,34 @@ export function FeedbackPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, handleError]);
+  }, [selectedId, handleError, applyStatusUpdate]);
 
-  async function handleStatusChange(nextStatus: 'open' | 'read' | 'resolved') {
+  async function handleStatusChange(nextStatus: FeedbackStatus) {
     if (!detail) return;
     setStatusSaving(true);
     setError(null);
     try {
-      await updateFeedbackStatus(detail.id, nextStatus);
-      setDetail({ ...detail, status: nextStatus });
-      setItems((current) =>
-        current.map((item) => (item.id === detail.id ? { ...item, status: nextStatus } : item))
-      );
+      const updated = await updateFeedbackStatus(detail.id, { status: nextStatus });
+      applyStatusUpdate(detail.id, updated.status, updated.adminReply ?? detail.adminReply);
     } catch (err) {
       handleError(err);
     } finally {
       setStatusSaving(false);
+    }
+  }
+
+  async function handleSendReply() {
+    if (!detail || !replyDraft.trim()) return;
+    setReplySaving(true);
+    setError(null);
+    try {
+      const updated = await updateFeedbackStatus(detail.id, { reply: replyDraft.trim() });
+      applyStatusUpdate(detail.id, updated.status, updated.adminReply ?? null);
+      setReplyDraft('');
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setReplySaving(false);
     }
   }
 
@@ -103,23 +165,28 @@ export function FeedbackPage() {
   }
 
   return (
-    <div className="page-stack">
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Feedback</h2>
-          <div className="panel-actions">
-            <select
-              value={statusFilter}
-              onChange={(event) => {
-                setStatusFilter(event.target.value as typeof statusFilter);
-                setPage(1);
-              }}
-            >
-              <option value="all">All statuses</option>
-              <option value="open">Open</option>
-              <option value="read">Read</option>
-              <option value="resolved">Resolved</option>
-            </select>
+    <div className="page page--wide">
+      <div className="feedback-layout">
+        <section className="panel feedback-list-panel">
+          <div className="panel-header">
+            <h2>Feedback</h2>
+            <div className="panel-actions">
+              <div className="panel-filter">
+                <span className="muted">Status</span>
+                <select
+                  className="panel-select"
+                  value={statusFilter}
+                  onChange={(event) => {
+                    setStatusFilter(event.target.value as typeof statusFilter);
+                    setPage(1);
+                  }}
+                >
+                  <option value="open">Open</option>
+                  <option value="read">Read</option>
+                  <option value="resolved">Handled</option>
+                  <option value="all">All statuses</option>
+                </select>
+              </div>
             <form
               className="search-form"
               onSubmit={(event) => {
@@ -139,21 +206,22 @@ export function FeedbackPage() {
           </div>
         </div>
 
-        {error ? <p className="error-banner">{error}</p> : null}
+        {error ? <p className="panel-error">{error}</p> : null}
 
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>User</th>
-              <th>Category</th>
-              <th>Status</th>
-              <th>Validation</th>
-              <th>Message</th>
-              <th className="num">Screenshots</th>
-            </tr>
-          </thead>
-          <tbody>
+        <div className="table-wrap">
+          <table className="data-table feedback-table">
+            <thead>
+              <tr>
+                <th className="col-date">Date</th>
+                <th className="col-user">User</th>
+                <th className="col-category">Category</th>
+                <th className="col-status">Status</th>
+                <th className="col-validation">Validation</th>
+                <th className="col-message">Message</th>
+                <th className="num col-shots">Screenshots</th>
+              </tr>
+            </thead>
+            <tbody>
             {loading ? (
               <tr>
                 <td colSpan={7} className="muted">
@@ -177,10 +245,10 @@ export function FeedbackPage() {
                   <td className="cell-email">{item.userEmail ?? item.userId}</td>
                   <td>{item.category}</td>
                   <td>
-                    <span className={`badge badge--${item.status}`}>{item.status}</span>
+                    <span className={statusBadgeClass(item.status)}>{statusLabel(item.status)}</span>
                   </td>
                   <td>
-                    <span className={`badge badge--${item.validationStatus ?? 'validated'}`}>
+                    <span className={validationBadgeClass(item.validationStatus)}>
                       {item.validationStatus ?? 'validated'}
                     </span>
                   </td>
@@ -191,6 +259,7 @@ export function FeedbackPage() {
             )}
           </tbody>
         </table>
+        </div>
 
         <Pagination
           page={page}
@@ -199,9 +268,9 @@ export function FeedbackPage() {
           onPageChange={setPage}
           disabled={loading}
         />
-      </section>
+        </section>
 
-      <section className="panel">
+        <section className="panel feedback-detail-panel">
         <div className="panel-header">
           <h2>Details</h2>
         </div>
@@ -211,42 +280,81 @@ export function FeedbackPage() {
           <p className="muted">Loading details…</p>
         ) : detail ? (
           <div className="feedback-detail">
-            <p>
-              <strong>{detail.userEmail ?? detail.userId}</strong>
-              {detail.userDisplayName ? ` (${detail.userDisplayName})` : ''}
-            </p>
-            <p className="muted">
-              {formatDate(detail.createdAt)} · {detail.category} · validation{' '}
-              {detail.validationStatus ?? 'validated'}
-            </p>
-            <label className="field-label" htmlFor="feedback-status">
-              Status
-            </label>
-            <select
-              id="feedback-status"
-              value={detail.status}
-              disabled={statusSaving}
-              onChange={(event) =>
-                void handleStatusChange(event.target.value as 'open' | 'read' | 'resolved')
-              }
-            >
-              <option value="open">Open</option>
-              <option value="read">Read</option>
-              <option value="resolved">Resolved</option>
-            </select>
-            <p>{detail.message}</p>
-            {detail.context?.url ? (
-              <p className="muted">
-                URL: <code>{detail.context.url}</code>
-              </p>
-            ) : null}
-            {detail.context?.userAgent ? (
-              <p className="muted">
-                User agent: <code>{detail.context.userAgent}</code>
-              </p>
+            <div className="feedback-detail-header">
+              <div>
+                <p className="feedback-detail-user">
+                  <strong>{detail.userEmail ?? detail.userId}</strong>
+                  {detail.userDisplayName ? (
+                    <span className="muted"> ({detail.userDisplayName})</span>
+                  ) : null}
+                </p>
+                <p className="feedback-detail-meta muted">
+                  {formatDate(detail.createdAt)} · {detail.category}
+                </p>
+              </div>
+              <div className="feedback-detail-badges">
+                <span className={validationBadgeClass(detail.validationStatus)}>
+                  {detail.validationStatus ?? 'validated'}
+                </span>
+                <span className={statusBadgeClass(detail.status)}>{statusLabel(detail.status)}</span>
+              </div>
+            </div>
+
+            <div className="feedback-detail-actions">
+              {detail.status === 'open' ? (
+                <button
+                  type="button"
+                  disabled={statusSaving}
+                  onClick={() => void handleStatusChange('read')}
+                >
+                  Mark as read
+                </button>
+              ) : null}
+              {detail.status !== 'resolved' ? (
+                <button
+                  type="button"
+                  disabled={statusSaving}
+                  onClick={() => void handleStatusChange('resolved')}
+                >
+                  Mark as handled
+                </button>
+              ) : null}
+              {detail.status !== 'open' ? (
+                <button
+                  type="button"
+                  disabled={statusSaving}
+                  onClick={() => void handleStatusChange('open')}
+                >
+                  Reopen
+                </button>
+              ) : null}
+            </div>
+
+            <div className="feedback-message">
+              <h3 className="feedback-section-title">Message</h3>
+              <p>{detail.message}</p>
+            </div>
+
+            {detail.context?.url || detail.context?.userAgent ? (
+              <div className="feedback-context">
+                <h3 className="feedback-section-title">Context</h3>
+                {detail.context?.url ? (
+                  <p>
+                    <span className="muted">URL</span>
+                    <code className="feedback-code">{detail.context.url}</code>
+                  </p>
+                ) : null}
+                {detail.context?.userAgent ? (
+                  <p>
+                    <span className="muted">User agent</span>
+                    <code className="feedback-code">{detail.context.userAgent}</code>
+                  </p>
+                ) : null}
+              </div>
             ) : null}
             {detail.attachments.length > 0 ? (
               <div className="feedback-attachments">
+                <h3 className="feedback-section-title">Screenshots</h3>
                 {detail.attachments.map((attachment) => (
                   <figure key={attachment.index} className="feedback-attachment">
                     <img
@@ -265,11 +373,46 @@ export function FeedbackPage() {
                 ))}
               </div>
             ) : null}
+
+            {detail.adminReply ? (
+              <div className="feedback-admin-reply">
+                <h3 className="feedback-section-title">Reply sent</h3>
+                <p className="feedback-admin-reply-meta muted">
+                  {formatDate(detail.adminReply.repliedAt)}
+                </p>
+                <p>{detail.adminReply.message}</p>
+              </div>
+            ) : (
+              <div className="feedback-reply-form">
+                <label htmlFor="feedback-reply">
+                  <span className="feedback-section-title">Reply to user</span>
+                  <textarea
+                    id="feedback-reply"
+                    rows={4}
+                    value={replyDraft}
+                    disabled={replySaving}
+                    placeholder="Let the user know what was fixed or why no change was needed."
+                    onChange={(event) => setReplyDraft(event.target.value)}
+                  />
+                </label>
+                <div className="feedback-detail-actions">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={replySaving || !replyDraft.trim()}
+                    onClick={() => void handleSendReply()}
+                  >
+                    {replySaving ? 'Sending…' : 'Send reply & mark handled'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <p className="muted">Feedback not found.</p>
         )}
-      </section>
+        </section>
+      </div>
     </div>
   );
 }

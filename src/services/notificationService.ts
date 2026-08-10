@@ -7,7 +7,8 @@ export type NotificationType =
   | 'project_share_declined'
   | 'task_comment'
   | 'task_comment_reply'
-  | 'feedback_rejected';
+  | 'feedback_rejected'
+  | 'feedback_reply';
 
 export type NotificationPayload = {
   projectId?: string;
@@ -28,6 +29,7 @@ export type NotificationPayload = {
   feedbackId?: string;
   message?: string;
   reason?: string;
+  reply?: string;
 };
 
 export type SerializedNotification = {

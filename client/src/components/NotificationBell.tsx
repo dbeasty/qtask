@@ -33,6 +33,8 @@ function notificationLabel(notification: AppNotification): string {
       return `${author} replied on "${taskTitle}"`;
     case 'feedback_rejected':
       return notification.payload.reason ?? 'Your feedback screenshot was not accepted.';
+    case 'feedback_reply':
+      return notification.payload.reply ?? 'Your feedback has been addressed.';
     default:
       return name;
   }

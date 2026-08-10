@@ -451,6 +451,7 @@ const notificationSchema = new Schema(
         'task_comment',
         'task_comment_reply',
         'feedback_rejected',
+        'feedback_reply',
       ],
       required: true,
     },
@@ -494,6 +495,14 @@ const feedbackContextSchema = new Schema(
   { _id: false }
 );
 
+const feedbackAdminReplySchema = new Schema(
+  {
+    message: { type: String, required: true, trim: true, maxlength: 2000 },
+    repliedAt: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
 const feedbackSchema = new Schema(
   {
     userId: { type: String, required: true, index: true },
@@ -517,6 +526,7 @@ const feedbackSchema = new Schema(
     },
     context: { type: feedbackContextSchema, default: () => ({}) },
     attachments: { type: [feedbackAttachmentSchema], default: [] },
+    adminReply: { type: feedbackAdminReplySchema, required: false },
   },
   { timestamps: true }
 );

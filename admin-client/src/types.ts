@@ -257,6 +257,10 @@ export interface AdminFeedbackDetail {
     appVersion?: string;
   };
   attachments: AdminFeedbackAttachment[];
+  adminReply?: {
+    message: string;
+    repliedAt: string;
+  } | null;
   createdAt: string;
   updatedAt: string;
 }
