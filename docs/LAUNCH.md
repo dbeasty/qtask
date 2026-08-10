@@ -58,11 +58,37 @@ Site: https://qtask.dev
 Repo: https://github.com/dbeasty/qtask
 ```
 
-| Directory | URL | Action |
-|-----------|-----|--------|
-| Official MCP servers (community) | https://github.com/modelcontextprotocol/servers | PR to community section |
-| mcp.so | https://mcp.so | Submit server listing |
-| glama.ai/mcp | https://glama.ai/mcp | Submit server listing |
+**Do not pay** for “premium / featured / dofollow” listing upsells ($39 etc.). Free paths below are enough.
+
+| Directory | Free path | Notes |
+|-----------|-----------|--------|
+| **mcp.so** | [GitHub issue on chatmcp/mcpso](https://github.com/chatmcp/mcpso/issues/new) (or [mcp.so](https://mcp.so) → **Submit**) | Title: `Add MCP server: QTask`. Body: name, blurb, repo, site, docs, remote URL `https://qtask.dev/api/mcp` |
+| **glama.ai** | [glama.ai/mcp/servers](https://glama.ai/mcp/servers) → **Add Server**, or wait for auto-index | Ensure GitHub topics include `mcp` and `model-context-protocol` |
+| **mcpservers.org** | [mcpservers.org/submit](https://mcpservers.org/submit) | Leave **Premium Submit ($39)** unchecked; fill name/description/GitHub/category and hit **Submit** |
+| Official community list | [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers) | Optional PR to community section |
+
+### mcp.so issue body (copy-paste)
+
+```
+**Server Name:** QTask
+**Description:** Task and project management MCP server. List/create/update tasks and projects, semantic search, staged write approval. Works with Claude Desktop (OAuth), Cursor (stdio bridge), and self-hosted deployments.
+**GitHub:** https://github.com/dbeasty/qtask
+**Homepage:** https://qtask.dev
+**Docs:** https://github.com/dbeasty/qtask/blob/main/docs/MCP.md
+**Remote MCP URL:** https://qtask.dev/api/mcp
+**Auth:** OAuth (Claude connector) or API key + stdio bridge (Cursor)
+```
+
+### mcpservers.org form fields
+
+| Field | Value |
+|-------|-------|
+| Server Name | QTask |
+| Short Description | Task/project MCP server with OAuth for Claude, Cursor bridge, semantic search, staged write approval |
+| Link | https://github.com/dbeasty/qtask |
+| Category | Productivity |
+| Contact Email | your email |
+| Premium | **off** |
 
 ---
 
