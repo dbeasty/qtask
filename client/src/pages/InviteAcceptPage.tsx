@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { acceptInviteByToken, getInvitePreviewPublic } from '../api/client';
-import { getAuthConfig } from '../auth/storage';
+import { getAuthConfig, type OAuthProviderPublicInfo } from '../auth/storage';
+import { OAuthProviderButtons } from '../components/OAuthProviderButtons';
 import type { PublicProjectInvite } from '../types';
 
 interface InviteAcceptPageProps {
@@ -22,6 +23,8 @@ export function InviteAcceptPage({
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean | null>(null);
+  const [oauthProviders, setOauthProviders] = useState<OAuthProviderPublicInfo[]>([]);
+  const [oauthLegalAccepted, setOauthLegalAccepted] = useState(false);
 
   useEffect(() => {
     if (!authenticated) {
@@ -29,6 +32,7 @@ export function InviteAcceptPage({
       void getAuthConfig().then((config) => {
         if (!cancelled) {
           setRegistrationEnabled(config.registrationEnabled);
+          setOauthProviders(config.oauthProviders ?? []);
         }
       });
       return () => {
@@ -104,14 +108,36 @@ export function InviteAcceptPage({
               Registration is not currently enabled. Contact the person who invited you for help.
             </p>
           ) : (
-            <div className="auth-dialog-actions">
-              <a className="primary-button auth-submit" href="/register">
-                Create account
-              </a>
-              <a className="secondary-button" href="/login">
-                Sign in
-              </a>
-            </div>
+            <>
+              <div className="auth-dialog-actions">
+                <a className="primary-button auth-submit" href="/register">
+                  Create account
+                </a>
+                <a className="secondary-button" href="/login">
+                  Sign in
+                </a>
+              </div>
+              {oauthProviders.length > 0 ? (
+                <>
+                  <label className="auth-legal-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={oauthLegalAccepted}
+                      onChange={(e) => setOauthLegalAccepted(e.target.checked)}
+                    />
+                    <span>
+                      I accept the <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>
+                    </span>
+                  </label>
+                  <OAuthProviderButtons
+                    providers={oauthProviders}
+                    registrationEnabled={registrationEnabled === true}
+                    requireLegalAcceptance
+                    legalAccepted={oauthLegalAccepted}
+                  />
+                </>
+              ) : null}
+            </>
           )}
         </div>
       </div>

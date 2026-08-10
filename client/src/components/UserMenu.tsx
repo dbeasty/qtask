@@ -361,17 +361,19 @@ export function UserMenu({
         External AI (MCP)
       </button>
 
-      <button
-        type="button"
-        className="user-menu-item"
-        role="menuitem"
-        onClick={() => {
-          onChangePassword();
-          onClose();
-        }}
-      >
-        Change password
-      </button>
+      {user.hasPassword !== false ? (
+        <button
+          type="button"
+          className="user-menu-item"
+          role="menuitem"
+          onClick={() => {
+            onChangePassword();
+            onClose();
+          }}
+        >
+          Change password
+        </button>
+      ) : null}
 
       <a className="user-menu-item" role="menuitem" href="/privacy" onClick={onClose}>
         Privacy Policy

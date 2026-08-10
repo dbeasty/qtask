@@ -1483,6 +1483,59 @@ button {
   padding: 0.7rem 1rem;
 }
 
+.oauth-provider-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.oauth-provider-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  margin: 0.25rem 0;
+}
+
+.oauth-provider-divider::before,
+.oauth-provider-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.oauth-provider-button {
+  width: 100%;
+  padding: 0.65rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-surface-5);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.oauth-provider-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.auth-legal-checkbox {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.auth-legal-checkbox input {
+  margin-top: 0.2rem;
+}
+
 nav {
   display: flex;
   gap: 0.5rem;

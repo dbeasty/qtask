@@ -20,10 +20,19 @@ const userPreferencesSchema = new Schema(
   { _id: false }
 );
 
+const identityProviderSchema = new Schema(
+  {
+    provider: { type: String, enum: ['google', 'microsoft'], required: true },
+    providerUserId: { type: String, required: true },
+    linkedAt: { type: Date, required: true, default: () => new Date() },
+  },
+  { _id: false }
+);
+
 const userSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    passwordHash: { type: String, required: true },
+    passwordHash: { type: String },
     displayName: { type: String, trim: true },
     emailVerified: { type: Boolean, default: false },
     emailVerificationTokenHash: { type: String },
@@ -37,8 +46,14 @@ const userSchema = new Schema(
     mustChangePassword: { type: Boolean, default: false },
     hourlyRate: { type: Number, min: 0 },
     preferences: { type: userPreferencesSchema, default: () => ({}) },
+    identityProviders: { type: [identityProviderSchema], default: [] },
   },
   { timestamps: true }
+);
+
+userSchema.index(
+  { 'identityProviders.provider': 1, 'identityProviders.providerUserId': 1 },
+  { unique: true, sparse: true }
 );
 
 export const UserModel = model('User', userSchema);
@@ -637,3 +652,14 @@ export const McpOAuthPendingConsentModel = model(
   'McpOAuthPendingConsent',
   mcpOAuthPendingConsentSchema
 );
+
+const userOAuthAuthCodeSchema = new Schema(
+  {
+    codeHash: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, index: true },
+    expiresAt: { type: Date, required: true, index: true },
+  },
+  { timestamps: true }
+);
+
+export const UserOAuthAuthCodeModel = model('UserOAuthAuthCode', userOAuthAuthCodeSchema);

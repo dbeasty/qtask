@@ -37,8 +37,14 @@ export interface AuthUser {
   displayName?: string;
   emailVerified?: boolean;
   mustChangePassword?: boolean;
+  hasPassword?: boolean;
   hourlyRate?: number;
   preferences?: UserPreferences;
+}
+
+export interface OAuthProviderPublicInfo {
+  id: string;
+  label: string;
 }
 
 export const DEFAULT_PREFERENCES: UserPreferences = {
@@ -81,6 +87,7 @@ async function parseAuthResponse(response: Response, fallbackError: string) {
 
 export async function getAuthConfig(): Promise<{
   registrationEnabled: boolean;
+  oauthProviders?: OAuthProviderPublicInfo[];
   mcp?: import('../utils/mcpUrl').McpPublicConfig;
 }> {
   const response = await fetch('/api/auth/config');
@@ -89,6 +96,7 @@ export async function getAuthConfig(): Promise<{
   }
   return response.json() as Promise<{
     registrationEnabled: boolean;
+    oauthProviders?: OAuthProviderPublicInfo[];
     mcp?: import('../utils/mcpUrl').McpPublicConfig;
   }>;
 }
@@ -113,6 +121,15 @@ export interface LoginResult {
   /** True when the user signed in with a temporary password and the token is
    * only valid for POST /api/auth/change-password. */
   mustChangePassword?: boolean;
+}
+
+export async function exchangeOAuthCode(code: string): Promise<LoginResult> {
+  const response = await fetch('/api/auth/oauth/exchange', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  return parseAuthResponse(response, 'OAuth sign-in failed') as Promise<LoginResult>;
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {

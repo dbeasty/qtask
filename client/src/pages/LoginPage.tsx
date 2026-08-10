@@ -2,7 +2,8 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { consumeSessionMessage, getReturnToPath } from '../auth/session';
 import { PasswordInput } from '../components/PasswordInput';
-import { forgotPassword, getAuthConfig, resendVerification } from '../auth/storage';
+import { OAuthProviderButtons } from '../components/OAuthProviderButtons';
+import { forgotPassword, getAuthConfig, resendVerification, type OAuthProviderPublicInfo } from '../auth/storage';
 import { usePendingInvitePreview } from '../hooks/usePendingInvitePreview';
 import { InviteContextBanner } from './InviteAcceptPage';
 
@@ -19,6 +20,8 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [needsVerification, setNeedsVerification] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [oauthProviders, setOauthProviders] = useState<OAuthProviderPublicInfo[]>([]);
+  const [oauthLegalAccepted, setOauthLegalAccepted] = useState(false);
 
   useEffect(() => {
     if (invite?.inviteeEmail) {
@@ -31,6 +34,7 @@ export function LoginPage() {
     void getAuthConfig().then((config) => {
       if (!cancelled) {
         setRegistrationEnabled(config.registrationEnabled);
+        setOauthProviders(config.oauthProviders ?? []);
       }
     });
     const sessionMessage = consumeSessionMessage();
@@ -157,6 +161,30 @@ export function LoginPage() {
             </button>
           )}
         </form>
+
+        {mode === 'login' && oauthProviders.length > 0 && registrationEnabled ? (
+          <label className="auth-legal-checkbox">
+            <input
+              type="checkbox"
+              checked={oauthLegalAccepted}
+              onChange={(e) => setOauthLegalAccepted(e.target.checked)}
+            />
+            <span>
+              I accept the <a href="/terms">Terms &amp; Disclaimer</a> and{' '}
+              <a href="/privacy">Privacy Policy</a> (required for new social sign-in)
+            </span>
+          </label>
+        ) : null}
+
+        {mode === 'login' ? (
+          <OAuthProviderButtons
+            providers={oauthProviders}
+            registrationEnabled={registrationEnabled}
+            requireLegalAcceptance={registrationEnabled}
+            legalAccepted={oauthLegalAccepted}
+            disabled={submitting}
+          />
+        ) : null}
 
         {mode === 'login' && registrationEnabled && (
           <p className="auth-hint auth-hint--switch muted">

@@ -32,6 +32,7 @@ import {
   updateProfile as updateProfileRequest,
   type AuthUser,
   type ChangePasswordResult,
+  type LoginResult,
   type UserPreferences,
 } from './storage';
 import { setSessionExpiredHandler, setTokenRefreshedHandler } from '../api/client';
@@ -45,6 +46,7 @@ interface AuthContextValue {
   loading: boolean;
   mustChangePassword: boolean;
   login: (email: string, password: string) => Promise<void>;
+  applyLoginResult: (result: LoginResult) => void;
   register: (email: string, password: string, displayName?: string, acceptLegal?: boolean) => Promise<{ message: string }>;
   logout: () => void;
   updateProfile: (body: { displayName?: string | null; hourlyRate?: number | null }) => Promise<void>;
@@ -213,14 +215,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, [runProactiveRefresh, user]);
 
-  const login = useCallback(
-    async (email: string, password: string) => {
-      const result = await loginRequest(email, password);
+  const applyLoginResult = useCallback(
+    (result: LoginResult) => {
       setStoredToken(result.token);
       applyAuthenticatedUser(result.user);
       scheduleProactiveRefresh(result.token);
     },
     [applyAuthenticatedUser, scheduleProactiveRefresh]
+  );
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const result = await loginRequest(email, password);
+      applyLoginResult(result);
+    },
+    [applyLoginResult]
   );
 
   const register = useCallback(async (email: string, password: string, displayName?: string, acceptLegal?: boolean) => {
@@ -274,6 +283,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       mustChangePassword,
       login,
+      applyLoginResult,
       register,
       logout,
       updateProfile,
@@ -285,6 +295,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       mustChangePassword,
       login,
+      applyLoginResult,
       register,
       logout,
       updateProfile,

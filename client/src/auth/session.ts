@@ -9,6 +9,7 @@ export const AUTH_PATHS = new Set([
   '/verify-email',
   '/reset-password',
   '/oauth/consent',
+  '/auth/oauth/callback',
 ]);
 
 const SESSION_MESSAGE_KEY = 'qtask_session_message';

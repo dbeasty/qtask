@@ -14,6 +14,8 @@ export const SECRET_ENV_KEYS = [
   'MONGO_ROOT_USER',
   'MONGO_ROOT_PASSWORD',
   'MONGODB_URI',
+  'OAUTH_GOOGLE_CLIENT_SECRET',
+  'OAUTH_MICROSOFT_CLIENT_SECRET',
 ] as const;
 
 export type SecretsBackend = 'env' | 'vault';

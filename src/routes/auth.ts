@@ -4,6 +4,10 @@ import { authService } from '../services/authService.js';
 import { isRegistrationEnabled } from '../services/emailService.js';
 import { config, getMcpPublicConfig } from '../config/index.js';
 import { getMcpPublicOAuthConfig } from '../oauth/metadata.js';
+import { getOAuthProviderPublicInfo } from '../auth/userOAuth/providers/registry.js';
+import { userOAuthService } from '../auth/userOAuth/service.js';
+import { verifyOAuthState } from '../auth/userOAuth/state.js';
+import { HttpError } from '../utils/httpError.js';
 import { requireAuth, requireAuthForRefresh, requirePasswordChangeAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { getUserId } from '../middleware/index.js';
@@ -61,12 +65,70 @@ const updateProfileSchema = z.object({
     .optional(),
 });
 
+const oauthExchangeSchema = z.object({
+  code: z.string().min(1, 'Code is required'),
+});
+
 authRouter.get('/config', (_req, res) => {
   const mcp = getMcpPublicConfig();
   res.json({
     registrationEnabled: isRegistrationEnabled(),
+    oauthProviders: getOAuthProviderPublicInfo(),
     mcp: config.mcpOAuth.enabled ? { ...mcp, oauth: getMcpPublicOAuthConfig() } : mcp,
   });
+});
+
+authRouter.get('/oauth/:provider', async (req, res, next) => {
+  try {
+    const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined;
+    const inviteToken = typeof req.query.inviteToken === 'string' ? req.query.inviteToken : undefined;
+    const acceptLegal = req.query.acceptLegal === 'true';
+    const redirectUrl = await userOAuthService.beginAuthorization({
+      provider: req.params.provider ?? '',
+      returnTo,
+      inviteToken,
+      acceptLegal,
+    });
+    res.redirect(redirectUrl);
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.get('/oauth/:provider/callback', async (req, res, next) => {
+  let returnTo: string | undefined;
+  const stateParam = typeof req.query.state === 'string' ? req.query.state : undefined;
+  if (stateParam) {
+    returnTo = verifyOAuthState(stateParam)?.returnTo;
+  }
+
+  try {
+    const provider = req.params.provider ?? '';
+    const callbackUrl = new URL(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
+    const redirectUrl = await userOAuthService.handleCallback(provider, callbackUrl);
+    res.redirect(redirectUrl);
+  } catch (error) {
+    const message =
+      error instanceof HttpError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : 'Sign-in failed';
+    try {
+      res.redirect(userOAuthService.buildErrorRedirect(message, returnTo));
+    } catch {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/oauth/exchange', validateBody(oauthExchangeSchema), async (req, res, next) => {
+  try {
+    const result = await userOAuthService.exchangeAuthCode(req.body.code);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
 });
 
 authRouter.post('/register', validateBody(registerSchema), async (req, res, next) => {

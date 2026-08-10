@@ -12,6 +12,7 @@ import { AgentPage } from './pages/AgentPage';
 import { HelpPage } from './pages/HelpPage';
 import { LoginPage } from './pages/LoginPage';
 import { OAuthConsentPage } from './pages/OAuthConsentPage';
+import { OAuthCallbackPage } from './pages/OAuthCallbackPage';
 import { PrivacyPage } from './pages/PrivacyPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
@@ -406,6 +407,9 @@ export function App() {
     }
     if (pathname === '/login') {
       return <LoginPage />;
+    }
+    if (pathname === '/auth/oauth/callback') {
+      return <OAuthCallbackPage />;
     }
     if (pathname === '/register') {
       return <RegisterPage />;

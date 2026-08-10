@@ -25,7 +25,7 @@ export function PrivacyPage() {
           <h2>What we collect</h2>
           <p>QTask stores the following in your MongoDB database:</p>
           <ul className="welcome-list">
-            <li>Account information: email address, display name, and a hashed password</li>
+            <li>Account information: email address, display name, optional hashed password, and linked social sign-in provider IDs (Google, Microsoft) when enabled</li>
             <li>Tasks, projects, and related metadata you create</li>
             <li>Agent sessions and AI interaction history</li>
           </ul>

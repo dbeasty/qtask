@@ -2,6 +2,8 @@ import bcrypt from 'bcryptjs';
 import { ProjectModel, UserModel } from '../models/index.js';
 import { signToken } from '../auth/jwt.js';
 import { createOneTimeToken, hashToken } from '../auth/oneTimeToken.js';
+import type { OAuthProfile } from '../auth/userOAuth/types.js';
+import type { IdentityProviderId } from '../auth/userOAuth/types.js';
 import { HttpError } from '../utils/httpError.js';
 import { createLogger } from '../utils/logger.js';
 import { projectService } from './projectService.js';
@@ -76,6 +78,7 @@ function serializeUser(user: {
   emailVerified?: boolean | null;
   mustChangePassword?: boolean | null;
   hourlyRate?: number | null;
+  passwordHash?: string | null;
     preferences?: {
       autoApproveProposals?: boolean | null;
       skipConfirmations?: boolean | null;
@@ -93,9 +96,28 @@ function serializeUser(user: {
     displayName: user.displayName ?? undefined,
     emailVerified: isEmailVerified(user),
     mustChangePassword: user.mustChangePassword === true,
+    hasPassword: Boolean(user.passwordHash),
     hourlyRate: user.hourlyRate ?? undefined,
     preferences: serializePreferences(user.preferences),
   };
+}
+
+function hasLinkedProvider(
+  user: { identityProviders?: Array<{ provider?: string; providerUserId?: string }> | null },
+  provider: IdentityProviderId,
+  providerUserId: string
+): boolean {
+  return (
+    user.identityProviders?.some(
+      (entry) => entry.provider === provider && entry.providerUserId === providerUserId
+    ) ?? false
+  );
+}
+
+async function findUserByProvider(provider: IdentityProviderId, providerUserId: string) {
+  return UserModel.findOne({
+    identityProviders: { $elemMatch: { provider, providerUserId } },
+  });
 }
 
 export class AuthService {
@@ -147,6 +169,10 @@ export class AuthService {
     const email = normalizeEmail(input.email);
     const user = await UserModel.findOne({ email });
     if (!user) {
+      throw new HttpError(401, 'Invalid email or password');
+    }
+
+    if (!user.passwordHash) {
       throw new HttpError(401, 'Invalid email or password');
     }
 
@@ -214,6 +240,10 @@ export class AuthService {
     const email = normalizeEmail(emailInput);
     const user = await UserModel.findOne({ email });
 
+    if (user && !user.passwordHash) {
+      return { message: 'If an account exists for that email, a password reset link has been sent.' };
+    }
+
     if (user && emailService.isRegistrationEnabled()) {
       const reset = createOneTimeToken(RESET_TTL_MS);
       user.passwordResetTokenHash = reset.tokenHash;
@@ -255,6 +285,10 @@ export class AuthService {
       throw new HttpError(404, 'User not found');
     }
 
+    if (!user.passwordHash) {
+      throw new HttpError(400, 'This account uses social sign-in. Set a password from account settings first.');
+    }
+
     const valid = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!valid) {
       throw new HttpError(401, 'Current password is incorrect');
@@ -266,6 +300,131 @@ export class AuthService {
 
     const token = signToken({ sub: String(user._id), email: user.email });
     return { message: 'Password updated.', token, user: serializeUser(user) };
+  }
+
+  async createSessionForUserId(userId: string) {
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new HttpError(404, 'User not found');
+    }
+    return this.issueSession(user);
+  }
+
+  private issueSession(user: {
+    _id: unknown;
+    email: string;
+    mustChangePassword?: boolean | null;
+    passwordHash?: string | null;
+    displayName?: string | null;
+    emailVerified?: boolean | null;
+    hourlyRate?: number | null;
+    preferences?: Parameters<typeof serializeUser>[0]['preferences'];
+  }) {
+    const userId = String(user._id);
+    const mustChangePassword = user.mustChangePassword === true;
+    const token = signToken({
+      sub: userId,
+      email: user.email,
+      ...(mustChangePassword ? { pwd_change: true } : {}),
+    });
+    return { token, user: serializeUser(user), mustChangePassword };
+  }
+
+  async loginWithOAuthProvider(
+    profile: OAuthProfile,
+    options?: { acceptLegal?: boolean; inviteToken?: string }
+  ) {
+    if (!profile.emailVerified) {
+      throw new HttpError(403, 'Your email address is not verified with this provider');
+    }
+
+    const email = normalizeEmail(profile.email);
+
+    if (options?.inviteToken) {
+      const { inviteService } = await import('./inviteService.js');
+      const preview = await inviteService.getPublicInvitePreview(options.inviteToken);
+      if (normalizeEmail(preview.inviteeEmail) !== email) {
+        throw new HttpError(403, 'Sign in with the email address this invitation was sent to');
+      }
+    }
+
+    const byProvider = await findUserByProvider(profile.provider, profile.providerUserId);
+    if (byProvider) {
+      if (normalizeEmail(byProvider.email) !== email) {
+        throw new HttpError(409, 'Could not sign in with this provider. Contact support.');
+      }
+      byProvider.lastLoginAt = new Date();
+      await byProvider.save();
+      logger.info('OAuth sign-in', { userId: String(byProvider._id), provider: profile.provider });
+      return { userId: String(byProvider._id), ...this.issueSession(byProvider) };
+    }
+
+    let user = await UserModel.findOne({ email });
+
+    if (user) {
+      const subOwner = await findUserByProvider(profile.provider, profile.providerUserId);
+      if (subOwner && String(subOwner._id) !== String(user._id)) {
+        throw new HttpError(409, 'Could not sign in with this provider. Contact support.');
+      }
+
+      if (!hasLinkedProvider(user, profile.provider, profile.providerUserId)) {
+        user.identityProviders = user.identityProviders ?? [];
+        user.identityProviders.push({
+          provider: profile.provider,
+          providerUserId: profile.providerUserId,
+          linkedAt: new Date(),
+        });
+        logger.info('OAuth provider linked', {
+          userId: String(user._id),
+          provider: profile.provider,
+        });
+      }
+
+      if (!isEmailVerified(user)) {
+        user.emailVerified = true;
+        user.emailVerificationTokenHash = undefined;
+        user.emailVerificationExpires = undefined;
+      }
+
+      if (!user.displayName && profile.displayName) {
+        user.displayName = profile.displayName;
+      }
+
+      user.lastLoginAt = new Date();
+      await user.save();
+      return { userId: String(user._id), ...this.issueSession(user) };
+    }
+
+    if (!emailService.isRegistrationEnabled()) {
+      throw new HttpError(503, 'Registration is not currently enabled.');
+    }
+
+    if (options?.acceptLegal !== true) {
+      throw new HttpError(400, 'You must accept the Terms and Privacy Policy');
+    }
+
+    user = await UserModel.create({
+      email,
+      displayName: profile.displayName,
+      emailVerified: true,
+      legalAcceptedAt: new Date(),
+      legalVersion: LEGAL_VERSION,
+      identityProviders: [
+        {
+          provider: profile.provider,
+          providerUserId: profile.providerUserId,
+          linkedAt: new Date(),
+        },
+      ],
+    });
+
+    const userId = String(user._id);
+    await projectService.ensureDefaultProject(userId);
+    user.lastLoginAt = new Date();
+    await user.save();
+
+    logger.info('OAuth account created', { userId, provider: profile.provider });
+    return { userId, ...this.issueSession(user) };
   }
 
   async refreshSession(userId: string) {

@@ -1,7 +1,8 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { PasswordInput } from '../components/PasswordInput';
-import { getAuthConfig } from '../auth/storage';
+import { OAuthProviderButtons } from '../components/OAuthProviderButtons';
+import { getAuthConfig, type OAuthProviderPublicInfo } from '../auth/storage';
 import { usePendingInvitePreview } from '../hooks/usePendingInvitePreview';
 import { InviteContextBanner } from './InviteAcceptPage';
 
@@ -17,6 +18,7 @@ export function RegisterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [checkEmail, setCheckEmail] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean | null>(null);
+  const [oauthProviders, setOauthProviders] = useState<OAuthProviderPublicInfo[]>([]);
   const emailLocked = Boolean(invite);
 
   useEffect(() => {
@@ -30,6 +32,7 @@ export function RegisterPage() {
     void getAuthConfig().then((config) => {
       if (!cancelled) {
         setRegistrationEnabled(config.registrationEnabled);
+        setOauthProviders(config.oauthProviders ?? []);
       }
     });
     return () => {
@@ -161,6 +164,14 @@ export function RegisterPage() {
             {submitting ? 'Please wait…' : 'Create account'}
           </button>
         </form>
+
+        <OAuthProviderButtons
+          providers={oauthProviders}
+          registrationEnabled={registrationEnabled === true}
+          requireLegalAcceptance
+          legalAccepted={acceptLegal}
+          disabled={submitting}
+        />
 
         <p className="auth-hint auth-hint--switch muted">
           Already have an account? <a href="/login">Sign in</a>
