@@ -8,18 +8,22 @@ client talking to the same REST API as `client/` (the web app), sharing domain t
 
 - Expo (managed) + TypeScript + React Navigation + TanStack Query.
 - **Server connect screen** — QTask is self-hosted, so (unlike the web app, which is always
-  same-origin) the mobile app asks for the server URL on first launch and stores it via
-  `expo-secure-store`.
-- **Auth**: email/password login against `POST /api/auth/login`, JWT stored in
-  `expo-secure-store` (`src/config/storage.ts`), session bootstrap via `GET /api/auth/me`.
+  same-origin) the mobile app asks for the server URL on first launch. Defaults to
+  `https://qtask.dev` (the official hosted instance); stored via `expo-secure-store`, overridable
+  any time via "Change server" on the login screen.
+- **Auth**: email/password login against `POST /api/auth/login`, plus **Google/Microsoft OAuth**
+  via the system browser (`expo-web-browser`'s `openAuthSessionAsync`, custom scheme `qtask://`).
+  JWT stored in `expo-secure-store` (`src/config/storage.ts`), session bootstrap via
+  `GET /api/auth/me`.
+  - OAuth required a small backend change: `src/auth/userOAuth/service.ts` now accepts an
+    allowlisted `redirectUri` (`qtask://oauth` only — see `isAllowedMobileRedirectUri`) so the
+    provider callback can hand the auth code to the app instead of always redirecting to the web
+    SPA's callback page. See `mobile/src/auth/oauth.ts`.
 - **Projects list**, **task list per project** (create, toggle done), **task detail** (edit
   title/description, change status/priority, delete).
 
 ## What's NOT here (see plan doc §4 for why)
 
-- Social/OAuth sign-in (Google/Microsoft) — needs `expo-auth-session` + deep-link config; the
-  backend endpoint (`POST /api/auth/oauth/exchange`) already supports it, this is unimplemented
-  client work.
 - Subtasks, materials/labor cost tracking, comments, activity feed, AI agent chat — the web app's
   full data model (see `shared/src/types.ts`) is ported as types, but only a task-management
   subset has screens.

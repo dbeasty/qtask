@@ -72,8 +72,26 @@ export async function pingServer(baseUrl: string): Promise<boolean> {
   }
 }
 
-export async function getAuthConfig(): Promise<{ registrationEnabled: boolean }> {
+export interface OAuthProviderPublicInfo {
+  id: string;
+  label: string;
+}
+
+export async function getAuthConfig(): Promise<{
+  registrationEnabled: boolean;
+  oauthProviders?: OAuthProviderPublicInfo[];
+}> {
   return request('/api/auth/config', { auth: false });
+}
+
+export async function exchangeOAuthCode(code: string): Promise<LoginResult> {
+  const result = await request<LoginResult>('/api/auth/oauth/exchange', {
+    method: 'POST',
+    body: { code },
+    auth: false,
+  });
+  await setStoredToken(result.token);
+  return result;
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {

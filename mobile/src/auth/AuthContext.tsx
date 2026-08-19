@@ -2,6 +2,7 @@ import type { AuthUser } from '@qtask/shared';
 import { isTokenExpired } from '@qtask/shared';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import * as api from '../api/client';
+import { signInWithOAuthProvider } from './oauth';
 import {
   clearServerUrl,
   clearStoredToken,
@@ -16,11 +17,16 @@ interface AuthContextValue {
   serverUrl: string | null;
   setServerUrl: (url: string) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
+  loginWithOAuthProvider: (providerId: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+// QTask's official hosted instance — used to skip the server-setup screen on
+// first launch. Self-hosters can still point elsewhere via "Change server".
+const DEFAULT_SERVER_URL = 'https://qtask.dev';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AuthContextValue['status']>('loading');
@@ -28,10 +34,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [serverUrl, setServerUrlState] = useState<string | null>(null);
 
   const bootstrap = useCallback(async () => {
-    const url = await getServerUrl();
+    let url = await getServerUrl();
     if (!url) {
-      setStatus('needs-server');
-      return;
+      url = DEFAULT_SERVER_URL;
+      await persistServerUrl(url);
     }
     api.setCachedBaseUrl(url);
     setServerUrlState(url);
@@ -78,6 +84,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStatus('authenticated');
   }, []);
 
+  const loginWithOAuthProvider = useCallback(async (providerId: string) => {
+    const result = await signInWithOAuthProvider(providerId);
+    setUser(result.user);
+    setStatus('authenticated');
+  }, []);
+
   const logout = useCallback(async () => {
     await api.logout();
     setUser(null);
@@ -90,8 +102,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ status, user, serverUrl, setServerUrl: handleSetServerUrl, login, logout, refreshUser }),
-    [status, user, serverUrl, handleSetServerUrl, login, logout, refreshUser]
+    () => ({
+      status,
+      user,
+      serverUrl,
+      setServerUrl: handleSetServerUrl,
+      login,
+      loginWithOAuthProvider,
+      logout,
+      refreshUser,
+    }),
+    [status, user, serverUrl, handleSetServerUrl, login, loginWithOAuthProvider, logout, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

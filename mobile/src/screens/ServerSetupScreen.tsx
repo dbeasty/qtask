@@ -6,8 +6,8 @@ import { useAuth } from '../auth/AuthContext';
 // QTask is self-hosted, so unlike the web app (always same-origin) the
 // mobile app must be told which server to talk to on first launch.
 export function ServerSetupScreen() {
-  const { setServerUrl } = useAuth();
-  const [url, setUrl] = useState('');
+  const { setServerUrl, serverUrl } = useAuth();
+  const [url, setUrl] = useState(serverUrl ?? 'https://qtask.dev');
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
 

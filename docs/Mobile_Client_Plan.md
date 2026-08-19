@@ -52,10 +52,10 @@ This is a real but bounded refactor — do it as **Phase 0**, before mobile UI w
 - Add `mobile/` build step to `.github/workflows/ci.yml` (typecheck + `expo-doctor`/lint; full EAS builds likely stay manual/on-demand, not on every PR, to control CI cost).
 - Decide and document target Expo SDK / RN version and minimum OS versions (e.g. iOS 15+, Android 8+).
 
-### Phase 1 — Auth — DONE except OAuth
+### Phase 1 — Auth — DONE
 - Email/password login screen calling `POST /api/auth/login`.
 - Token storage via `expo-secure-store`; port the proactive-refresh logic from `client/src/auth/session.ts` (`REFRESH_LEAD_MS`/`REFRESH_GRACE_MS`) to a React Query-friendly auth context.
-- Google/Microsoft OAuth: use `expo-auth-session` to drive the system-browser OAuth redirect, then reuse the existing `POST /api/auth/oauth/exchange` endpoint — no backend change needed here since that endpoint already exists for the web SPA. **Not yet implemented** — email/password only so far.
+- Google/Microsoft OAuth — **done**, via `expo-web-browser`'s `openAuthSessionAsync` and the existing `POST /api/auth/oauth/exchange` endpoint. This needed one small backend change beyond what was originally scoped: `/api/auth/oauth/:provider` now accepts an allowlisted `redirectUri` query param (`qtask://oauth` only) so the callback can hand the code to the app via custom URL scheme instead of always redirecting to the web SPA's fixed callback page. See `src/auth/userOAuth/service.ts` (`isAllowedMobileRedirectUri`).
 - Logout — implemented. Proactive token-refresh timing (`REFRESH_LEAD_MS`/`REFRESH_GRACE_MS`) ported to `shared/src/jwt.ts` but not yet wired into `AuthContext` as a background timer — currently only checked on app bootstrap.
 
 ### Phase 2 — Core task management (MVP surface) — partially done
