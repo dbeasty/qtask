@@ -58,19 +58,19 @@ This is a real but bounded refactor — do it as **Phase 0**, before mobile UI w
 - Google/Microsoft OAuth — **done**, via `expo-web-browser`'s `openAuthSessionAsync` and the existing `POST /api/auth/oauth/exchange` endpoint. This needed one small backend change beyond what was originally scoped: `/api/auth/oauth/:provider` now accepts an allowlisted `redirectUri` query param (`qtask://oauth` only) so the callback can hand the code to the app via custom URL scheme instead of always redirecting to the web SPA's fixed callback page. See `src/auth/userOAuth/service.ts` (`isAllowedMobileRedirectUri`).
 - Logout — implemented. Proactive token-refresh timing (`REFRESH_LEAD_MS`/`REFRESH_GRACE_MS`) ported to `shared/src/jwt.ts` but not yet wired into `AuthContext` as a background timer — currently only checked on app bootstrap.
 
-### Phase 2 — Core task management (MVP surface) — partially done
+### Phase 2 — Core task management (MVP surface) — DONE
 Port the functional core of `client/src/pages/` to native screens, in priority order:
 1. Task list / project view (read) — **done**.
 2. Task create/edit/complete/delete — **done** (title, description, status, priority; not steps/tags/due date).
-3. Projects/lists CRUD — **read-only list done**; create/edit/delete projects not yet implemented.
-4. Search (`/api/search`) — not yet implemented.
-5. Invites — accept/view pending invites (`/api/invites`) — not yet implemented.
+3. Projects/lists CRUD — **done** (list, create, rename/edit description, delete via `ProjectDetailScreen`).
+4. Search (`/api/search`) — **done** (`SearchScreen`, results link into project task list / task detail).
+5. Invites — accept/view pending invites (`/api/invites`) — **done**, folded into `NotificationsScreen` (see Phase 3) rather than a separate screen, since invites are themselves a notification-adjacent inbox concern.
 
 Each screen: React Query hooks wrapping the existing REST endpoints (no new backend routes needed for this phase — same API surface as web).
 
-### Phase 3 — Notifications
-- In-app notification list/badge, mirroring `NotificationBell.tsx`, via `GET /api/notifications` + `/unread-count`, polled on a timer/app-foreground (since there's no WebSocket layer — see §4 for the polling-vs-push tradeoff).
-- Native push notifications (APNs/FCM) — this needs backend work; scoped separately in §5. Treat push as an explicit stretch goal, not baseline Phase 3, since it has server-side dependencies.
+### Phase 3 — Notifications — DONE (polling only)
+- In-app notification list/badge, mirroring `NotificationBell.tsx`, via `GET /api/notifications` + `/unread-count`, polled every 30s while the app is foregrounded (`src/hooks/useUnreadCount.ts`) since there's no WebSocket layer — see §4 for the polling-vs-push tradeoff. Badge surfaces on the bottom-tab Notifications icon.
+- Native push notifications (APNs/FCM) — **still not implemented**; this needs backend work, scoped separately in §5. Remains an explicit stretch goal, not baseline Phase 3, since it has server-side dependencies (device token registration/storage, send integration) beyond mobile-client scope.
 
 ### Phase 4 — Polish & store readiness
 - Offline behavior: React Query cache + a clear "stale/offline" indicator (full offline write queue is out of scope for v1 — flag as a future item, not a v1 requirement).

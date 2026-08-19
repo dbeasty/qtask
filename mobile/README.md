@@ -1,12 +1,13 @@
 # QTask Mobile (React Native / Expo)
 
-Implements Phase 0–2 of [`docs/Mobile_Client_Plan.md`](../docs/Mobile_Client_Plan.md): a task manager
-client talking to the same REST API as `client/` (the web app), sharing domain types with it via
-`@qtask/shared` (`../shared/src`).
+Implements Phases 0–3 of [`docs/Mobile_Client_Plan.md`](../docs/Mobile_Client_Plan.md): a task
+manager client talking to the same REST API as `client/` (the web app), sharing domain types with
+it via `@qtask/shared` (`../shared/src`).
 
 ## What's here
 
-- Expo (managed) + TypeScript + React Navigation + TanStack Query.
+- Expo (managed) + TypeScript + React Navigation (bottom tabs: Projects / Search / Notifications)
+  + TanStack Query.
 - **Server connect screen** — QTask is self-hosted, so (unlike the web app, which is always
   same-origin) the mobile app asks for the server URL on first launch. Defaults to
   `https://qtask.dev` (the official hosted instance); stored via `expo-secure-store`, overridable
@@ -19,15 +20,23 @@ client talking to the same REST API as `client/` (the web app), sharing domain t
     allowlisted `redirectUri` (`qtask://oauth` only — see `isAllowedMobileRedirectUri`) so the
     provider callback can hand the auth code to the app instead of always redirecting to the web
     SPA's callback page. See `mobile/src/auth/oauth.ts`.
-- **Projects list**, **task list per project** (create, toggle done), **task detail** (edit
-  title/description, change status/priority, delete).
+- **Projects**: list, create, edit/rename, delete (`ProjectDetailScreen`).
+- **Tasks**: list per project, create, toggle done, edit title/description/status/priority,
+  delete.
+- **Search**: hits `GET /api/search`, results link into the matching project's task list or a
+  task's detail screen.
+- **Notifications & invites**: `NotificationsScreen` lists pending project invites (accept/
+  decline) above the notification feed (mark read / mark all read); the Notifications tab shows an
+  unread-count badge, polled every 30s (`src/hooks/useUnreadCount.ts`) since there's no
+  WebSocket/push layer to push it live — see plan doc §4.1.
 
 ## What's NOT here (see plan doc §4 for why)
 
 - Subtasks, materials/labor cost tracking, comments, activity feed, AI agent chat — the web app's
-  full data model (see `shared/src/types.ts`) is ported as types, but only a task-management
-  subset has screens.
-- Push notifications — needs new backend work (device token registration + send integration).
+  full data model (see `shared/src/types.ts`) is ported as types, but only a task/project
+  management subset has screens.
+- Push notifications (APNs/FCM) — needs new backend work (device token registration + send
+  integration); the badge above is polling, not push.
 - Store submission / EAS build config, app icons, splash screen.
 
 ## Running it

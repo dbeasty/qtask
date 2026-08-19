@@ -1,8 +1,11 @@
 import type {
+  AppNotification,
   AuthUser,
   CreateTaskInput,
   LoginResult,
   Project,
+  ProjectInvite,
+  SearchResults,
   Task,
   UpdateTaskInput,
 } from '@qtask/shared';
@@ -147,4 +150,59 @@ export async function updateTask(id: string, input: UpdateTaskInput): Promise<Ta
 
 export async function deleteTask(id: string): Promise<void> {
   await request(`/api/tasks/${id}`, { method: 'DELETE' });
+}
+
+export async function createProject(input: { name: string; description?: string }): Promise<Project> {
+  const body = await request<{ project: Project }>('/api/projects', { method: 'POST', body: input });
+  return body.project;
+}
+
+export async function updateProject(
+  id: string,
+  input: { name?: string; description?: string | null }
+): Promise<Project> {
+  const body = await request<{ project: Project }>(`/api/projects/${id}`, {
+    method: 'PATCH',
+    body: input,
+  });
+  return body.project;
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  await request(`/api/projects/${id}`, { method: 'DELETE' });
+}
+
+export async function search(query: string): Promise<SearchResults> {
+  return request(`/api/search?q=${encodeURIComponent(query)}`);
+}
+
+export async function listInvites(): Promise<ProjectInvite[]> {
+  const body = await request<{ invites: ProjectInvite[] }>('/api/invites');
+  return body.invites;
+}
+
+export async function acceptInvite(id: string): Promise<void> {
+  await request(`/api/invites/${id}/accept`, { method: 'POST' });
+}
+
+export async function declineInvite(id: string): Promise<void> {
+  await request(`/api/invites/${id}/decline`, { method: 'POST' });
+}
+
+export async function listNotifications(): Promise<AppNotification[]> {
+  const body = await request<{ notifications: AppNotification[] }>('/api/notifications');
+  return body.notifications;
+}
+
+export async function unreadNotificationCount(): Promise<number> {
+  const body = await request<{ count: number }>('/api/notifications/unread-count');
+  return body.count;
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await request(`/api/notifications/${id}/read`, { method: 'PATCH' });
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await request('/api/notifications/read-all', { method: 'POST' });
 }
