@@ -6,7 +6,6 @@ import { signInWithOAuthProvider } from './oauth';
 import {
   clearServerUrl,
   clearStoredToken,
-  getServerUrl,
   getStoredToken,
   setServerUrl as persistServerUrl,
 } from '../config/storage';
@@ -34,11 +33,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [serverUrl, setServerUrlState] = useState<string | null>(null);
 
   const bootstrap = useCallback(async () => {
-    let url = await getServerUrl();
-    if (!url) {
-      url = DEFAULT_SERVER_URL;
-      await persistServerUrl(url);
-    }
+    // Hardcoded for now rather than trusting whatever's left over in
+    // SecureStore from earlier testing/dev sessions -- every launch starts
+    // pointed at the real server, deterministically. "Change server" below
+    // can still override it for the current session.
+    const url = DEFAULT_SERVER_URL;
+    await persistServerUrl(url);
     api.setCachedBaseUrl(url);
     setServerUrlState(url);
 
