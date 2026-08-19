@@ -28,6 +28,8 @@ export function TaskDetailScreen({ route, navigation }: any) {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['task', taskId] });
     queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    // Status changes affect the parent project's percentComplete rollup.
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
   };
 
   const save = useMutation({
@@ -49,6 +51,7 @@ export function TaskDetailScreen({ route, navigation }: any) {
     mutationFn: () => deleteTask(taskId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       navigation.goBack();
     },
   });

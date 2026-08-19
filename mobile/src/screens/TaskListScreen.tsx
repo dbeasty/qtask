@@ -29,10 +29,17 @@ export function TaskListScreen({ route, navigation }: any) {
     queryFn: () => listTasks(projectId),
   });
 
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['tasks', projectId ?? 'all'] });
+    // Completing/uncompleting a task changes the parent project's rollup
+    // (percentComplete etc.), so the projects list must refetch too.
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+  };
+
   const toggleDone = useMutation({
     mutationFn: (task: Task) =>
       updateTask(task._id, { status: task.status === 'done' ? 'todo' : 'done' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tasks', projectId ?? 'all'] }),
+    onSuccess: invalidate,
   });
 
   const createNew = useMutation({
@@ -40,7 +47,7 @@ export function TaskListScreen({ route, navigation }: any) {
       createTask({ title: newTitle.trim(), projectId: projectId ?? undefined }),
     onSuccess: () => {
       setNewTitle('');
-      queryClient.invalidateQueries({ queryKey: ['tasks', projectId ?? 'all'] });
+      invalidate();
     },
   });
 
