@@ -360,9 +360,22 @@ export function TasksPage({
     });
   }, [tasks]);
 
-  const applyTaskUpdate = useCallback((updatedTask: Task) => {
-    setTasks((current) => current.map((task) => (task._id === updatedTask._id ? updatedTask : task)));
+  const refreshProjects = useCallback(() => {
+    void listProjects()
+      .then(({ projects: nextProjects }) => setProjects(nextProjects))
+      .catch(() => {});
   }, []);
+
+  const applyTaskUpdate = useCallback(
+    (updatedTask: Task) => {
+      setTasks((current) => current.map((task) => (task._id === updatedTask._id ? updatedTask : task)));
+      // Task/subtask status and percentComplete changes roll up into project
+      // status server-side (see projectService.recalculateProjectAndAncestors),
+      // so the locally-held project list needs to be re-synced here too.
+      refreshProjects();
+    },
+    [refreshProjects]
+  );
 
   const resetHierarchyModes = useCallback(() => {
     setAddingSubtask(false);
@@ -594,6 +607,7 @@ export function TasksPage({
         }
       }
       resetHierarchyModes();
+      refreshProjects();
       return true;
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to delete');
