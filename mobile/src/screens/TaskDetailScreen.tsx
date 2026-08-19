@@ -97,6 +97,9 @@ export function TaskDetailScreen({ route, navigation }: any) {
             key={s}
             style={[styles.chip, task.status === s && styles.chipActive]}
             onPress={() => setStatus.mutate(s)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: task.status === s }}
+            accessibilityLabel={`Status ${s}`}
           >
             <Text style={[styles.chipText, task.status === s && styles.chipTextActive]}>{s}</Text>
           </TouchableOpacity>
@@ -110,13 +113,21 @@ export function TaskDetailScreen({ route, navigation }: any) {
             key={p}
             style={[styles.chip, task.priority === p && styles.chipActive]}
             onPress={() => setPriority.mutate(p)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: task.priority === p }}
+            accessibilityLabel={`Priority ${p}`}
           >
             <Text style={[styles.chipText, task.priority === p && styles.chipTextActive]}>{p}</Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
+      <TouchableOpacity
+        style={styles.deleteButton}
+        onPress={onDelete}
+        accessibilityRole="button"
+        accessibilityLabel="Delete task"
+      >
         <Text style={styles.deleteButtonText}>Delete task</Text>
       </TouchableOpacity>
     </ScrollView>

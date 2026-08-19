@@ -2,10 +2,12 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    "types": ["jest"],
     "paths": {
       "@qtask/shared": ["../shared/src/index.ts"],
       "@qtask/shared/*": ["../shared/src/*"]
     }
   },
-  "include": ["**/*.ts", "**/*.tsx", "../shared/src/**/*.ts"]
+  "include": ["**/*.ts", "**/*.tsx", "../shared/src/**/*.ts"],
+  "exclude": ["../shared/src/**/*.test.ts"]
 }

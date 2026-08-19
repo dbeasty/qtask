@@ -72,12 +72,12 @@ Each screen: React Query hooks wrapping the existing REST endpoints (no new back
 - In-app notification list/badge, mirroring `NotificationBell.tsx`, via `GET /api/notifications` + `/unread-count`, polled every 30s while the app is foregrounded (`src/hooks/useUnreadCount.ts`) since there's no WebSocket layer — see §4 for the polling-vs-push tradeoff. Badge surfaces on the bottom-tab Notifications icon.
 - Native push notifications (APNs/FCM) — **still not implemented**; this needs backend work, scoped separately in §5. Remains an explicit stretch goal, not baseline Phase 3, since it has server-side dependencies (device token registration/storage, send integration) beyond mobile-client scope.
 
-### Phase 4 — Polish & store readiness
-- Offline behavior: React Query cache + a clear "stale/offline" indicator (full offline write queue is out of scope for v1 — flag as a future item, not a v1 requirement).
-- App icons, splash screen, deep linking (e.g. `qtask://task/:id`) for notification taps.
-- EAS Build pipeline for TestFlight (iOS) and internal testing track (Android).
-- Accessibility pass (screen reader labels, dynamic type).
-- Store listings (screenshots, privacy nutrition label / Play data-safety form — check what user data is collected: email, tasks, feedback attachments).
+### Phase 4 — Polish & store readiness — code-side parts DONE; store/account-gated parts NOT STARTED
+- Offline behavior — **done**: React Query's `onlineManager` is wired to `@react-native-community/netinfo` (App.tsx), and `OfflineBanner` shows a clear "you're offline, showing last data loaded" banner app-wide. A full offline write queue remains explicitly out of scope for v1.
+- Deep linking — **done**: `qtask://task/:id`, `qtask://project/:id`, `qtask://projects/:id/tasks` all resolve to the right screen via React Navigation's `linking` config (`src/navigation/linking.ts`), so a (future) push notification tap can open the right place. App icons/splash screen are still the Expo scaffold defaults — no branded assets designed yet.
+- EAS Build pipeline — **partially done**: `mobile/eas.json` scaffolds `development`/`preview`/`production` build profiles, but no actual EAS build has been run — that needs an Expo account login, which is a credential/account step, not code.
+- Accessibility pass — **started, not exhaustive**: `accessibilityRole`/`accessibilityLabel`/`accessibilityState` added to the highest-value interactive elements (task done-checkbox, status/priority selectors, destructive delete actions, invite accept/decline). Not yet audited for dynamic type / screen-reader flow end-to-end on a device.
+- Store listings (screenshots, privacy nutrition label / Play data-safety form) — **not started**; needs App Store Connect / Play Console access.
 
 ### Phase 5 — Launch
 - TestFlight/Play internal testing → closed beta → public release.

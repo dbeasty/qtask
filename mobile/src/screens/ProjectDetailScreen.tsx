@@ -73,7 +73,12 @@ export function ProjectDetailScreen({ route, navigation }: any) {
       />
 
       {project.canDeleteProjects ? (
-        <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
+        <TouchableOpacity
+          style={styles.deleteButton}
+          onPress={onDelete}
+          accessibilityRole="button"
+          accessibilityLabel="Delete project"
+        >
           <Text style={styles.deleteButtonText}>Delete project</Text>
         </TouchableOpacity>
       ) : null}

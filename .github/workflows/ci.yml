@@ -25,6 +25,9 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run shared package tests
+        run: npm run test:shared
+
       - name: Build API
         run: npm run build
 
@@ -39,3 +42,6 @@ jobs:
 
       - name: Typecheck mobile
         run: npm run typecheck --prefix mobile
+
+      - name: Run mobile tests
+        run: npm test --prefix mobile

@@ -88,10 +88,15 @@ export function TaskListScreen({ route, navigation }: any) {
           <TouchableOpacity
             style={styles.row}
             onPress={() => navigation.navigate('TaskDetail', { taskId: item._id })}
+            accessibilityRole="button"
+            accessibilityLabel={`Open task ${item.title}`}
           >
             <TouchableOpacity
               style={[styles.checkbox, item.status === 'done' && styles.checkboxDone]}
               onPress={() => toggleDone.mutate(item)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: item.status === 'done' }}
+              accessibilityLabel={item.status === 'done' ? `Mark ${item.title} not done` : `Mark ${item.title} done`}
             />
             <View style={styles.rowBody}>
               <Text style={[styles.rowTitle, item.status === 'done' && styles.rowTitleDone]}>
