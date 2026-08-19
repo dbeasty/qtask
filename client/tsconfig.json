@@ -17,7 +17,9 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
     "paths": {
-      "@qtask/agent/*": ["../src/agent/*"]
+      "@qtask/agent/*": ["../src/agent/*"],
+      "@qtask/shared": ["../shared/src/index.ts"],
+      "@qtask/shared/*": ["../shared/src/*"]
     }
   },
   "include": ["src"]

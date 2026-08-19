@@ -11,11 +11,27 @@ import { isIdentityProviderId } from './types.js';
 
 const log = createLogger('userOAuth');
 
-function buildSpaRedirectUrl(params: { code?: string; error?: string; returnTo?: string }): string {
-  const url = new URL('/auth/oauth/callback', config.appUrl);
+// Only the QTask mobile app's own custom URL scheme is allowed as an OAuth
+// redirect target, to prevent this becoming an open redirect. Widen this if
+// the mobile app ever ships under a different scheme/deep link.
+const MOBILE_REDIRECT_SCHEME = 'qtask://';
+
+export function isAllowedMobileRedirectUri(uri: string): boolean {
+  return uri.startsWith(MOBILE_REDIRECT_SCHEME);
+}
+
+function buildSpaRedirectUrl(params: {
+  code?: string;
+  error?: string;
+  returnTo?: string;
+  mobileRedirectUri?: string;
+}): string {
+  const url = params.mobileRedirectUri
+    ? new URL(params.mobileRedirectUri)
+    : new URL('/auth/oauth/callback', config.appUrl);
   if (params.code) url.searchParams.set('code', params.code);
   if (params.error) url.searchParams.set('error', params.error);
-  if (params.returnTo) url.searchParams.set('returnTo', params.returnTo);
+  if (params.returnTo && !params.mobileRedirectUri) url.searchParams.set('returnTo', params.returnTo);
   return url.toString();
 }
 
@@ -25,6 +41,7 @@ export class UserOAuthService {
     returnTo?: string;
     inviteToken?: string;
     acceptLegal?: boolean;
+    mobileRedirectUri?: string;
   }): Promise<string> {
     if (!isIdentityProviderId(input.provider)) {
       throw new HttpError(404, 'Unknown sign-in provider');
@@ -35,6 +52,10 @@ export class UserOAuthService {
       throw new HttpError(404, 'Sign-in provider is not enabled');
     }
 
+    if (input.mobileRedirectUri && !isAllowedMobileRedirectUri(input.mobileRedirectUri)) {
+      throw new HttpError(400, 'Invalid mobile redirect URI');
+    }
+
     const pkceCodeVerifier = randomPKCECodeVerifier();
     const state = createOAuthState({
       provider: input.provider,
@@ -42,6 +63,7 @@ export class UserOAuthService {
       returnTo: input.returnTo,
       inviteToken: input.inviteToken,
       acceptLegal: input.acceptLegal,
+      mobileRedirectUri: input.mobileRedirectUri,
     });
 
     return adapter.getAuthorizationUrl(state, pkceCodeVerifier);
@@ -82,7 +104,7 @@ export class UserOAuthService {
     const code = await issueUserOAuthAuthCode(session.userId);
     log.info('OAuth sign-in succeeded', { provider: profile.provider, userId: session.userId });
 
-    return buildSpaRedirectUrl({ code, returnTo: state.returnTo });
+    return buildSpaRedirectUrl({ code, returnTo: state.returnTo, mobileRedirectUri: state.mobileRedirectUri });
   }
 
   async exchangeAuthCode(code: string) {
@@ -91,8 +113,8 @@ export class UserOAuthService {
     return authService.createSessionForUserId(userId);
   }
 
-  buildErrorRedirect(message: string, returnTo?: string): string {
-    return buildSpaRedirectUrl({ error: message, returnTo });
+  buildErrorRedirect(message: string, returnTo?: string, mobileRedirectUri?: string): string {
+    return buildSpaRedirectUrl({ error: message, returnTo, mobileRedirectUri });
   }
 }
 

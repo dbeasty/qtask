@@ -20,6 +20,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@qtask/agent': path.resolve(repoRoot, 'src/agent'),
+      '@qtask/shared': path.resolve(repoRoot, 'shared/src'),
     },
   },
   server: {

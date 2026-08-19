@@ -83,11 +83,14 @@ authRouter.get('/oauth/:provider', async (req, res, next) => {
     const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined;
     const inviteToken = typeof req.query.inviteToken === 'string' ? req.query.inviteToken : undefined;
     const acceptLegal = req.query.acceptLegal === 'true';
+    const mobileRedirectUri =
+      typeof req.query.redirectUri === 'string' ? req.query.redirectUri : undefined;
     const redirectUrl = await userOAuthService.beginAuthorization({
       provider: req.params.provider ?? '',
       returnTo,
       inviteToken,
       acceptLegal,
+      mobileRedirectUri,
     });
     res.redirect(redirectUrl);
   } catch (error) {
@@ -97,9 +100,12 @@ authRouter.get('/oauth/:provider', async (req, res, next) => {
 
 authRouter.get('/oauth/:provider/callback', async (req, res, next) => {
   let returnTo: string | undefined;
+  let mobileRedirectUri: string | undefined;
   const stateParam = typeof req.query.state === 'string' ? req.query.state : undefined;
   if (stateParam) {
-    returnTo = verifyOAuthState(stateParam)?.returnTo;
+    const state = verifyOAuthState(stateParam);
+    returnTo = state?.returnTo;
+    mobileRedirectUri = state?.mobileRedirectUri;
   }
 
   try {
@@ -115,7 +121,7 @@ authRouter.get('/oauth/:provider/callback', async (req, res, next) => {
           ? error.message
           : 'Sign-in failed';
     try {
-      res.redirect(userOAuthService.buildErrorRedirect(message, returnTo));
+      res.redirect(userOAuthService.buildErrorRedirect(message, returnTo, mobileRedirectUri));
     } catch {
       next(error);
     }

@@ -32,6 +32,7 @@ export function createOAuthState(input: {
   returnTo?: string;
   inviteToken?: string;
   acceptLegal?: boolean;
+  mobileRedirectUri?: string;
 }): string {
   const payload: OAuthStatePayload = {
     provider: input.provider,
@@ -40,6 +41,7 @@ export function createOAuthState(input: {
     returnTo: input.returnTo,
     inviteToken: input.inviteToken,
     acceptLegal: input.acceptLegal === true ? true : undefined,
+    mobileRedirectUri: input.mobileRedirectUri,
     exp: Date.now() + STATE_TTL_MS,
   };
   const encoded = encodePayload(payload);

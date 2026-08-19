@@ -30,6 +30,9 @@ export interface OAuthStatePayload {
   returnTo?: string;
   inviteToken?: string;
   acceptLegal?: boolean;
+  /** Mobile app callback URL (must pass isAllowedMobileRedirectUri) to hand the
+   * auth code to instead of the web SPA's callback page. */
+  mobileRedirectUri?: string;
   exp: number;
 }
 

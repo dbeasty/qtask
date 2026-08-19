@@ -110,12 +110,23 @@ function applyProgressInputFields(
   changes: Record<string, unknown>
 ) {
   if (input.status !== undefined) {
+    const previousStatus = node.status;
     node.status = input.status;
     changes.status = input.status;
-    if (input.status === 'done' && (node.subtasks ?? []).length === 0) {
+    const isLeaf = (node.subtasks ?? []).length === 0;
+    if (input.status === 'done' && isLeaf) {
       node.percentComplete = 100;
       node.lastProgressField = 'percent';
       changes.percentComplete = 100;
+      changes.lastProgressField = 'percent';
+    } else if (previousStatus === 'done' && input.status !== 'done' && isLeaf) {
+      // Mirror the transition above: leaving 'done' resets the percent that
+      // was force-set to 100 on the way in, so project rollups reflect the
+      // un-completion. A percentComplete/hours value provided in the same
+      // request (handled below) still overrides this.
+      node.percentComplete = 0;
+      node.lastProgressField = 'percent';
+      changes.percentComplete = 0;
       changes.lastProgressField = 'percent';
     }
   }
