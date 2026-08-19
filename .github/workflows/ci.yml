@@ -33,3 +33,9 @@ jobs:
 
       - name: Build client
         run: npm run build --prefix client
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile
+
+      - name: Typecheck mobile
+        run: npm run typecheck --prefix mobile

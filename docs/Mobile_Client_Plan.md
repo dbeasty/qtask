@@ -1,6 +1,8 @@
 # QTask Mobile Client — Implementation Plan
 
-Status: Draft plan (no code yet). Written 2026-08-19 against codebase v0.1.58.
+Status: **Phase 0 done; Phase 1 (auth) and a slice of Phase 2 (core tasks) implemented** in `mobile/`. Written 2026-08-19, updated same day against codebase v0.1.58. See `mobile/README.md` for what's implemented vs. deferred.
+
+Implementation note vs. §2 below: instead of real npm workspaces, `shared/` and `mobile/` use the same path-alias pattern `client/` already uses for `@qtask/agent` (Vite `resolve.alias` / tsconfig `paths`, and Metro `watchFolders`/`extraNodeModules` for the mobile side). This matches existing repo convention and avoids introducing workspace tooling the rest of the repo doesn't use.
 
 This plan is grounded in the current codebase, not the original (partly aspirational) PRD stack table. Key corrections vs. the PRD:
 
@@ -44,25 +46,25 @@ This is a real but bounded refactor — do it as **Phase 0**, before mobile UI w
 
 ## 3. Phased plan
 
-### Phase 0 — Foundation (no user-visible mobile UI yet)
+### Phase 0 — Foundation (no user-visible mobile UI yet) — DONE
 - Convert repo to npm workspaces; add `shared/package.json` and move duplicated types into it; update `client/` to import from `shared`.
 - Scaffold `mobile/` with Expo + TypeScript, React Navigation, React Query, ESLint/Prettier config matching root.
 - Add `mobile/` build step to `.github/workflows/ci.yml` (typecheck + `expo-doctor`/lint; full EAS builds likely stay manual/on-demand, not on every PR, to control CI cost).
 - Decide and document target Expo SDK / RN version and minimum OS versions (e.g. iOS 15+, Android 8+).
 
-### Phase 1 — Auth
+### Phase 1 — Auth — DONE except OAuth
 - Email/password login screen calling `POST /api/auth/login`.
 - Token storage via `expo-secure-store`; port the proactive-refresh logic from `client/src/auth/session.ts` (`REFRESH_LEAD_MS`/`REFRESH_GRACE_MS`) to a React Query-friendly auth context.
-- Google/Microsoft OAuth: use `expo-auth-session` to drive the system-browser OAuth redirect, then reuse the existing `POST /api/auth/oauth/exchange` endpoint — no backend change needed here since that endpoint already exists for the web SPA.
-- Logout, session-expiry handling, "logged out elsewhere" edge case (token invalidated server-side).
+- Google/Microsoft OAuth: use `expo-auth-session` to drive the system-browser OAuth redirect, then reuse the existing `POST /api/auth/oauth/exchange` endpoint — no backend change needed here since that endpoint already exists for the web SPA. **Not yet implemented** — email/password only so far.
+- Logout — implemented. Proactive token-refresh timing (`REFRESH_LEAD_MS`/`REFRESH_GRACE_MS`) ported to `shared/src/jwt.ts` but not yet wired into `AuthContext` as a background timer — currently only checked on app bootstrap.
 
-### Phase 2 — Core task management (MVP surface)
+### Phase 2 — Core task management (MVP surface) — partially done
 Port the functional core of `client/src/pages/` to native screens, in priority order:
-1. Task list / project view (read).
-2. Task create/edit/complete/delete.
-3. Projects/lists CRUD.
-4. Search (`/api/search`).
-5. Invites — accept/view pending invites (`/api/invites`).
+1. Task list / project view (read) — **done**.
+2. Task create/edit/complete/delete — **done** (title, description, status, priority; not steps/tags/due date).
+3. Projects/lists CRUD — **read-only list done**; create/edit/delete projects not yet implemented.
+4. Search (`/api/search`) — not yet implemented.
+5. Invites — accept/view pending invites (`/api/invites`) — not yet implemented.
 
 Each screen: React Query hooks wrapping the existing REST endpoints (no new backend routes needed for this phase — same API surface as web).
 
