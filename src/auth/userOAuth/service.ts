@@ -12,12 +12,21 @@ import { isIdentityProviderId } from './types.js';
 const log = createLogger('userOAuth');
 
 // Only the QTask mobile app's own custom URL scheme is allowed as an OAuth
-// redirect target, to prevent this becoming an open redirect. Widen this if
-// the mobile app ever ships under a different scheme/deep link.
+// redirect target in production, to prevent this becoming an open redirect.
+// Widen this if the mobile app ever ships under a different scheme/deep link.
 const MOBILE_REDIRECT_SCHEME = 'qtask://';
 
-export function isAllowedMobileRedirectUri(uri: string): boolean {
-  return uri.startsWith(MOBILE_REDIRECT_SCHEME);
+// Outside production, also allow Expo Go's own exp:// scheme (what
+// Linking.createURL() resolves to when the app isn't a standalone/dev-client
+// build — see mobile/src/auth/oauth.ts). exp:// URLs only mean anything to a
+// device pointed at a specific developer's local Metro server, so allowing
+// them has no real attack surface, but they're still excluded in production
+// to keep that allowlist as narrow as possible.
+const DEV_MOBILE_REDIRECT_SCHEME = 'exp://';
+
+export function isAllowedMobileRedirectUri(uri: string, nodeEnv: string = config.nodeEnv): boolean {
+  if (uri.startsWith(MOBILE_REDIRECT_SCHEME)) return true;
+  return nodeEnv !== 'production' && uri.startsWith(DEV_MOBILE_REDIRECT_SCHEME);
 }
 
 function buildSpaRedirectUrl(params: {

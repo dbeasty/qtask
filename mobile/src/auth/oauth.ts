@@ -1,11 +1,16 @@
 import type { LoginResult } from '@qtask/shared';
+import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { exchangeOAuthCode, resolveBaseUrl } from '../api/client';
 
-// The QTask backend only allows redirecting to this exact custom-scheme
-// prefix for mobile OAuth (see src/auth/userOAuth/service.ts on the server —
-// isAllowedMobileRedirectUri). Matches app.json's "scheme": "qtask".
-const MOBILE_REDIRECT_URI = 'qtask://oauth';
+// Linking.createURL resolves to the right redirect for whatever environment
+// this is actually running in: qtask://oauth in a standalone/dev-client
+// build (app.json's "scheme": "qtask"), or Expo Go's own exp://host:port/--/
+// oauth when running inside Expo Go during development. The backend only
+// accepts the latter outside production (see isAllowedMobileRedirectUri in
+// src/auth/userOAuth/service.ts) — a real production build always gets the
+// qtask:// form, so this doesn't weaken anything in production.
+const MOBILE_REDIRECT_URI = Linking.createURL('oauth');
 
 export class OAuthCancelledError extends Error {
   constructor() {
