@@ -129,16 +129,16 @@ describe('create-task preflight', () => {
     );
     assert.equal(createProposals.length, 1);
     assert.equal(
-      (createProposals[0] as { arguments: { title: string; projectId: string } }).arguments.title,
+      (createProposals[0] as unknown as { arguments: { title: string; projectId: string } }).arguments.title,
       'Advertise on Local Facebook'
     );
     assert.equal(
-      (createProposals[0] as { arguments: { title: string; projectId: string } }).arguments
+      (createProposals[0] as unknown as { arguments: { title: string; projectId: string } }).arguments
         .projectId,
       projectId
     );
 
-    const done = events.find((event) => event.type === 'done') as {
+    const done = events.find((event) => event.type === 'done') as unknown as {
       paused?: boolean;
       conversationId: string;
     };
@@ -210,7 +210,7 @@ describe('create-task preflight', () => {
     assert.ok(entityLinks.length >= 1);
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(
@@ -265,7 +265,7 @@ describe('create-task preflight', () => {
     );
     assert.equal(createProposals.length, 1);
     assert.equal(
-      (createProposals[0] as { arguments: { title: string } }).arguments.title,
+      (createProposals[0] as unknown as { arguments: { title: string } }).arguments.title,
       'Advertise on Orcas Buy and Sell Facebook'
     );
 
@@ -320,7 +320,7 @@ describe('create-task preflight', () => {
     );
     assert.equal(createProposals.length, 1);
     assert.equal(
-      (createProposals[0] as { arguments: { title: string } }).arguments.title,
+      (createProposals[0] as unknown as { arguments: { title: string } }).arguments.title,
       'vacuum the car'
     );
 

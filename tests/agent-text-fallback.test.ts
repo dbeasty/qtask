@@ -178,7 +178,7 @@ describe('agent text-fallback dedup', () => {
     assert.equal(textFallbackProposals.length, 0);
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(conversation);
@@ -227,7 +227,7 @@ describe('agent text-fallback dedup', () => {
     }
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
 
     const saved = await conversationService.getConversation(userId, conversationId);

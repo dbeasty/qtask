@@ -43,6 +43,7 @@ import {
   type AgentCommandPaletteItem,
 } from '../utils/agentCommandPalette';
 import { findProjectByName, parseActiveProjectSwitchCommand, projectForSwitchPrompt, projectNameFromProposal, shouldOfferSwitchAfterCreateProject, type ProjectSwitchTarget } from '../utils/agentProjectSwitch';
+import { shouldBlockAgentSend } from '../utils/agentSendGuard';
 import { toggleTaskDone } from '../utils/taskDoneToggle';
 
 function applyTaskStatusToMessages(
@@ -531,6 +532,8 @@ export function AgentPage({
   conversationIdRef.current = conversationId;
   const sessionRestoreAppliedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const projectFetchIdRef = useRef(0);
+  const conversationLoadIdRef = useRef(0);
 
   const paletteItems = useMemo(() => buildAgentCommandPaletteItems(), []);
   const slashCommand = parseSlashCommand(input);
@@ -594,6 +597,7 @@ export function AgentPage({
 
   useEffect(() => {
     abortActiveStream();
+    const fetchId = ++projectFetchIdRef.current;
     if (!activeProjectId) {
       setConversations([]);
       setConversationId(undefined);
@@ -601,10 +605,19 @@ export function AgentPage({
       return;
     }
     listConversations(activeProjectId)
-      .then(({ conversations: items }) => setConversations(items))
-      .catch((err: Error) => setError(err.message));
+      .then(({ conversations: items }) => {
+        if (fetchId !== projectFetchIdRef.current) return;
+        setConversations(items);
+      })
+      .catch((err: Error) => {
+        if (fetchId !== projectFetchIdRef.current) return;
+        setError(err.message);
+      });
     listProjects()
-      .then(({ projects: items }) => setProjects(items))
+      .then(({ projects: items }) => {
+        if (fetchId !== projectFetchIdRef.current) return;
+        setProjects(items);
+      })
       .catch(() => {
         // optional for project suggestion
       });
@@ -720,12 +733,15 @@ export function AgentPage({
   }
 
   async function loadConversation(id: string) {
+    const loadId = ++conversationLoadIdRef.current;
     setConversationId(id);
     setError(null);
     setEditingKey(null);
     setEditError(null);
 
     const { conversation } = await getConversation(id);
+    if (loadId !== conversationLoadIdRef.current) return;
+
     const visibleStored = conversation.messages.filter(
       (message) => message.role === 'user' || message.role === 'assistant'
     );
@@ -823,6 +839,11 @@ export function AgentPage({
     if (editsDisabled) return;
     const text = input.trim();
     if (!text) return;
+
+    if (shouldBlockAgentSend(sending, approvingId, conversationId)) {
+      setError('Please wait for the current response before sending another message.');
+      return;
+    }
 
     if (sending || approvingId) {
       abortActiveStream();

@@ -191,7 +191,7 @@ async function collectStream(
 async function approveFirstProposal(userId: string, events: Array<{ type: string; [key: string]: unknown }>) {
   const { agentService } = await import('../src/services/agentService.js');
   const { conversationService } = await import('../src/services/conversationService.js');
-  const done = events.find((event) => event.type === 'done') as { conversationId: string };
+  const done = events.find((event) => event.type === 'done') as unknown as { conversationId: string };
   const conversation = await conversationService.getConversation(userId, done.conversationId);
   const proposal = conversation?.pendingProposals?.find((entry) => entry.status === 'pending');
   assert.ok(proposal);
@@ -282,7 +282,7 @@ describe('agent instruction integration — write preflight', () => {
     );
     assert.equal(proposals.length, 1);
     assert.equal(
-      (proposals[0] as { arguments: { name: string } }).arguments.name,
+      (proposals[0] as unknown as { arguments: { name: string } }).arguments.name,
       'Kitchen Reno'
     );
   });
@@ -301,11 +301,11 @@ describe('agent instruction integration — write preflight', () => {
     );
     assert.equal(proposals.length, 1);
     assert.equal(
-      (proposals[0] as { arguments: { name: string; parentId: string } }).arguments.parentId,
+      (proposals[0] as unknown as { arguments: { name: string; parentId: string } }).arguments.parentId,
       parentId
     );
     assert.equal(
-      (proposals[0] as { arguments: { name: string } }).arguments.name,
+      (proposals[0] as unknown as { arguments: { name: string } }).arguments.name,
       'Electrical'
     );
   });
@@ -324,11 +324,11 @@ describe('agent instruction integration — write preflight', () => {
     );
     assert.equal(proposals.length, 1);
     assert.equal(
-      (proposals[0] as { arguments: { title: string; projectId: string } }).arguments.title,
+      (proposals[0] as unknown as { arguments: { title: string; projectId: string } }).arguments.title,
       'Schedule inspection'
     );
     assert.equal(
-      (proposals[0] as { arguments: { title: string; projectId: string } }).arguments.projectId,
+      (proposals[0] as unknown as { arguments: { title: string; projectId: string } }).arguments.projectId,
       projectId
     );
   });
@@ -361,7 +361,7 @@ describe('agent instruction integration — write preflight', () => {
     assert.equal(listedTasks.length, 2);
 
     const conversationId = String(
-      (listEvents.find((event) => event.type === 'done') as { conversationId: string })
+      (listEvents.find((event) => event.type === 'done') as unknown as { conversationId: string })
         .conversationId
     );
 
@@ -379,7 +379,7 @@ describe('agent instruction integration — write preflight', () => {
     );
     assert.equal(createProposals.length, 1);
     assert.equal(
-      (createProposals[0] as { arguments: { title: string } }).arguments.title,
+      (createProposals[0] as unknown as { arguments: { title: string } }).arguments.title,
       'vacuum the car'
     );
 
@@ -448,11 +448,11 @@ describe('agent instruction integration — modify task', () => {
     );
     assert.equal(proposals.length, 1);
     assert.equal(
-      (proposals[0] as { arguments: { taskId: string; status: string } }).arguments.taskId,
+      (proposals[0] as unknown as { arguments: { taskId: string; status: string } }).arguments.taskId,
       taskId
     );
     assert.equal(
-      (proposals[0] as { arguments: { taskId: string; status: string } }).arguments.status,
+      (proposals[0] as unknown as { arguments: { taskId: string; status: string } }).arguments.status,
       'done'
     );
   });

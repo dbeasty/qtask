@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { consumeSessionMessage, getReturnToPath, setSessionMessage } from '../auth/session';
+import { consumeSessionMessage, getReturnToPath, isSafeReturnPath, setSessionMessage } from '../auth/session';
 import { exchangeOAuthCode, setStoredToken, type LoginResult } from '../auth/storage';
 
 /** Dedupe Strict Mode double-mount so a one-time code is only exchanged once. */
@@ -40,7 +40,7 @@ export function OAuthCallbackPage() {
         // the session before the next page loads.
         setStoredToken(result.token);
         const returnTo = params.get('returnTo') ?? getReturnToPath();
-        window.location.replace(returnTo && returnTo.startsWith('/') ? returnTo : '/');
+        window.location.replace(isSafeReturnPath(returnTo) ? returnTo : '/');
       })
       .catch((err) => {
         if (cancelled) return;

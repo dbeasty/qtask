@@ -180,7 +180,7 @@ describe('agent update_task id recovery', () => {
     assert.equal(findCalls.length, 1);
     assert.equal(updateFailures.length >= 1, true);
     assert.equal(proposals.length, 1);
-    assert.deepEqual((proposals[0] as { arguments: Record<string, unknown> }).arguments, {
+    assert.deepEqual((proposals[0] as unknown as { arguments: Record<string, unknown> }).arguments, {
       taskId,
       title: 'Test the Boat',
     });

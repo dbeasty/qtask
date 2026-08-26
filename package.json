@@ -18,6 +18,7 @@
     "build:all": "npm run build && npm run build --prefix client && npm run build --prefix admin-client",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "test:shared": "node --import tsx --test shared/src/**/*.test.ts",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "hash-admin-password": "tsx src/scripts/hash-admin-password.ts",
     "release": "bash scripts/build-release.sh",
     "release:jetson": "bash scripts/build-jetson-release.sh",

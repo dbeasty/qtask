@@ -632,23 +632,8 @@ export class TaskService {
         userId: task.userId,
         projectId,
         projectIds: [...projectIds],
-        title: child.title,
-        description: child.description,
-        status: child.status ?? 'todo',
-        priority: child.priority ?? 'medium',
-        dueDate: child.dueDate,
-        tags: child.tags ?? [],
-        percentComplete: child.percentComplete ?? 0,
-        percentCompleteOverride: child.percentCompleteOverride,
-        progressShare: child.progressShare,
-        hoursSpent: child.hoursSpent,
-        hoursRemaining: child.hoursRemaining,
-        lastProgressField: child.lastProgressField,
-        materials: child.materials ?? [],
-        laborLines: child.laborLines ?? [],
-        hourlyRate: child.hourlyRate,
+        ...this.sharedTaskFields(child),
         subtasks: child.subtasks ?? [],
-        links: child.links ?? [],
         sortOrder: parentSortOrder + index,
       });
 
@@ -675,6 +660,7 @@ export class TaskService {
 
     await Promise.all(promotedDocs.map((doc) => doc.save()));
     await task.deleteOne();
+    await CommentModel.deleteMany({ taskId });
 
     const promotedTasks = promotedDocs.map((doc) => serializeTask(doc.toObject()));
     await Promise.all(promotedTasks.map((promoted) => enqueueEmbeddingJob(promoted._id)));
@@ -972,20 +958,8 @@ export class TaskService {
       userId,
       projectId,
       projectIds: [...projectIds],
-      title: nodeObj.title,
-      description: nodeObj.description,
-      status: nodeObj.status ?? 'todo',
-      priority: nodeObj.priority ?? 'medium',
-      dueDate: nodeObj.dueDate,
-      tags: nodeObj.tags ?? [],
-      percentComplete: nodeObj.percentComplete ?? 0,
-      percentCompleteOverride: nodeObj.percentCompleteOverride,
-      progressShare: nodeObj.progressShare,
-      hoursSpent: nodeObj.hoursSpent,
-      hoursRemaining: nodeObj.hoursRemaining,
-      lastProgressField: nodeObj.lastProgressField,
+      ...this.sharedTaskFields(nodeObj),
       subtasks: nodeObj.subtasks ?? [],
-      links: nodeObj.links ?? [],
     });
 
     const minTask = await TaskModel.findOne({
@@ -1081,6 +1055,7 @@ export class TaskService {
     targetTask.markModified('subtasks');
     await targetTask.save();
     await TaskModel.deleteOne({ _id: sourceTaskId });
+    await CommentModel.deleteMany({ taskId: sourceTaskId });
     await enqueueEmbeddingJob(targetTaskId);
 
     await logActivity({
@@ -1230,22 +1205,10 @@ export class TaskService {
       userId,
       projectId,
       projectIds: [projectId],
-      title: source.title,
-      description: source.description,
-      status: source.status ?? 'todo',
-      priority: source.priority ?? 'medium',
-      dueDate: source.dueDate,
-      tags: source.tags ?? [],
-      percentComplete: source.percentComplete ?? 0,
-      percentCompleteOverride: source.percentCompleteOverride,
-      progressShare: source.progressShare,
-      hoursSpent: source.hoursSpent,
-      hoursRemaining: source.hoursRemaining,
-      lastProgressField: source.lastProgressField,
-      materials: source.materials ?? [],
-      laborLines: source.laborLines ?? [],
-      hourlyRate: source.hourlyRate,
+      ...this.sharedTaskFields(source),
       subtasks: duplicatedSubtasks,
+      // A duplicate doesn't inherit the original's links — they reference
+      // specific other tasks and wouldn't be meaningful on the copy.
       links: [],
     });
 
@@ -1416,15 +1379,18 @@ export class TaskService {
     return serializeTask(task.toObject());
   }
 
-  private taskDocToSubtaskNode(source: Record<string, unknown>): Record<string, unknown> {
-    const nested = ((source.subtasks as Record<string, unknown>[]) ?? []).map((subtask) =>
-      this.preserveSubtaskNode(subtask)
-    );
-
+  /**
+   * Fields shared between the Task and subtask schemas (everything except
+   * the container-specific fields like userId/projectIds/sortOrder on Task,
+   * or _id/nested subtasks on a subtask node). Centralized so promote/
+   * attach/delete/duplicate stop hand-copying — and silently dropping —
+   * fields as the schema grows; see taskFieldsFromNode's callers.
+   */
+  private sharedTaskFields(source: Record<string, unknown>): Record<string, unknown> {
     return {
-      _id: new Types.ObjectId(),
       title: source.title,
       description: source.description,
+      steps: source.steps ?? [],
       status: source.status ?? 'todo',
       priority: source.priority ?? 'medium',
       dueDate: source.dueDate,
@@ -1435,8 +1401,25 @@ export class TaskService {
       hoursSpent: source.hoursSpent,
       hoursRemaining: source.hoursRemaining,
       lastProgressField: source.lastProgressField,
-      subtasks: nested,
+      materials: source.materials ?? [],
+      laborLines: source.laborLines ?? [],
+      hourlyRate: source.hourlyRate,
+      trainingHourlyRate: source.trainingHourlyRate,
+      trainingHoursSpent: source.trainingHoursSpent,
+      trainingHoursRemaining: source.trainingHoursRemaining,
       links: source.links ?? [],
+    };
+  }
+
+  private taskDocToSubtaskNode(source: Record<string, unknown>): Record<string, unknown> {
+    const nested = ((source.subtasks as Record<string, unknown>[]) ?? []).map((subtask) =>
+      this.preserveSubtaskNode(subtask)
+    );
+
+    return {
+      _id: new Types.ObjectId(),
+      ...this.sharedTaskFields(source),
+      subtasks: nested,
     };
   }
 

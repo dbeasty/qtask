@@ -134,6 +134,23 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
     if (sessionId && !cachedEntry) {
       const mongoSession = await mcpSessionService.getSessionByKey(userId, keyId, sessionId);
       if (mongoSession) {
+        // A rehydrated session gets a brand-new transport instance, and the
+        // SDK's transport only accepts an initialize request until it has
+        // processed one itself (its "initialized" flag is per-instance, not
+        // resumable) — so only an initialize request can actually be served
+        // here. Anything else would hit the SDK's own opaque 400. Respond
+        // 404 instead: per the MCP spec, that tells a compliant client its
+        // session is gone and it should send a fresh initialize.
+        if (!isInitializeRequest(req.body)) {
+          log.info('MCP session known but not resumable without re-initialize', {
+            userId,
+            keyId,
+            sessionId,
+          });
+          res.status(404).json({ error: 'MCP session expired; send a new initialize request.' });
+          return;
+        }
+
         const { entry } = await getOrCreateSessionEntry(userId, keyId, scope, sessionId);
         log.info('MCP session rehydrated', { userId, keyId, sessionId: entry.ctx.sessionId });
         await entry.transport.handleRequest(

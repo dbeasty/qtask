@@ -105,6 +105,8 @@ export function App() {
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(() =>
     getStoredActiveProjectId()
   );
+  const activeProjectIdRef = useRef(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
   const [pendingTaskSelection, setPendingTaskSelection] = useState<Selection | null>(null);
   const [pendingCreateForProjectId, setPendingCreateForProjectId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -318,24 +320,28 @@ export function App() {
 
   useEffect(() => {
     if (!user) return;
+    // Reads activeProjectId via the ref, not as a dep — this effect's job is
+    // "does the active project still exist in the list", which only needs
+    // re-checking when the list itself changes (mount, projectsVersion,
+    // tasksVersion), not on every project selection click.
     listProjects()
       .then(({ projects }) => {
         if (projects.length === 0) {
           setActiveProjectId(null);
           return;
         }
-        const matched = activeProjectId
-          ? projects.find((project) => project._id === activeProjectId)
-          : undefined;
+        const current = activeProjectIdRef.current;
+        const matched = current ? projects.find((project) => project._id === current) : undefined;
         const next = matched ?? getDefaultProject(projects) ?? projects[0]!;
-        if (next._id !== activeProjectId) {
+        if (next._id !== current) {
           setActiveProjectId(next._id);
         }
       })
       .catch(() => {
         // project list is optional for shell chrome
       });
-  }, [user, activeProjectId, setActiveProjectId, projectsVersion, tasksVersion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, setActiveProjectId, projectsVersion, tasksVersion]);
 
   const apiStatusLabel =
     healthy == null ? 'Checking API…' : healthy ? 'API connected' : 'API offline';

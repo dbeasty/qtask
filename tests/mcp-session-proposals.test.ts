@@ -162,6 +162,40 @@ describe('MCP session reuse and rehydration (Option A)', () => {
     assert.ok(_getMcpSessionsForTests().has(sessionId));
   });
 
+  it('answers a non-initialize request after memory reset with 404, not a bare 400, and a fresh initialize then works', async () => {
+    const { secret } = await createMcpContext();
+    const { mcpRpc } = await import('./helpers/mcp.js');
+    const { _resetMcpSessionsForTests, _getMcpSessionsForTests } = await import(
+      '../src/mcp/httpHandler.js'
+    );
+
+    const sessionId = await mcpInitialize(app, secret);
+    _resetMcpSessionsForTests();
+
+    // A known-but-not-live session id on a non-initialize request (the
+    // shape of every real reconnect after a restart) must not fall through
+    // to the SDK's own "Server not initialized" 400 — the client has no
+    // standard way to recover from that. 404 is the spec's signal to
+    // re-initialize.
+    const toolCall = await mcpRpc(app, secret, sessionId, 'tools/call', {
+      name: 'list_projects',
+      arguments: {},
+    });
+    assert.equal(toolCall.status, 404);
+    assert.equal(_getMcpSessionsForTests().size, 0);
+
+    // A compliant client reacts to that 404 by re-initializing with no
+    // session id, and gets back the same underlying (mongo) session.
+    const reinitialized = await mcpInitialize(app, secret);
+    assert.equal(reinitialized, sessionId);
+
+    const afterReinit = await mcpRpc(app, secret, reinitialized, 'tools/call', {
+      name: 'list_projects',
+      arguments: {},
+    });
+    assert.equal(afterReinit.status, 200);
+  });
+
   it('keeps pending proposals after soft transport disconnect and allows cross-session approve', async () => {
     const { ctx: ctxA, userId, secret } = await createMcpContext();
     const { mcpSessionService } = await import('../src/services/mcpSessionService.js');

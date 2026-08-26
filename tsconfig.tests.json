@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "paths": {
+      "@qtask/agent/*": ["./src/agent/*"],
+      "@qtask/shared": ["./shared/src/index.ts"],
+      "@qtask/shared/*": ["./shared/src/*"]
+    }
+  },
+  "include": ["tests/**/*", "src/**/*", "client/src/**/*", "shared/src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -26,6 +26,7 @@ import {
   fetchMe,
   getStoredToken,
   getUserPreferences,
+  isAuthRejection,
   login as loginRequest,
   refreshSessionRequest,
   register as registerRequest,
@@ -191,7 +192,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     fetchMe(token)
       .then((me) => bootstrapSession(token, me))
-      .catch(() => clearStoredToken())
+      .catch((err: unknown) => {
+        // Only an actual auth rejection means the token is invalid. A
+        // network blip, CORS hiccup, or 5xx should leave it in place so
+        // the user isn't silently logged out — they'll retry on reload.
+        if (isAuthRejection(err)) {
+          clearStoredToken();
+        }
+      })
       .finally(() => setLoading(false));
   }, [bootstrapSession]);
 

@@ -4,6 +4,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import type { Express } from 'express';
+import { waitForNewestToken } from './helpers/testEmail.js';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
@@ -33,6 +34,9 @@ after(async () => {
 });
 
 async function registerAndVerify(email: string, password: string) {
+  const { testEmailOutbox } = await import('../src/services/emailService.js');
+  const previousTokenCount = testEmailOutbox.verification.length;
+
   const register = await request(app)
     .post('/api/auth/register')
     .send({ email, password, acceptLegal: true })
@@ -40,9 +44,7 @@ async function registerAndVerify(email: string, password: string) {
 
   assert.ok(register.body.message);
 
-  const { testEmailOutbox } = await import('../src/services/emailService.js');
-  const token = testEmailOutbox.verification.at(-1);
-  assert.ok(token, 'verification token should be captured in test outbox');
+  const token = await waitForNewestToken(() => testEmailOutbox.verification, previousTokenCount);
 
   await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
 

@@ -94,7 +94,7 @@ describe('staged AI creates', () => {
     assert.equal(events.some((event) => event.type === 'paused'), true);
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(conversation);

@@ -4,6 +4,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import type { Express } from 'express';
+import { waitForNewestToken } from './helpers/testEmail.js';
 import {
   computeLeafProjectProgress,
   computeParentProjectProgress,
@@ -66,14 +67,15 @@ after(async () => {
 });
 
 async function registerAndVerify(email: string, password = 'password1234') {
+  const { testEmailOutbox } = await import('../src/services/emailService.js');
+  const previousTokenCount = testEmailOutbox.verification.length;
+
   await request(app)
     .post('/api/auth/register')
     .send({ email, password, acceptLegal: true })
     .expect(201);
 
-  const { testEmailOutbox } = await import('../src/services/emailService.js');
-  const token = testEmailOutbox.verification.at(-1);
-  assert.ok(token);
+  const token = await waitForNewestToken(() => testEmailOutbox.verification, previousTokenCount);
 
   await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
 
