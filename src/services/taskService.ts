@@ -31,6 +31,10 @@ function isVersionError(err: unknown): boolean {
 
 const taskSaveLocks = new Map<string, Promise<void>>();
 
+/** Highest first. Sorting by the raw string ("urgent" > "medium" > "low" >
+ *  "high" alphabetically) put high-priority tasks below low-priority ones. */
+const PRIORITY_WEIGHT: Record<string, number> = { urgent: 3, high: 2, medium: 1, low: 0 };
+
 async function withTaskSaveLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
   const prior = taskSaveLocks.get(taskId) ?? Promise.resolve();
   let release!: () => void;
@@ -738,21 +742,33 @@ export class TaskService {
       query.assigneeId = assigneeId;
     }
 
-    const tasks = await TaskModel.find(query).sort({ priority: -1, dueDate: 1 }).lean();
-    return tasks.map((task) => {
-      const withPercent = applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]);
-      return {
-        _id: String(task._id),
-        title: task.title,
-        status: task.status,
-        priority: task.priority,
-        percentComplete: withPercent.percentComplete,
-        dueDate: task.dueDate?.toISOString(),
-        projectId: this.getDocProjectIds(task)[0],
-        projectIds: this.getDocProjectIds(task),
-        assigneeId: task.assigneeId,
-      };
-    });
+    // Sorted in memory rather than via Mongo's { priority: -1 } — that
+    // sorts the priority string alphabetically descending (urgent, medium,
+    // low, high), putting high-priority tasks below low-priority ones.
+    const tasks = await TaskModel.find(query).lean();
+    return tasks
+      .map((task) => {
+        const withPercent = applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]);
+        return {
+          _id: String(task._id),
+          title: task.title,
+          status: task.status,
+          priority: task.priority,
+          percentComplete: withPercent.percentComplete,
+          dueDate: task.dueDate,
+          projectId: this.getDocProjectIds(task)[0],
+          projectIds: this.getDocProjectIds(task),
+          assigneeId: task.assigneeId,
+        };
+      })
+      .sort((a, b) => {
+        const weightDiff = (PRIORITY_WEIGHT[b.priority] ?? -1) - (PRIORITY_WEIGHT[a.priority] ?? -1);
+        if (weightDiff !== 0) return weightDiff;
+        const aTime = a.dueDate ? a.dueDate.getTime() : Infinity;
+        const bTime = b.dueDate ? b.dueDate.getTime() : Infinity;
+        return aTime - bTime;
+      })
+      .map((task) => ({ ...task, dueDate: task.dueDate?.toISOString() }));
   }
 
   async addSubtask(

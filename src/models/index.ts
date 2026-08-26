@@ -258,6 +258,10 @@ const embeddingJobSchema = new Schema(
     },
     attempts: { type: Number, default: 0 },
     lastError: { type: String },
+    /** Set when this entity was edited again while its job was already
+     *  'processing' — checked when the job finishes so the edit isn't
+     *  silently dropped (see enqueueEntityEmbeddingJob / finishEmbeddingJob). */
+    dirty: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
