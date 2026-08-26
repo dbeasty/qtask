@@ -277,6 +277,7 @@ export async function updateProject(
     sortOrder?: number;
     progressShare?: number | null;
     hourlyRate?: number | null;
+    done?: boolean;
   }
 ): Promise<{ project: import('../types').Project }> {
   return request(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });

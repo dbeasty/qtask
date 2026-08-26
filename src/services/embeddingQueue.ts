@@ -90,6 +90,7 @@ async function resolveProjectNames(task: {
 async function processNextJob(): Promise<void> {
   if (drainDisabled || processing) return;
   processing = true;
+  let foundJob = false;
 
   try {
     const job = await EmbeddingJobModel.findOneAndUpdate(
@@ -99,6 +100,7 @@ async function processNextJob(): Promise<void> {
     );
 
     if (!job) return;
+    foundJob = true;
 
     const entityType = job.entityType ?? 'task';
     const entityId = job.entityId ?? job.taskId;
@@ -197,6 +199,6 @@ async function processNextJob(): Promise<void> {
     }
   } finally {
     processing = false;
-    scheduleDrain();
+    if (foundJob) scheduleDrain();
   }
 }

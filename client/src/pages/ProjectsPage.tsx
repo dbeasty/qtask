@@ -31,6 +31,7 @@ import { buildProjectTree } from '../utils/projectTree';
 import { shouldExpandProjectTrackingOnLoad } from '../utils/trackingExpand';
 import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
 import { toggleTaskDone } from '../utils/taskDoneToggle';
+import { toggleProjectDone } from '../utils/projectDoneToggle';
 
 interface ProjectsPageProps {
   activeProjectId: string | null;
@@ -239,6 +240,19 @@ export function ProjectsPage({
       applyTaskUpdate(task);
       onTasksChanged?.();
       onProjectsChanged?.();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update status');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleProjectDone = async (projectId: string, done: boolean) => {
+    setSaving(true);
+    setActionError(null);
+    try {
+      const project = await toggleProjectDone(projectId, done);
+      replaceProject(project);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to update status');
     } finally {
@@ -500,7 +514,11 @@ export function ProjectsPage({
         <>
           <div className="project-toolbar-wrap floating-bar">
             <div className="context-bar-row context-bar-row-stacked">
-              <CurrentProjectLabel activeProject={activeProject} />
+              <CurrentProjectLabel
+                activeProject={activeProject}
+                projects={projects}
+                onSelectProject={onActiveProjectChange}
+              />
               <div className="context-bar-list-row">
                 <button
                   type="button"
@@ -571,6 +589,7 @@ export function ProjectsPage({
                     onSelect={handleSelect}
                     onMove={handleMove}
                     onDelete={handleRequestDelete}
+                    onToggleDone={handleToggleProjectDone}
                   />
                 </div>
               </aside>

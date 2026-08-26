@@ -260,6 +260,7 @@ export class ProjectService {
       sortOrder?: number;
       progressShare?: number | null;
       hourlyRate?: number | null;
+      done?: boolean;
     }
   ) {
     const structural =
@@ -271,8 +272,20 @@ export class ProjectService {
 
     const rateChanged = input.hourlyRate !== undefined;
 
+    const doneOnly =
+      input.done !== undefined &&
+      input.name === undefined &&
+      input.description === undefined &&
+      input.notes === undefined &&
+      input.parentId === undefined &&
+      input.sortOrder === undefined &&
+      input.progressShare === undefined &&
+      input.hourlyRate === undefined;
+
     if (structural) {
       await this.assertProjectAccess(userId, projectId, 'manager');
+    } else if (doneOnly) {
+      await this.assertProjectAccess(userId, projectId, 'executor');
     } else {
       await this.assertProjectAccess(userId, projectId, 'editor');
     }
@@ -321,6 +334,13 @@ export class ProjectService {
         project.markModified('hourlyRate');
       } else {
         project.hourlyRate = Math.max(0, input.hourlyRate);
+      }
+    }
+    if (input.done !== undefined) {
+      project.doneOverride = input.done;
+      if (input.done) {
+        project.status = 'done';
+        project.percentComplete = 100;
       }
     }
 
@@ -803,6 +823,12 @@ export class ProjectService {
       );
       percentComplete = result.percentComplete;
       status = result.status;
+    }
+
+    const projectDoc = await ProjectModel.findById(projectId).select('doneOverride').lean();
+    if (projectDoc?.doneOverride) {
+      status = 'done';
+      percentComplete = 100;
     }
 
     await ProjectModel.updateOne(

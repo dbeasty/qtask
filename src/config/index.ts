@@ -22,10 +22,10 @@ await loadSecrets();
 function requireSecret(name: string, value: string | undefined, devFallback: string): string {
   if (value) return value;
   const nodeEnv = process.env.NODE_ENV ?? 'development';
-  if (nodeEnv === 'production') {
-    throw new Error(`${name} is required when NODE_ENV=production`);
+  if (nodeEnv === 'test') {
+    return devFallback;
   }
-  return devFallback;
+  throw new Error(`${name} is required when NODE_ENV=${nodeEnv}`);
 }
 
 export type MailProvider = 'resend' | 'smtp' | 'none';
