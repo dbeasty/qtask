@@ -152,7 +152,7 @@ describe('native multi create_task in one response', () => {
     assert.equal(events.some((event) => event.type === 'paused'), true);
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(conversation);
@@ -202,7 +202,7 @@ describe('multi-task user prompt — partial native + turn-2 fallback', () => {
     }
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(conversation);
@@ -261,7 +261,7 @@ describe('multi-task user prompt — partial native + turn-2 fallback', () => {
     );
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(conversation);
@@ -313,7 +313,7 @@ describe('multi-task user prompt — partial native + turn-2 fallback', () => {
     assert.equal(mock.getAgentCalls(), 2);
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(conversation);
@@ -358,7 +358,7 @@ describe('approval sequencing for multiple staged creates', () => {
     }
 
     const conversationId = String(
-      (events.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (events.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     assert.ok(conversation);

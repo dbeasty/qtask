@@ -131,12 +131,14 @@ export async function startMcpServer(): Promise<void> {
 
   const userId = await resolveMcpUserId();
   const sessionId = randomUUID();
-  await mcpSessionService.createSession(userId, 'stdio-local');
+  const keyId = 'stdio-local';
+  await mcpSessionService.createSession(userId, keyId, sessionId);
 
   const server = await createMcpServer({
     userId,
     sessionId,
     scope: 'read_write',
+    keyId,
   });
 
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');

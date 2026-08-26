@@ -297,7 +297,8 @@ describe('MCP cost and time tracking', () => {
     const loaded = await taskService.getTask(userId, task._id);
     assert.equal(loaded?.hoursSpent, 2);
     assert.equal(loaded?.hoursRemaining, 3);
-    assert.equal(loaded?.materials?.[0]?.description, 'Paint');
+    const materials1 = loaded?.materials as Array<{ description: string }> | undefined;
+    assert.equal(materials1?.[0]?.description, 'Paint');
   });
 
   it('updates tracking fields on an existing task', async () => {
@@ -317,7 +318,8 @@ describe('MCP cost and time tracking', () => {
     const loaded = await taskService.getTask(userId, task._id);
     assert.equal(loaded?.hoursSpent, 4);
     assert.equal(loaded?.hoursRemaining, 1);
-    assert.equal(loaded?.materials?.[0]?.unitPrice, 25);
+    const materials2 = loaded?.materials as Array<{ unitPrice: number }> | undefined;
+    assert.equal(materials2?.[0]?.unitPrice, 25);
   });
 
   it('get_project_tracking returns cost rollup totals', async () => {

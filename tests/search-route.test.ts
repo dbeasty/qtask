@@ -4,6 +4,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import type { Express } from 'express';
+import { waitForNewestToken } from './helpers/testEmail.js';
 
 process.env.NODE_ENV = 'test';
 process.env.QTASK_SKIP_DOTENV = 'true';
@@ -33,14 +34,15 @@ async function registerAndLogin() {
   const email = `search-route-${Date.now()}@example.com`;
   const password = 'Password123!';
 
+  const { testEmailOutbox } = await import('../src/services/emailService.js');
+  const previousTokenCount = testEmailOutbox.verification.length;
+
   await request(app)
     .post('/api/auth/register')
     .send({ email, password, acceptLegal: true })
     .expect(201);
 
-  const { testEmailOutbox } = await import('../src/services/emailService.js');
-  const verifyToken = testEmailOutbox.verification.at(-1);
-  assert.ok(verifyToken);
+  const verifyToken = await waitForNewestToken(() => testEmailOutbox.verification, previousTokenCount);
 
   await request(app).post('/api/auth/verify-email').send({ token: verifyToken }).expect(200);
   const login = await request(app).post('/api/auth/login').send({ email, password }).expect(200);

@@ -103,6 +103,17 @@ export function ProjectsPage({
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDirtyRef = useRef(false);
+  const saveChainRef = useRef(Promise.resolve());
+  /** The project id + values a pending/in-flight autosave applies to — read
+   * at execution time so a flush always targets the project it was typed
+   * into, even after the user has since switched to a different one. */
+  const pendingEditRef = useRef({
+    projectId: '',
+    name: '',
+    description: '',
+    notes: '',
+    canManageStructure: false,
+  });
 
   useEffect(() => {
     mergeAppSessionStateDebounced({
@@ -157,16 +168,31 @@ export function ProjectsPage({
     }
   }, [activeProjectId, onActiveProjectChange]);
 
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
   useEffect(() => {
-    void refresh();
-  }, [refresh, externalRefreshKey]);
+    // Keyed only on externalRefreshKey (mount + explicit external refresh
+    // signals), not on refresh's identity — refresh is rebuilt whenever
+    // activeProjectId changes, and re-running the effect on every project
+    // selection triggered a full projects+tasks refetch (and the loading
+    // gate below unmounting the whole view) on every tree click.
+    void refreshRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalRefreshKey]);
+
+  const enqueueAutoSaveRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     return () => {
       clearDebounce();
       clearSavedFade();
+      if (isDirtyRef.current) {
+        enqueueAutoSaveRef.current();
+      }
     };
-  }, [clearDebounce, clearSavedFade]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- flush only on true unmount
+  }, []);
 
   const activeProject = useMemo(
     () => projects.find((project) => project._id === activeProjectId) ?? null,
@@ -195,8 +221,26 @@ export function ProjectsPage({
       description: activeProject?.description ?? '',
       notes: activeProject?.notes ?? '',
     };
+    pendingEditRef.current = {
+      projectId: activeProject?._id ?? '',
+      name: activeProject?.name ?? '',
+      description: activeProject?.description ?? '',
+      notes: activeProject?.notes ?? '',
+      canManageStructure: Boolean(activeProject?.canManageStructure),
+    };
     setSaveStatus('idle');
     setSaveError(null);
+
+    // Flush a pending edit for the project we're navigating away from
+    // before its values get reset above — otherwise a switch within the
+    // debounce window silently discarded the unsaved edit.
+    return () => {
+      if (isDirtyRef.current) {
+        clearDebounce();
+        enqueueAutoSaveRef.current();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProject?._id, activeProject?.progressShare, clearDebounce]);
 
   useEffect(() => {
@@ -295,97 +339,114 @@ export function ProjectsPage({
     }
   };
 
-  const performAutoSave = useCallback(
-    async (name: string, description: string, notes: string) => {
-      if (!activeProject || !projectCanManageStructure) return;
+  const performAutoSave = useCallback(async () => {
+    // Reads the target project id and values at execution time (via the
+    // ref), not from the component's current activeProject — a queued or
+    // flushed save must apply to whichever project it was typed into, even
+    // if the user has since switched to viewing a different one.
+    const pending = pendingEditRef.current;
+    if (!pending.projectId || !pending.canManageStructure) return;
 
-      const trimmed = name.trim();
-      if (!trimmed) {
-        setSaveStatus('error');
-        setSaveError('Project name cannot be empty');
-        return;
-      }
+    const trimmed = pending.name.trim();
+    if (!trimmed) {
+      setSaveStatus('error');
+      setSaveError('Project name cannot be empty');
+      return;
+    }
 
-      const next = { name: trimmed, description: description.trim(), notes: notes.trim() };
-      const last = lastSavedRef.current;
-      if (
-        next.name === last.name &&
-        next.description === last.description &&
-        next.notes === last.notes
-      ) {
-        return;
-      }
+    const next = { name: trimmed, description: pending.description.trim(), notes: pending.notes.trim() };
+    const last = lastSavedRef.current;
+    if (
+      next.name === last.name &&
+      next.description === last.description &&
+      next.notes === last.notes
+    ) {
+      return;
+    }
 
-      const generation = saveGenerationRef.current;
-      setSaveError(null);
-      setSaveStatus('saving');
+    const generation = saveGenerationRef.current;
+    setSaveError(null);
+    setSaveStatus('saving');
 
-      try {
-        const { project } = await updateProject(activeProject._id, {
-          name: next.name,
-          description: next.description || null,
-          notes: next.notes || null,
-        });
+    try {
+      const { project } = await updateProject(pending.projectId, {
+        name: next.name,
+        description: next.description || null,
+        notes: next.notes || null,
+      });
 
-        if (generation !== saveGenerationRef.current) return;
+      replaceProject(project);
 
-        replaceProject(project);
-        lastSavedRef.current = {
-          name: project.name,
-          description: project.description ?? '',
-          notes: project.notes ?? '',
-        };
-        isDirtyRef.current = false;
-        setSaveStatus('saved');
-        clearSavedFade();
-        savedFadeTimerRef.current = setTimeout(() => {
-          setSaveStatus('idle');
-        }, 3500);
-      } catch (err) {
-        if (generation !== saveGenerationRef.current) return;
-        setSaveStatus('error');
-        setSaveError(err instanceof Error ? err.message : 'Save failed');
-      }
-    },
-    [activeProject, clearSavedFade]
-  );
+      // Only touch the visible detail-pane state if we're still looking at
+      // the project this save was for — a stale generation means the user
+      // has already switched away, and this response belongs to that.
+      if (generation !== saveGenerationRef.current) return;
 
-  const scheduleAutoSave = useCallback(
-    (name: string, description: string, notes: string) => {
-      if (!activeProject?.canManageStructure) return;
-      clearDebounce();
-      debounceTimerRef.current = setTimeout(() => {
-        void performAutoSave(name, description, notes);
-      }, 500);
-    },
-    [activeProject?.canManageStructure, clearDebounce, performAutoSave]
-  );
+      lastSavedRef.current = {
+        name: project.name,
+        description: project.description ?? '',
+        notes: project.notes ?? '',
+      };
+      isDirtyRef.current = false;
+      setSaveStatus('saved');
+      clearSavedFade();
+      savedFadeTimerRef.current = setTimeout(() => {
+        setSaveStatus('idle');
+      }, 3500);
+    } catch (err) {
+      if (generation !== saveGenerationRef.current) return;
+      setSaveStatus('error');
+      setSaveError(err instanceof Error ? err.message : 'Save failed');
+    }
+  }, [clearSavedFade]);
+
+  const enqueueAutoSave = useCallback(() => {
+    // Serializes saves through a promise chain so a save started while the
+    // previous one is still in flight waits its turn instead of racing it
+    // (an out-of-order response could otherwise overwrite newer values).
+    saveChainRef.current = saveChainRef.current.then(() => performAutoSave()).catch(() => {
+      // performAutoSave already updates error UI; keep the chain alive.
+    });
+  }, [performAutoSave]);
+
+  enqueueAutoSaveRef.current = enqueueAutoSave;
+
+  const scheduleAutoSave = useCallback(() => {
+    if (!pendingEditRef.current.canManageStructure) return;
+    clearDebounce();
+    debounceTimerRef.current = setTimeout(() => {
+      enqueueAutoSave();
+    }, 500);
+  }, [clearDebounce, enqueueAutoSave]);
 
   const updateDetailName = (value: string) => {
     setDetailName(value);
+    pendingEditRef.current = { ...pendingEditRef.current, name: value };
     isDirtyRef.current =
       value.trim() !== lastSavedRef.current.name ||
       detailDescription.trim() !== lastSavedRef.current.description ||
       detailNotes.trim() !== lastSavedRef.current.notes;
-    scheduleAutoSave(value, detailDescription, detailNotes);
+    scheduleAutoSave();
   };
 
   const updateDetailDescription = (value: string) => {
     setDetailDescription(value);
+    pendingEditRef.current = { ...pendingEditRef.current, description: value };
     isDirtyRef.current =
       detailName.trim() !== lastSavedRef.current.name ||
       value.trim() !== lastSavedRef.current.description ||
       detailNotes.trim() !== lastSavedRef.current.notes;
-    scheduleAutoSave(detailName, value, detailNotes);
+    scheduleAutoSave();
   };
 
   const updateDetailNotes = (value: string) => {
     setDetailNotes(value);
+    pendingEditRef.current = { ...pendingEditRef.current, notes: value };
     isDirtyRef.current =
       detailName.trim() !== lastSavedRef.current.name ||
       detailDescription.trim() !== lastSavedRef.current.description ||
       value.trim() !== lastSavedRef.current.notes;
-    scheduleAutoSave(detailName, detailDescription, value);
+    scheduleAutoSave();
   };
 
   const projectEffectiveHourlyRate =

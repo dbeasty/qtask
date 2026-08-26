@@ -20,7 +20,7 @@ const agentChatLimiter = rateLimit({
   message: { error: 'Too many agent requests, please try again later' },
 });
 
-function createRequestAbortSignal(res: import('express').Response): AbortSignal {
+export function createRequestAbortSignal(res: import('express').Response): AbortSignal {
   const controller = new AbortController();
   res.on('close', () => {
     if (!res.writableEnded && !controller.signal.aborted) controller.abort();

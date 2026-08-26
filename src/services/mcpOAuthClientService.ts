@@ -1,4 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import dns from 'node:dns';
+import net from 'node:net';
 import { McpOAuthClientModel } from '../models/index.js';
 import type { McpOAuthClientSource, McpOAuthClientSummary } from '../types/mcp.js';
 import { HttpError } from '../utils/httpError.js';
@@ -68,15 +70,100 @@ function isUrlFormattedClientId(clientId: string): boolean {
   }
 }
 
+function isPrivateOrReservedIPv4(ip: string): boolean {
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return true;
+  const [a, b] = parts;
+  if (a === 0) return true; // "this" network
+  if (a === 10) return true; // RFC1918
+  if (a === 127) return true; // loopback
+  if (a === 169 && b === 254) return true; // link-local
+  if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
+  if (a === 192 && b === 168) return true; // RFC1918
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a >= 224) return true; // multicast + reserved
+  return false;
+}
+
+function isPrivateOrReservedIPv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  if (lower === '::1' || lower === '::') return true; // loopback / unspecified
+  if (/^fe[89ab][0-9a-f]:/.test(lower)) return true; // link-local fe80::/10
+  if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true; // unique local fc00::/7
+  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return isPrivateOrReservedIPv4(mapped[1]);
+  return false;
+}
+
+function isDisallowedIp(ip: string): boolean {
+  if (net.isIPv4(ip)) return isPrivateOrReservedIPv4(ip);
+  if (net.isIPv6(ip)) return isPrivateOrReservedIPv6(ip);
+  return true;
+}
+
+/**
+ * Resolves the URL's host and rejects private/loopback/link-local/reserved
+ * targets, blocking SSRF to internal services. This is a defense-in-depth
+ * check, not a DNS-rebind-proof fetch (the actual fetch() may re-resolve),
+ * but it closes the trivial "point client_id at an internal host" case.
+ */
+async function assertPublicHttpsUrl(rawUrl: string): Promise<void> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new HttpError(400, 'Invalid OAuth client metadata URL');
+  }
+  if (url.protocol !== 'https:') {
+    throw new HttpError(400, 'OAuth client metadata URL must use https');
+  }
+  // url.hostname keeps brackets around IPv6 literals (e.g. "[::1]"); strip
+  // them so net.isIP recognizes it and the IP-range check below applies.
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+    throw new HttpError(400, 'OAuth client metadata URL host is not allowed');
+  }
+  if (net.isIP(hostname)) {
+    if (isDisallowedIp(hostname)) {
+      throw new HttpError(400, 'OAuth client metadata URL host is not allowed');
+    }
+    return;
+  }
+  let addresses: string[];
+  try {
+    addresses = (await dns.promises.lookup(hostname, { all: true })).map((a) => a.address);
+  } catch {
+    throw new HttpError(400, 'Could not resolve OAuth client metadata URL host');
+  }
+  if (addresses.length === 0 || addresses.some(isDisallowedIp)) {
+    throw new HttpError(400, 'OAuth client metadata URL host is not allowed');
+  }
+}
+
+const MAX_CIMD_REDIRECTS = 3;
+
 async function fetchClientMetadataDocument(clientIdUrl: string): Promise<ClientMetadataDocument> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch(clientIdUrl, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
+    let currentUrl = clientIdUrl;
+    let response: Response | undefined;
+    for (let hop = 0; hop <= MAX_CIMD_REDIRECTS; hop += 1) {
+      await assertPublicHttpsUrl(currentUrl);
+      response = await fetch(currentUrl, {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+        redirect: 'manual',
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location');
+        if (!location) break;
+        currentUrl = new URL(location, currentUrl).toString();
+        continue;
+      }
+      break;
+    }
+    if (!response || !response.ok) {
       throw new HttpError(400, 'Could not fetch OAuth client metadata document');
     }
     const doc = (await response.json()) as ClientMetadataDocument;

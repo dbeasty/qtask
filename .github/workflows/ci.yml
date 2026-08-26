@@ -28,11 +28,14 @@ jobs:
       - name: Run shared package tests
         run: npm run test:shared
 
-      - name: Build API
-        run: npm run build
-
       - name: Install client dependencies
         run: npm ci --prefix client
+
+      - name: Typecheck tests
+        run: npm run typecheck:tests
+
+      - name: Build API
+        run: npm run build
 
       - name: Build client
         run: npm run build --prefix client

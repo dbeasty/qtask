@@ -254,6 +254,7 @@ describe('entityLinksFromToolResult', () => {
     const enrichments = buildMessageToolResults([
       {
         role: 'assistant',
+        content: '',
         toolCalls: [{ function: { name: 'create_project', arguments: { name: 'Volvo' } } }],
       },
       {

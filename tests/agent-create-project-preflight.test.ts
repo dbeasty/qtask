@@ -89,11 +89,11 @@ describe('create-project preflight', () => {
     );
     assert.equal(createProposals.length, 1);
     assert.equal(
-      (createProposals[0] as { arguments: { name: string } }).arguments.name,
+      (createProposals[0] as unknown as { arguments: { name: string } }).arguments.name,
       'Q1 Launch'
     );
 
-    const done = events.find((event) => event.type === 'done') as { conversationId: string };
+    const done = events.find((event) => event.type === 'done') as unknown as { conversationId: string };
     const conversation = await conversationService.getConversation(userId, done.conversationId);
     assert.ok(conversation);
   });
@@ -202,7 +202,7 @@ describe('create-project preflight', () => {
     );
     assert.equal(createProposals.length, 1);
     assert.equal(
-      (createProposals[0] as { arguments: { name: string; parentId: string } }).arguments.parentId,
+      (createProposals[0] as unknown as { arguments: { name: string; parentId: string } }).arguments.parentId,
       parentB
     );
   });
@@ -277,7 +277,7 @@ describe('create-project preflight', () => {
     }
 
     const conversationId = String(
-      (stageEvents.find((event) => event.type === 'done') as { conversationId: string }).conversationId
+      (stageEvents.find((event) => event.type === 'done') as unknown as { conversationId: string }).conversationId
     );
     const conversation = await conversationService.getConversation(userId, conversationId);
     const proposal = conversation?.pendingProposals?.find(

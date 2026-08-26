@@ -77,10 +77,25 @@ export function getUserPreferences(user: AuthUser | null | undefined): UserPrefe
   };
 }
 
+export class AuthApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'AuthApiError';
+    this.status = status;
+  }
+}
+
+/** True only for an actual server-side auth rejection (401/403) — never for a network failure, CORS error, or 5xx. */
+export function isAuthRejection(error: unknown): boolean {
+  return error instanceof AuthApiError && (error.status === 401 || error.status === 403);
+}
+
 async function parseAuthResponse(response: Response, fallbackError: string) {
   const body = await response.json().catch(() => ({ error: response.statusText }));
   if (!response.ok) {
-    throw new Error((body as { error?: string }).error ?? fallbackError);
+    throw new AuthApiError((body as { error?: string }).error ?? fallbackError, response.status);
   }
   return body;
 }

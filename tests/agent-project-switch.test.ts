@@ -9,25 +9,31 @@ import {
 } from '../client/src/utils/agentProjectSwitch.ts';
 import type { Project, UiProposal } from '../client/src/types.ts';
 
+function makeProject(overrides: Pick<Project, '_id' | 'name'>): Project {
+  return {
+    userId: 'u1',
+    ownerEmail: 'owner@example.com',
+    sortOrder: 0,
+    status: 'todo',
+    percentComplete: 0,
+    role: 'owner',
+    canEdit: true,
+    canUpdateStatus: true,
+    canManageMembers: true,
+    canManageStructure: true,
+    canDeleteProjects: true,
+    canDeleteOwnTasks: true,
+    collaborators: [],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
 const projects: Project[] = [
-  {
-    _id: 'p1',
-    name: 'Boat',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    _id: 'p2',
-    name: 'Boatyard',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    _id: 'p3',
-    name: 'Project One',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-  },
+  makeProject({ _id: 'p1', name: 'Boat' }),
+  makeProject({ _id: 'p2', name: 'Boatyard' }),
+  makeProject({ _id: 'p3', name: 'Project One' }),
 ];
 
 describe('parseActiveProjectSwitchCommand', () => {

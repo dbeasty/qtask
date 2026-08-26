@@ -1164,6 +1164,8 @@ export function TasksPage({
               const { task } = await moveTaskToProject(projectDialogTask._id, projectId);
               applyTaskUpdate(task);
               onActiveProjectChange(projectId);
+            } catch (err) {
+              setActionError(err instanceof Error ? err.message : 'Failed to move task');
             } finally {
               setSaving(false);
             }
@@ -1174,6 +1176,8 @@ export function TasksPage({
             try {
               const { task } = await shareTaskToProject(projectDialogTask._id, projectId);
               applyTaskUpdate(task);
+            } catch (err) {
+              setActionError(err instanceof Error ? err.message : 'Failed to share task');
             } finally {
               setSaving(false);
             }
@@ -1186,6 +1190,8 @@ export function TasksPage({
               setTasks((current) => [task, ...current]);
               setSelection({ kind: 'task', taskId: task._id });
               onActiveProjectChange(projectId);
+            } catch (err) {
+              setActionError(err instanceof Error ? err.message : 'Failed to duplicate task');
             } finally {
               setSaving(false);
             }
@@ -1196,6 +1202,8 @@ export function TasksPage({
             try {
               const { task } = await unlinkTaskFromProject(projectDialogTask._id, projectId);
               applyTaskUpdate(task);
+            } catch (err) {
+              setActionError(err instanceof Error ? err.message : 'Failed to unlink task');
             } finally {
               setSaving(false);
             }

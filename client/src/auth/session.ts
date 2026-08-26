@@ -107,13 +107,22 @@ export function getAuthPathname(): string {
   return window.location.pathname.replace(/\/+$/, '') || '/';
 }
 
+/**
+ * A safe return path must be a same-origin relative path: single leading
+ * slash, not `//...` (protocol-relative) or `/\...` (browsers treat the
+ * backslash like a second slash), which would navigate off-site.
+ */
+export function isSafeReturnPath(path: string | null | undefined): path is string {
+  if (!path) return false;
+  if (!path.startsWith('/')) return false;
+  if (path.startsWith('//') || path.startsWith('/\\')) return false;
+  return true;
+}
+
 export function getReturnToPath(): string | null {
   const params = new URLSearchParams(window.location.search);
   const returnTo = params.get('returnTo');
-  if (!returnTo || !returnTo.startsWith('/')) {
-    return null;
-  }
-  return returnTo;
+  return isSafeReturnPath(returnTo) ? returnTo : null;
 }
 
 export function isAuthPath(pathname?: string): boolean {

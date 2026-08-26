@@ -73,40 +73,44 @@ function resolveRole(project: LeanProject, userId: string): ProjectRole | null {
   return collab?.role ?? null;
 }
 
-async function loadCollaboratorDetails(
-  collaborators: Array<{ userId: string; role: CollaboratorRole }>
-): Promise<SerializedCollaborator[]> {
-  if (collaborators.length === 0) return [];
+type UserLookup = { email: string; displayName?: string };
 
-  const ids = collaborators.map((c) => c.userId);
-  const users = await UserModel.find({ _id: { $in: ids } })
+async function loadUserLookup(userIds: string[]): Promise<Map<string, UserLookup>> {
+  const unique = [...new Set(userIds)];
+  if (unique.length === 0) return new Map();
+
+  const users = await UserModel.find({ _id: { $in: unique } })
     .select('email displayName')
     .lean();
-  const byId = new Map(users.map((u) => [String(u._id), u]));
-
-  return collaborators.map((c) => {
-    const user = byId.get(c.userId);
-    return {
-      userId: c.userId,
-      email: user?.email ?? 'unknown',
-      displayName: user?.displayName ?? undefined,
-      role: c.role,
-    };
-  });
+  return new Map(
+    users.map((u) => [String(u._id), { email: u.email, displayName: u.displayName ?? undefined }])
+  );
 }
 
-async function serializeProject(project: LeanProject, viewerId: string): Promise<SerializedProject> {
+function projectUserIds(project: LeanProject): string[] {
+  return [project.userId, ...(project.collaborators ?? []).map((c) => c.userId)];
+}
+
+function buildSerializedProject(
+  project: LeanProject,
+  viewerId: string,
+  userById: Map<string, UserLookup>
+): SerializedProject {
   const role = resolveRole(project, viewerId);
   if (!role) {
     throw new HttpError(404, 'Project not found');
   }
 
-  const [collaborators, owner] = await Promise.all([
-    loadCollaboratorDetails(
-      (project.collaborators ?? []).map((c) => ({ userId: c.userId, role: c.role }))
-    ),
-    UserModel.findById(project.userId).select('email displayName').lean(),
-  ]);
+  const owner = userById.get(project.userId);
+  const collaborators: SerializedCollaborator[] = (project.collaborators ?? []).map((c) => {
+    const user = userById.get(c.userId);
+    return {
+      userId: c.userId,
+      email: user?.email ?? 'unknown',
+      displayName: user?.displayName,
+      role: c.role,
+    };
+  });
 
   return {
     _id: String(project._id),
@@ -148,6 +152,20 @@ async function serializeProject(project: LeanProject, viewerId: string): Promise
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
   };
+}
+
+async function serializeProject(project: LeanProject, viewerId: string): Promise<SerializedProject> {
+  const userById = await loadUserLookup(projectUserIds(project));
+  return buildSerializedProject(project, viewerId, userById);
+}
+
+/** Batches the owner/collaborator user lookups across the whole list instead of once per project. */
+async function serializeProjectsBatch(
+  projects: LeanProject[],
+  viewerId: string
+): Promise<SerializedProject[]> {
+  const userById = await loadUserLookup(projects.flatMap(projectUserIds));
+  return projects.map((project) => buildSerializedProject(project, viewerId, userById));
 }
 
 export class ProjectService {
@@ -544,7 +562,7 @@ export class ProjectService {
     const projects = await ProjectModel.find(this.accessibleProjectFilter(userId))
       .sort({ sortOrder: 1, createdAt: 1 })
       .lean();
-    return Promise.all(projects.map((p) => serializeProject(p as LeanProject, userId)));
+    return serializeProjectsBatch(projects as LeanProject[], userId);
   }
 
   /** Users this account has previously shared projects with (accepted invites + owned-project collaborators). */
@@ -884,7 +902,9 @@ export class ProjectService {
       const tasks = await TaskModel.find({
         staging: { $exists: false },
         $or: [{ projectIds: projectId }, { projectId }],
-      }).lean();
+      })
+        .select('title hoursSpent hoursRemaining materials hourlyRate progressShare subtasks')
+        .lean();
 
       tracking = computeLeafProjectTracking(
         tasks.map((task) => task as unknown as Record<string, unknown>),
@@ -958,7 +978,9 @@ export class ProjectService {
       const tasks = await TaskModel.find({
         staging: { $exists: false },
         $or: [{ projectIds: projectId }, { projectId }],
-      }).lean();
+      })
+        .select('title hoursSpent hoursRemaining materials hourlyRate progressShare subtasks')
+        .lean();
 
       tracking = computeLeafProjectTracking(
         tasks.map((task) => task as unknown as Record<string, unknown>),

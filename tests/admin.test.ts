@@ -119,8 +119,11 @@ describe('admin data management', () => {
 
   it('requires matching confirmEmail when ADMIN_DELETE_CONFIRM_EMAIL is enabled', async () => {
     const { config } = await import('../src/config/index.js');
-    const previous = config.admin.deleteConfirmEmail;
-    config.admin.deleteConfirmEmail = true;
+    // config is inferred read-only; this test deliberately flips the flag
+    // for its duration and restores it below.
+    const mutableAdmin = config.admin as { deleteConfirmEmail: boolean };
+    const previous = mutableAdmin.deleteConfirmEmail;
+    mutableAdmin.deleteConfirmEmail = true;
     try {
       const user = await createVerifiedUser('confirm-delete@example.com');
       const { agent, csrf } = await adminSession();
@@ -142,7 +145,7 @@ describe('admin data management', () => {
       const { UserModel } = await import('../src/models/index.js');
       assert.equal(await UserModel.countDocuments({ _id: user._id }), 0);
     } finally {
-      config.admin.deleteConfirmEmail = previous;
+      mutableAdmin.deleteConfirmEmail = previous;
     }
   });
 });

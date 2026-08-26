@@ -100,3 +100,21 @@ export function setStoredActiveProjectId(projectId: string | null): void {
     // ignore storage failures
   }
 }
+
+/**
+ * A tree row is expanded when the user explicitly expanded it, or when a
+ * direct child is the current selection (so navigating to a child always
+ * reveals it). It must NOT auto-expand just because the row itself is
+ * selected — that overrides the user's own collapse and makes the chevron
+ * on the selected row look broken (it stays open no matter what you click).
+ */
+export function isProjectRowExpanded(
+  expanded: ReadonlySet<string>,
+  projectId: string,
+  children: ProjectTreeNode[],
+  selectionId: string | null
+): boolean {
+  return (
+    expanded.has(projectId) || children.some((child) => child.project._id === selectionId)
+  );
+}
