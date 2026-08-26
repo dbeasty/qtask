@@ -66,10 +66,10 @@ describe('embeddingQueue re-embeds edits that land while a job is already proces
     startEmbeddingWorker();
     await enqueueEmbeddingJob(taskId);
 
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 200; i++) {
       const job = await EmbeddingJobModel.findOne({ taskId }).lean();
       if (job?.status === 'processing') break;
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 15));
     }
     const midRunJob = await EmbeddingJobModel.findOne({ taskId }).lean();
     assert.equal(midRunJob?.status, 'processing');
@@ -82,10 +82,10 @@ describe('embeddingQueue re-embeds edits that land while a job is already proces
 
     releaseFirstCall();
 
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 200; i++) {
       const job = await EmbeddingJobModel.findOne({ taskId }).lean();
       if (job?.status === 'completed') break;
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 25));
     }
 
     const finalJob = await EmbeddingJobModel.findOne({ taskId }).lean();

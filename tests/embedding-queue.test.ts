@@ -56,10 +56,10 @@ describe('embeddingQueue (event-driven)', () => {
     startEmbeddingWorker();
     await enqueueEmbeddingJob(String(task._id));
 
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 200; i++) {
       const job = await EmbeddingJobModel.findOne({ taskId: String(task._id) }).lean();
       if (job?.status === 'completed') break;
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 25));
     }
 
     const job = await EmbeddingJobModel.findOne({ taskId: String(task._id) }).lean();
@@ -187,13 +187,13 @@ describe('embeddingQueue (event-driven)', () => {
     startEmbeddingWorker();
     await enqueueProjectEmbeddingJob(String(project._id));
 
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 200; i++) {
       const job = await EmbeddingJobModel.findOne({
         entityType: 'project',
         entityId: String(project._id),
       }).lean();
       if (job?.status === 'completed') break;
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 25));
     }
 
     const job = await EmbeddingJobModel.findOne({

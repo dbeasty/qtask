@@ -7,6 +7,11 @@ import { cosineSimilarity, generateEmbedding } from './embeddingService.js';
 import { escapeRegex, mergeHybridSearchScores } from './searchUtils.js';
 
 const SEMANTIC_THRESHOLD = 0.6;
+/** Caps how many documents a single search loads into memory for
+ *  in-process cosine-similarity scoring / regex fallback matching, so a
+ *  user with thousands of accessible tasks doesn't turn every search into
+ *  a full-collection scan held entirely in memory. */
+const MAX_CANDIDATES = 500;
 
 type LeanTask = Record<string, unknown> & {
   _id: unknown;
@@ -153,7 +158,7 @@ async function hybridSearch<T extends { _id: unknown; embedding?: number[] }>(
   baseQuery: Record<string, unknown>,
   model: {
     findText: (query: Record<string, unknown>, search: string) => Promise<T[]>;
-    findCandidates: (query: Record<string, unknown>) => Promise<T[]>;
+    findCandidates: (query: Record<string, unknown>, limit: number) => Promise<T[]>;
     matchesRegex: (item: T, regex: RegExp) => boolean;
   },
   options?: { hybridSearch?: boolean }
@@ -164,10 +169,13 @@ async function hybridSearch<T extends { _id: unknown; embedding?: number[] }>(
     ? await semanticScoreCandidates(
         userId,
         queryText,
-        await model.findCandidates({
-          ...baseQuery,
-          embedding: { $exists: true, $ne: [] },
-        })
+        await model.findCandidates(
+          {
+            ...baseQuery,
+            embedding: { $exists: true, $ne: [] },
+          },
+          MAX_CANDIDATES
+        )
       )
     : [];
   const merged = mergeHybridSearchScores(textMatches, semanticMatches, (item) => String(item._id));
@@ -175,7 +183,7 @@ async function hybridSearch<T extends { _id: unknown; embedding?: number[] }>(
   if (merged.length > 0) return merged;
 
   const regex = new RegExp(escapeRegex(queryText), 'i');
-  const fallbackCandidates = await model.findCandidates(baseQuery);
+  const fallbackCandidates = await model.findCandidates(baseQuery, MAX_CANDIDATES);
   return fallbackCandidates
     .filter((item) => model.matchesRegex(item, regex))
     .map((item, index) => ({ item, score: 0.5 - index * 0.01 }));
@@ -193,7 +201,11 @@ async function searchProjectsInternal(
       ProjectModel.find({ ...query, $text: { $search: search } }, { score: { $meta: 'textScore' } })
         .sort({ score: { $meta: 'textScore' } })
         .lean() as Promise<LeanProject[]>,
-    findCandidates: async (query) => ProjectModel.find(query).lean() as Promise<LeanProject[]>,
+    findCandidates: async (query, limit) =>
+      ProjectModel.find(query)
+        .sort({ updatedAt: -1 })
+        .limit(limit)
+        .lean() as Promise<LeanProject[]>,
     matchesRegex: projectMatchesRegex,
   });
 
@@ -229,7 +241,8 @@ async function searchTasksInternal(
       TaskModel.find({ ...query, $text: { $search: search } }, { score: { $meta: 'textScore' } })
         .sort({ score: { $meta: 'textScore' } })
         .lean() as Promise<LeanTask[]>,
-    findCandidates: async (query) => TaskModel.find(query).lean() as Promise<LeanTask[]>,
+    findCandidates: async (query, limit) =>
+      TaskModel.find(query).sort({ updatedAt: -1 }).limit(limit).lean() as Promise<LeanTask[]>,
     matchesRegex: taskMatchesRegex,
   }, options);
 
