@@ -15,6 +15,7 @@ import {
   TaskModel,
   UserModel,
 } from '../models/index.js';
+import { escapeRegex } from '../services/searchUtils.js';
 import { requireAdmin, requireCsrf } from './auth.js';
 import { fetchGpuStatus } from './gpuStats.js';
 import {
@@ -113,8 +114,9 @@ router.get('/users', async (req, res, next) => {
     const page = positiveInt(req.query.page, 1, 1_000_000);
     const limit = positiveInt(req.query.limit, 25, 100);
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+    const searchPattern = escapeRegex(search);
     const match = search
-      ? { $or: [{ email: { $regex: search, $options: 'i' } }, { displayName: { $regex: search, $options: 'i' } }] }
+      ? { $or: [{ email: { $regex: searchPattern, $options: 'i' } }, { displayName: { $regex: searchPattern, $options: 'i' } }] }
       : {};
     const [total, users] = await Promise.all([
       UserModel.countDocuments(match),

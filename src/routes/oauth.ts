@@ -10,11 +10,30 @@ import { HttpError } from '../utils/httpError.js';
 export const oauthRouter = Router();
 export const oauthConsentRouter = Router();
 
+const tokenBodySchema = z.object({
+  grant_type: z.string().optional(),
+  code: z.string().optional(),
+  redirect_uri: z.string().optional(),
+  client_id: z.string().optional(),
+  client_secret: z.string().optional(),
+  code_verifier: z.string().optional(),
+  resource: z.string().optional(),
+  refresh_token: z.string().optional(),
+});
+
 function parseTokenBody(req: { body: unknown; headers: { authorization?: string } }) {
-  const body =
-    req.body && typeof req.body === 'object' && !Array.isArray(req.body)
-      ? (req.body as Record<string, string>)
-      : {};
+  // The old code cast req.body straight to Record<string, string> — a
+  // type-level lie, not a runtime check. A field sent as an object (e.g.
+  // client_id: {"$gt":""}) passed through untouched into a Mongoose query
+  // downstream. Validate every field is actually a string before using any
+  // of them.
+  const rawBody =
+    req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  const parsed = tokenBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    throw new HttpError(400, 'Invalid token request body');
+  }
+  const body = parsed.data;
 
   let clientId = body.client_id;
   let clientSecret = body.client_secret;
@@ -65,22 +84,50 @@ oauthRouter.get('/authorize', async (req, res, next) => {
 
     res.redirect(result.consentUrl);
   } catch (error) {
-    if (error instanceof HttpError && typeof req.query.redirect_uri === 'string') {
-      const url = new URL(req.query.redirect_uri);
-      url.searchParams.set('error', 'invalid_request');
-      url.searchParams.set(
-        'error_description',
-        error.message
-      );
-      if (typeof req.query.state === 'string') {
-        url.searchParams.set('state', req.query.state);
+    if (error instanceof HttpError) {
+      // Only redirect back to redirect_uri once it's independently confirmed
+      // registered for the named client — most of beginAuthorization's
+      // checks (response_type, code_challenge_method, resource, unknown
+      // client, or redirect_uri itself failing validation) throw before
+      // ever validating redirect_uri, so blindly redirecting to whatever
+      // the query string says is an open redirect on this server's own
+      // origin. Anything that can't be proven safe gets a local JSON error
+      // instead of a redirect.
+      const safeRedirectUrl = await resolveSafeErrorRedirect(req);
+      if (safeRedirectUrl) {
+        safeRedirectUrl.searchParams.set('error', 'invalid_request');
+        safeRedirectUrl.searchParams.set('error_description', error.message);
+        if (typeof req.query.state === 'string') {
+          safeRedirectUrl.searchParams.set('state', req.query.state);
+        }
+        res.redirect(safeRedirectUrl.toString());
+        return;
       }
-      res.redirect(url.toString());
+      res.status(error.statusCode).json({ error: error.message });
       return;
     }
     next(error);
   }
 });
+
+async function resolveSafeErrorRedirect(req: {
+  query: Record<string, unknown>;
+}): Promise<URL | undefined> {
+  const redirectUriParam =
+    typeof req.query.redirect_uri === 'string' ? req.query.redirect_uri : undefined;
+  const clientIdParam = typeof req.query.client_id === 'string' ? req.query.client_id : undefined;
+  if (!redirectUriParam || !clientIdParam) return undefined;
+
+  try {
+    const client = await mcpOAuthClientService.resolveClient(clientIdParam);
+    if (!client || !mcpOAuthClientService.validateRedirectUri(client, redirectUriParam)) {
+      return undefined;
+    }
+    return new URL(redirectUriParam);
+  } catch {
+    return undefined;
+  }
+}
 
 const consentActionSchema = z.object({
   state: z.string().min(1),

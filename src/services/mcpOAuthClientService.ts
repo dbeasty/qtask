@@ -61,6 +61,24 @@ function isHttpsUrl(value: string): boolean {
   }
 }
 
+/**
+ * True only for a real loopback http URL. Parses the URL and checks the
+ * hostname exactly — a prior version used string prefix matching
+ * (value.startsWith('http://127.0.0.1')), which "http://127.0.0.1.evil.com"
+ * also satisfies despite not being loopback at all.
+ */
+function isLoopbackHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'http:' &&
+      (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]' || url.hostname === '::1')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isUrlFormattedClientId(clientId: string): boolean {
   try {
     const url = new URL(clientId);
@@ -241,7 +259,7 @@ export class McpOAuthClientService {
       throw new HttpError(400, 'redirect_uris is required');
     }
     for (const uri of redirectUris) {
-      if (!isHttpsUrl(uri) && !uri.startsWith('http://127.0.0.1') && !uri.startsWith('http://localhost')) {
+      if (!isHttpsUrl(uri) && !isLoopbackHttpUrl(uri)) {
         throw new HttpError(400, 'Invalid redirect URI');
       }
     }
@@ -323,11 +341,15 @@ export class McpOAuthClientService {
 
   validateRedirectUri(client: ResolvedOAuthClient, redirectUri: string): boolean {
     if (client.redirectUris.length === 0) {
-      return (
-        isHttpsUrl(redirectUri) ||
-        redirectUri.startsWith('http://127.0.0.1') ||
-        redirectUri.startsWith('http://localhost')
-      );
+      // Only self-service "registered" clients (createRegisteredClient) can
+      // reach here — DCR and CIMD clients always have explicit
+      // redirectUris. Registered clients intentionally have no fixed
+      // redirect_uri because they're for local/CLI tools that bind an
+      // ephemeral port each run, so pin the fallback to loopback rather
+      // than accepting any https:// target, which would let anyone who
+      // gets a victim to click a crafted /oauth/authorize link redirect
+      // that victim's own authorization code to an arbitrary https host.
+      return isLoopbackHttpUrl(redirectUri);
     }
     return client.redirectUris.includes(redirectUri);
   }
