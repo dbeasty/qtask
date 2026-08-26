@@ -82,7 +82,7 @@ projectsRouter.post('/', async (req, res, next) => {
 projectsRouter.patch('/:id', async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const { name, description, notes, parentId, sortOrder, progressShare, hourlyRate } = req.body as {
+    const { name, description, notes, parentId, sortOrder, progressShare, hourlyRate, done } = req.body as {
       name?: string;
       description?: string | null;
       notes?: string | null;
@@ -90,6 +90,7 @@ projectsRouter.patch('/:id', async (req, res, next) => {
       sortOrder?: number;
       progressShare?: number | null;
       hourlyRate?: number | null;
+      done?: boolean;
     };
     const project = await projectService.updateProject(userId, req.params.id!, {
       name,
@@ -99,6 +100,7 @@ projectsRouter.patch('/:id', async (req, res, next) => {
       sortOrder,
       progressShare,
       hourlyRate,
+      done,
     });
     if (!project) {
       res.status(404).json({ error: 'Project not found' });

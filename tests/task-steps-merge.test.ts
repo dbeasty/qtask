@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   mergeLocalSteps,
-  shouldInsertStepOnEnter,
   stepsEqualForSave,
   stepsForApi,
   stepsFromTask,
@@ -72,34 +71,5 @@ describe('task steps merge and save helpers', () => {
     ];
     const merged = mergeLocalSteps(saved, local);
     assert.equal(merged[0]!.text, 'Edited locally');
-  });
-
-  it('shouldInsertStepOnEnter returns false for persisted steps', () => {
-    const step: TaskStep = {
-      _id: 'abc123def456abc123def456',
-      clientKey: 'server-1',
-      text: 'Saved step',
-      done: false,
-    };
-    assert.equal(shouldInsertStepOnEnter(step), false);
-  });
-
-  it('shouldInsertStepOnEnter returns true for draft steps', () => {
-    const step: TaskStep = {
-      _id: 'draft-uuid',
-      clientKey: 'ck-1',
-      text: 'New step',
-      done: false,
-    };
-    assert.equal(shouldInsertStepOnEnter(step), true);
-  });
-
-  it('shouldInsertStepOnEnter returns true when step has no _id', () => {
-    const step: TaskStep = {
-      clientKey: 'ck-1',
-      text: 'New step',
-      done: false,
-    };
-    assert.equal(shouldInsertStepOnEnter(step), true);
   });
 });

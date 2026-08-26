@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveMailFrom, resolveMailProvider } from '../src/config/index.js';
+
+process.env.NODE_ENV = 'test';
+
+const { resolveMailFrom, resolveMailProvider } = await import('../src/config/index.js');
 
 describe('resolveMailProvider', () => {
   it('selects resend when MAIL_RESEND=true', () => {

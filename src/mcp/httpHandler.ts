@@ -112,8 +112,14 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
   const { userId, keyId, scope } = req.mcpAuth;
 
   try {
-    if (sessionId && sessions.has(sessionId)) {
-      const entry = sessions.get(sessionId)!;
+    const cachedEntry = sessionId ? sessions.get(sessionId) : undefined;
+    if (cachedEntry && (cachedEntry.ctx.userId !== userId || cachedEntry.ctx.keyId !== keyId)) {
+      res.status(401).json({ error: 'MCP authorization required' });
+      return;
+    }
+
+    if (sessionId && cachedEntry) {
+      const entry = cachedEntry;
       const session = await mcpSessionService.getSession(entry.ctx.userId, entry.ctx.sessionId);
       entry.ctx.activeProjectId = session?.activeProjectId ?? undefined;
       await mcpSessionService.touchSession(entry.ctx.userId, entry.ctx.sessionId);
@@ -125,7 +131,7 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
       return;
     }
 
-    if (sessionId && !sessions.has(sessionId)) {
+    if (sessionId && !cachedEntry) {
       const mongoSession = await mcpSessionService.getSessionByKey(userId, keyId, sessionId);
       if (mongoSession) {
         const { entry } = await getOrCreateSessionEntry(userId, keyId, scope, sessionId);

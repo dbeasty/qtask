@@ -292,6 +292,7 @@ const projectSchema = new Schema(
       default: 'todo',
     },
     percentComplete: { type: Number, default: 0, min: 0, max: 100 },
+    doneOverride: { type: Boolean, default: false },
     progressShare: { type: Number, min: 0, max: 100 },
     hourlyRate: { type: Number, min: 0 },
     trainingHourlyRate: { type: Number, min: 0 },

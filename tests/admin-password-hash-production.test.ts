@@ -5,6 +5,7 @@ process.env.QTASK_SKIP_DOTENV = 'true';
 process.env.NODE_ENV = 'production';
 process.env.JWT_SECRET = 'test-user-jwt-secret';
 process.env.ADMIN_JWT_SECRET = 'test-admin-jwt-secret';
+process.env.MCP_OAUTH_JWT_SECRET = 'test-mcp-oauth-jwt-secret';
 process.env.ADMIN_AUTH_MODE = 'password';
 process.env.HASH_ADMIN_PASSWORD = 'true';
 process.env.ADMIN_PASSWORD_HASH = 'not-a-bcrypt-hash';

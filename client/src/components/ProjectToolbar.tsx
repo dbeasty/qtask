@@ -1,48 +1,42 @@
 import type { ReactNode } from 'react';
 import type { Project } from '../types';
+import { CurrentProjectLabel } from './CurrentProjectBar';
 
 interface ProjectToolbarProps {
   activeProject: Project | null;
+  projects?: Project[];
   projectCount: number;
   taskCount: number;
   taskListExpanded: boolean;
   onTaskListExpandedChange: (expanded: boolean) => void;
   onOpenProjects: () => void;
+  onSelectProject?: (projectId: string) => void;
   listActions?: ReactNode;
 }
 
 export function ProjectToolbar({
   activeProject,
+  projects,
   projectCount,
   taskCount,
   taskListExpanded,
   onTaskListExpandedChange,
   onOpenProjects,
+  onSelectProject,
   listActions,
 }: ProjectToolbarProps) {
   const taskCountLabel = `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
-  const projectCountLabel = `${projectCount} ${projectCount === 1 ? 'project' : 'projects'}`;
 
   return (
     <div className="project-toolbar-wrap floating-bar">
       <div className="context-bar-row context-bar-row-stacked">
-        <button
-          type="button"
-          className="project-toolbar-collapsed context-bar-project-link"
-          onClick={onOpenProjects}
-        >
-          <span className="project-toolbar-collapsed-label">Current project</span>
-          {activeProject ? (
-            <>
-              <span className="project-toolbar-collapsed-sep">·</span>
-              <span className="project-toolbar-collapsed-name">{activeProject.name}</span>
-            </>
-          ) : (
-            <span className="project-toolbar-collapsed-meta">
-              {projectCount === 0 ? 'No projects' : `(${projectCountLabel})`}
-            </span>
-          )}
-        </button>
+        <CurrentProjectLabel
+          activeProject={activeProject}
+          projects={projects}
+          projectCount={projectCount}
+          onOpenProjects={onOpenProjects}
+          onSelectProject={onSelectProject}
+        />
 
         <div className="context-bar-list-row">
           <button

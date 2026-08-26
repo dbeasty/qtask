@@ -979,11 +979,13 @@ export function TasksPage({
         <>
           <ProjectToolbar
             activeProject={activeProject}
+            projects={projects}
             projectCount={projects.length}
             taskCount={activeProjectTasks.length}
             taskListExpanded={taskListExpanded}
             onTaskListExpandedChange={setTaskListExpanded}
             onOpenProjects={() => onNeedProject?.()}
+            onSelectProject={onActiveProjectChange}
             listActions={
               <>
                 <button

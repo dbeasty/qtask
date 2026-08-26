@@ -593,6 +593,7 @@ export function AgentPage({
   }, [activeProjectId]);
 
   useEffect(() => {
+    abortActiveStream();
     if (!activeProjectId) {
       setConversations([]);
       setConversationId(undefined);
@@ -1309,8 +1310,10 @@ export function AgentPage({
       {activeProjectId ? (
         <CurrentProjectBar
           activeProject={activeProject}
+          projects={projects}
           projectCount={projects.length}
           onOpenProjects={() => onNeedProject?.()}
+          onSelectProject={onActiveProjectChange}
         />
       ) : null}
       <div className="agent-layout">

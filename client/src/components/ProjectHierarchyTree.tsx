@@ -4,7 +4,7 @@ import type { ProjectTreeNode } from '../utils/projectTree';
 import { getProjectDescendantIds } from '../utils/projectTree';
 import { ActionMenuTrigger } from './ActionMenuTrigger';
 import { ProjectMoveMenu } from './ProjectMoveMenu';
-import { TaskProgressIndicator } from './TaskProgressIndicator';
+import { TaskDoneToggle } from './TaskDoneToggle';
 import { ProjectRoleIndicator, projectTreeRoleClass } from './ProjectRoleIndicator';
 
 interface ProjectHierarchyTreeProps {
@@ -15,6 +15,7 @@ interface ProjectHierarchyTreeProps {
   onSelect: (projectId: string) => void;
   onMove: (projectId: string, parentId: string | null, index?: number) => void;
   onDelete: (projectId: string) => void | Promise<boolean>;
+  onToggleDone: (projectId: string, done: boolean) => void;
 }
 
 export function ProjectHierarchyTree({
@@ -25,6 +26,7 @@ export function ProjectHierarchyTree({
   onSelect,
   onMove,
   onDelete,
+  onToggleDone,
 }: ProjectHierarchyTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [openMoveMenuId, setOpenMoveMenuId] = useState<string | null>(null);
@@ -60,6 +62,7 @@ export function ProjectHierarchyTree({
           onSelect={onSelect}
           onMove={onMove}
           onDelete={onDelete}
+          onToggleDone={onToggleDone}
         />
       ))}
     </ul>
@@ -83,6 +86,7 @@ interface NodeProps {
   onSelect: (projectId: string) => void;
   onMove: (projectId: string, parentId: string | null, index?: number) => void;
   onDelete: (projectId: string) => void | Promise<boolean>;
+  onToggleDone: (projectId: string, done: boolean) => void;
 }
 
 function ProjectTreeNodeView({
@@ -102,6 +106,7 @@ function ProjectTreeNodeView({
   onSelect,
   onMove,
   onDelete,
+  onToggleDone,
 }: NodeProps) {
   const { project, children } = node;
   const isActive = selectionId === project._id;
@@ -141,12 +146,13 @@ function ProjectTreeNodeView({
           ) : (
             <span className="task-tree-chevron-spacer" />
           )}
-          <span className="task-done-toggle task-done-toggle--static" aria-hidden="true">
-            <TaskProgressIndicator
-              status={project.status ?? 'todo'}
-              percentComplete={project.percentComplete ?? 0}
-            />
-          </span>
+          <TaskDoneToggle
+            status={project.status ?? 'todo'}
+            percentComplete={project.percentComplete ?? 0}
+            saving={saving}
+            canToggle={project.canUpdateStatus}
+            onToggle={(done) => onToggleDone(project._id, done)}
+          />
           <button
             type="button"
             className={`task-tree-label task-list-item${isActive ? ' active' : ''} ${projectTreeRoleClass(project.role)}`}
@@ -212,6 +218,7 @@ function ProjectTreeNodeView({
               onSelect={onSelect}
               onMove={onMove}
               onDelete={onDelete}
+              onToggleDone={onToggleDone}
             />
           ))}
         </ul>

@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeToolArgs, validateToolProposal } from '../src/agent/tools.js';
+
+process.env.NODE_ENV = 'test';
+
+const { normalizeToolArgs, validateToolProposal } = await import('../src/agent/tools.js');
 
 describe('normalizeToolArgs create_task subtasks', () => {
   it('promotes description-only subtasks to title', () => {

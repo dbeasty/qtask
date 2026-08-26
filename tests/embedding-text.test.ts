@@ -1,9 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  buildProjectEmbeddingText,
-  buildTaskEmbeddingText,
-} from '../src/services/embeddingService.js';
+
+process.env.NODE_ENV = 'test';
+
+const { buildProjectEmbeddingText, buildTaskEmbeddingText } = await import(
+  '../src/services/embeddingService.js'
+);
 
 describe('embedding text builders', () => {
   it('buildTaskEmbeddingText includes tags, projects, and steps', () => {

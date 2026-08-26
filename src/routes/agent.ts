@@ -20,13 +20,11 @@ const agentChatLimiter = rateLimit({
   message: { error: 'Too many agent requests, please try again later' },
 });
 
-function createRequestAbortSignal(req: import('express').Request): AbortSignal {
+function createRequestAbortSignal(res: import('express').Response): AbortSignal {
   const controller = new AbortController();
-  const onClose = () => {
-    if (!controller.signal.aborted) controller.abort();
-  };
-  req.on('close', onClose);
-  req.on('aborted', onClose);
+  res.on('close', () => {
+    if (!res.writableEnded && !controller.signal.aborted) controller.abort();
+  });
   return controller.signal;
 }
 
@@ -167,7 +165,7 @@ agentRouter.post('/agent', agentChatLimiter, async (req, res, next) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
-    const signal = createRequestAbortSignal(req);
+    const signal = createRequestAbortSignal(res);
     await streamEvents(
       res,
       agentService.streamAgent(userId, message.trim(), conversationId, projectId, signal),
@@ -239,7 +237,7 @@ agentRouter.post('/agent/approve', agentChatLimiter, async (req, res, next) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
-    const signal = createRequestAbortSignal(req);
+    const signal = createRequestAbortSignal(res);
     await streamEvents(
       res,
       agentService.resumeAfterApproval(userId, conversationId, proposalId, action, signal),

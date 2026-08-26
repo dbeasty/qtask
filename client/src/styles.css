@@ -2390,6 +2390,72 @@ main {
   white-space: nowrap;
 }
 
+.project-breadcrumb-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.project-breadcrumb-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.project-breadcrumb-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 8rem;
+}
+
+.project-breadcrumb-link:hover {
+  color: var(--color-text-secondary);
+}
+
+.project-breadcrumb-sep {
+  color: var(--color-text-muted-3);
+  flex-shrink: 0;
+}
+
+.project-breadcrumb-current {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-breadcrumb-current-button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-breadcrumb-current-button:hover {
+  color: var(--color-text);
+}
+
 .project-toolbar {
   display: flex;
   flex-wrap: wrap;
