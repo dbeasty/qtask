@@ -37,6 +37,35 @@ import type { StagingContext } from '../types/staging.js';
 
 export const DEFAULT_PROJECT_NAME = 'Project One';
 
+const defaultProjectLocks = new Map<string, Promise<void>>();
+
+/** Serializes ensureDefaultProject() per user so two concurrent calls (e.g.
+ *  two requests firing right after registration) can't both see zero
+ *  projects and each create their own "Project One". */
+async function withDefaultProjectLock<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const prior = defaultProjectLocks.get(userId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = prior.then(
+    () => gate,
+    () => gate
+  );
+  defaultProjectLocks.set(userId, queued);
+  await prior;
+  try {
+    return await fn();
+  } finally {
+    release();
+    void queued.finally(() => {
+      if (defaultProjectLocks.get(userId) === queued) {
+        defaultProjectLocks.delete(userId);
+      }
+    });
+  }
+}
+
 type LeanProject = {
   _id: unknown;
   userId: string;
@@ -180,24 +209,26 @@ export class ProjectService {
   }
 
   async ensureDefaultProject(userId: string): Promise<string> {
-    const count = await ProjectModel.countDocuments({ userId, staging: { $exists: false } });
-    if (count > 0) {
-      const existing = await ProjectModel.findOne({ userId, staging: { $exists: false } })
-        .sort({ createdAt: 1 })
-        .lean();
-      return String(existing!._id);
-    }
+    return withDefaultProjectLock(userId, async () => {
+      const count = await ProjectModel.countDocuments({ userId, staging: { $exists: false } });
+      if (count > 0) {
+        const existing = await ProjectModel.findOne({ userId, staging: { $exists: false } })
+          .sort({ createdAt: 1 })
+          .lean();
+        return String(existing!._id);
+      }
 
-    const project = await ProjectModel.create({
-      userId,
-      name: DEFAULT_PROJECT_NAME,
-      collaborators: [],
-      parentId: null,
-      sortOrder: 0,
-      status: 'todo',
-      percentComplete: 0,
+      const project = await ProjectModel.create({
+        userId,
+        name: DEFAULT_PROJECT_NAME,
+        collaborators: [],
+        parentId: null,
+        sortOrder: 0,
+        status: 'todo',
+        percentComplete: 0,
+      });
+      return String(project._id);
     });
-    return String(project._id);
   }
 
   /** Projects the user owns or collaborates on. */
