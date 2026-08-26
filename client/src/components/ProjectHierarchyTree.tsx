@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import type { Project } from '../types';
 import type { ProjectTreeNode } from '../utils/projectTree';
-import { getProjectDescendantIds } from '../utils/projectTree';
+import { getProjectDescendantIds, isProjectRowExpanded } from '../utils/projectTree';
 import { ActionMenuTrigger } from './ActionMenuTrigger';
 import { ProjectMoveMenu } from './ProjectMoveMenu';
 import { TaskDoneToggle } from './TaskDoneToggle';
@@ -111,8 +111,7 @@ function ProjectTreeNodeView({
   const { project, children } = node;
   const isActive = selectionId === project._id;
   const hasChildren = children.length > 0;
-  const isExpanded =
-    expanded.has(project._id) || children.some((child) => child.project._id === selectionId);
+  const isExpanded = isProjectRowExpanded(expanded, project._id, children, selectionId);
   const canManageStructure = project.canManageStructure;
   const canDeleteProject = project.canDeleteProjects;
   const menuOpen = openMoveMenuId === project._id;
