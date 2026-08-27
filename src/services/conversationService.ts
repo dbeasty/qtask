@@ -7,6 +7,40 @@ import type {
   StoredMessage,
 } from '../types/conversation.js';
 
+const conversationSaveLocks = new Map<string, Promise<void>>();
+
+/** Serializes writes to a conversation's messages/pendingProposals/
+ *  pausedBatch fields, mirroring withTaskSaveLock in taskService.ts.
+ *  Without it, two concurrent writes to the same conversation (e.g.
+ *  approving a proposal while a chat turn is being paused) could each
+ *  load their own snapshot and overwrite the other's changes. */
+async function withConversationSaveLock<T>(
+  conversationId: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prior = conversationSaveLocks.get(conversationId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = prior.then(
+    () => gate,
+    () => gate
+  );
+  conversationSaveLocks.set(conversationId, queued);
+  await prior;
+  try {
+    return await fn();
+  } finally {
+    release();
+    void queued.finally(() => {
+      if (conversationSaveLocks.get(conversationId) === queued) {
+        conversationSaveLocks.delete(conversationId);
+      }
+    });
+  }
+}
+
 function toSummary(doc: {
   _id: unknown;
   userId: string;
@@ -216,23 +250,25 @@ export class ConversationService {
       title?: string;
     }
   ): Promise<Conversation | null> {
-    const update: Record<string, unknown> = {
-      messages: data.messages,
-      pendingProposals: data.pendingProposals,
-      pausedBatch: data.pausedBatch ?? null,
-    };
-    if (data.title) {
-      update.title = data.title;
-    }
+    return withConversationSaveLock(conversationId, async () => {
+      const update: Record<string, unknown> = {
+        messages: data.messages,
+        pendingProposals: data.pendingProposals,
+        pausedBatch: data.pausedBatch ?? null,
+      };
+      if (data.title) {
+        update.title = data.title;
+      }
 
-    const doc = await ConversationModel.findOneAndUpdate(
-      { _id: conversationId, userId },
-      { $set: update },
-      { new: true }
-    ).lean();
+      const doc = await ConversationModel.findOneAndUpdate(
+        { _id: conversationId, userId },
+        { $set: update },
+        { new: true }
+      ).lean();
 
-    if (!doc) return null;
-    return toConversation(doc as Parameters<typeof toConversation>[0]);
+      if (!doc) return null;
+      return toConversation(doc as Parameters<typeof toConversation>[0]);
+    });
   }
 
   async updateProposalStatus(
@@ -242,19 +278,24 @@ export class ConversationService {
     status: 'approved' | 'rejected',
     extraMessages: StoredMessage[]
   ): Promise<Conversation | null> {
-    const doc = await ConversationModel.findOne({ _id: conversationId, userId });
-    if (!doc) return null;
+    return withConversationSaveLock(conversationId, async () => {
+      // Atomic positional update instead of load -> mutate one array
+      // element in memory -> save the whole array back: two concurrent
+      // calls approving/rejecting *different* proposals on the same
+      // conversation used to race on the full pendingProposals array,
+      // with whichever saved last silently reverting the other's change.
+      const doc = await ConversationModel.findOneAndUpdate(
+        { _id: conversationId, userId, 'pendingProposals.id': proposalId },
+        {
+          $set: { 'pendingProposals.$.status': status },
+          $push: { messages: { $each: extraMessages } },
+        },
+        { new: true }
+      ).lean();
 
-    const proposals = (doc.pendingProposals ?? []) as PendingProposal[];
-    const proposal = proposals.find((p) => p.id === proposalId);
-    if (!proposal) return null;
-
-    proposal.status = status;
-    doc.messages.push(...extraMessages);
-    doc.markModified('pendingProposals');
-    await doc.save();
-
-    return toConversation(doc.toObject() as Parameters<typeof toConversation>[0]);
+      if (!doc) return null;
+      return toConversation(doc as Parameters<typeof toConversation>[0]);
+    });
   }
 
   async clearPauseState(
@@ -262,20 +303,22 @@ export class ConversationService {
     conversationId: string,
     messages: StoredMessage[]
   ): Promise<Conversation | null> {
-    const doc = await ConversationModel.findOneAndUpdate(
-      { _id: conversationId, userId },
-      {
-        $set: {
-          messages,
-          pendingProposals: [],
-          pausedBatch: null,
+    return withConversationSaveLock(conversationId, async () => {
+      const doc = await ConversationModel.findOneAndUpdate(
+        { _id: conversationId, userId },
+        {
+          $set: {
+            messages,
+            pendingProposals: [],
+            pausedBatch: null,
+          },
         },
-      },
-      { new: true }
-    ).lean();
+        { new: true }
+      ).lean();
 
-    if (!doc) return null;
-    return toConversation(doc as Parameters<typeof toConversation>[0]);
+      if (!doc) return null;
+      return toConversation(doc as Parameters<typeof toConversation>[0]);
+    });
   }
 }
 
