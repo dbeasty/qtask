@@ -9,7 +9,10 @@ import { createLogger } from '../utils/logger.js';
 const log = createLogger('mcpSession');
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 export const SESSION_REUSE_WINDOW_MS = 60 * 60 * 1000;
+
+let sweepTimer: NodeJS.Timeout | null = null;
 
 export interface PendingProposalWithSession extends PendingProposal {
   sessionId: string;
@@ -294,6 +297,27 @@ export class McpSessionService {
       await this.closeSession(session.userId, String(session._id));
     }
     return stale.length;
+  }
+
+  /** Mirrors stagingService's startSweep/stopSweep — without this,
+   *  sweepExpiredSessions() was never called from anywhere, so MCP
+   *  session documents (and any staged entities still tied to them)
+   *  accumulated forever. */
+  startSweep() {
+    if (sweepTimer) return;
+    sweepTimer = setInterval(() => {
+      this.sweepExpiredSessions().catch((error) => {
+        log.error('MCP session sweep failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, SWEEP_INTERVAL_MS);
+    sweepTimer.unref();
+  }
+
+  stopSweep() {
+    if (sweepTimer) clearInterval(sweepTimer);
+    sweepTimer = null;
   }
 }
 
