@@ -7,8 +7,8 @@ import {
   deleteSubtask,
   deleteTask,
   duplicateTask,
+  listAllTasks,
   listProjects,
-  listTasks,
   moveSubtask,
   moveTaskToProject,
   promoteSubtask,
@@ -316,8 +316,8 @@ export function TasksPage({
     setLoading(true);
     setError(null);
     try {
-      const [taskResponse, projectResponse] = await Promise.all([listTasks(), listProjects()]);
-      setTasks(taskResponse.tasks);
+      const [allTasks, projectResponse] = await Promise.all([listAllTasks(), listProjects()]);
+      setTasks(allTasks);
       setProjects(projectResponse.projects);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tasks');
@@ -579,15 +579,15 @@ export function TasksPage({
       if (selection.kind === 'task') {
         const result = await deleteTask(selectedTask._id, { keepChildren });
         if (keepChildren) {
-          const response = await listTasks();
-          setTasks(response.tasks);
+          const allTasks = await listAllTasks();
+          setTasks(allTasks);
           const promotedId =
             result && 'promotedTasks' in result && result.promotedTasks?.[0]?._id;
           setSelection(
             promotedId
               ? { kind: 'task', taskId: promotedId }
-              : response.tasks.length > 0
-                ? { kind: 'task', taskId: response.tasks[0]._id }
+              : allTasks.length > 0
+                ? { kind: 'task', taskId: allTasks[0]._id }
                 : null
           );
         } else {
@@ -601,8 +601,8 @@ export function TasksPage({
           applyTaskUpdate(result.task);
           setSelection({ kind: 'task', taskId: selectedTask._id });
         } else {
-          const response = await listTasks();
-          setTasks(response.tasks);
+          const allTasks = await listAllTasks();
+          setTasks(allTasks);
           setSelection({ kind: 'task', taskId: selectedTask._id });
         }
       }

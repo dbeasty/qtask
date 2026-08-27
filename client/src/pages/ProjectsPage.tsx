@@ -4,8 +4,8 @@ import {
   createProject,
   deleteProject,
   getProjectTracking,
+  listAllTasks,
   listProjects,
-  listTasks,
   moveProject,
   removeProjectCollaborator,
   updateProject,
@@ -146,12 +146,9 @@ export function ProjectsPage({
     setLoading(true);
     setError(null);
     try {
-      const [{ projects: items }, { tasks: taskItems }] = await Promise.all([
-        listProjects(),
-        listTasks(),
-      ]);
+      const [{ projects: items }, allTasks] = await Promise.all([listProjects(), listAllTasks()]);
       setProjects(items);
-      setTasks(taskItems);
+      setTasks(allTasks);
       if (items.length > 0) {
         const stillValid = activeProjectId && items.some((p) => p._id === activeProjectId);
         if (!stillValid) {

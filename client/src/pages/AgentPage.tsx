@@ -466,9 +466,13 @@ function handleStreamEvent(
           : message
       )
     );
-    listConversations().then(({ conversations: items }) => {
-      void items;
-    });
+    listConversations()
+      .then(({ conversations: items }) => {
+        void items;
+      })
+      .catch(() => {
+        // best-effort background refresh; ignore failures
+      });
   }
 
   return { toolsTouched };
@@ -930,9 +934,11 @@ export function AgentPage({
           if (event.type === 'done') {
             resolvedConversationId = event.conversationId;
             if (activeProjectId) {
-              listConversations(activeProjectId).then(({ conversations: items }) =>
-                setConversations(items)
-              );
+              listConversations(activeProjectId)
+                .then(({ conversations: items }) => setConversations(items))
+                .catch(() => {
+                  // best-effort background refresh; ignore failures
+                });
             }
           }
         },
@@ -1066,9 +1072,11 @@ export function AgentPage({
                 : message
             )
           );
-          listConversations(activeProjectId ?? undefined).then(({ conversations: items }) =>
-            setConversations(items)
-          );
+          listConversations(activeProjectId ?? undefined)
+            .then(({ conversations: items }) => setConversations(items))
+            .catch(() => {
+              // best-effort background refresh; ignore failures
+            });
           syncConversationFromServer(conversationId).catch(() => {
             // ignore sync errors after approval
           });

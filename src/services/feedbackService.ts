@@ -4,6 +4,7 @@ import { FeedbackModel } from '../models/index.js';
 import { enqueueFeedbackVisionJob } from './feedbackVisionQueue.js';
 import { SCREENSHOT_REJECTION_MESSAGE } from './feedbackVisionService.js';
 import { notificationService } from './notificationService.js';
+import { escapeRegex } from './searchUtils.js';
 import {
   extensionForContentType,
   getObjectStorage,
@@ -211,18 +212,19 @@ export async function listAdminFeedback(params: {
   }
 
   if (params.search) {
+    const searchPattern = escapeRegex(params.search);
     const { UserModel } = await import('../models/index.js');
     const users = await UserModel.find(
       {
         $or: [
-          { email: { $regex: params.search, $options: 'i' } },
-          { displayName: { $regex: params.search, $options: 'i' } },
+          { email: { $regex: searchPattern, $options: 'i' } },
+          { displayName: { $regex: searchPattern, $options: 'i' } },
         ],
       },
       { _id: 1 }
     ).lean();
     const userIds = users.map((user) => String(user._id));
-    filter.$or = [{ message: { $regex: params.search, $options: 'i' } }, { userId: { $in: userIds } }];
+    filter.$or = [{ message: { $regex: searchPattern, $options: 'i' } }, { userId: { $in: userIds } }];
   }
 
   const skip = (params.page - 1) * params.limit;

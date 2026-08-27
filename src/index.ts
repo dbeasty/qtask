@@ -4,10 +4,12 @@ import { disconnectDb } from './db/connection.js';
 import { stopEmbeddingWorker } from './services/embeddingQueue.js';
 import { stopFeedbackVisionWorker } from './services/feedbackVisionQueue.js';
 import { stagingService } from './services/stagingService.js';
+import { mcpSessionService } from './services/mcpSessionService.js';
 
 async function main() {
   const app = await createApp();
   stagingService.startSweep();
+  mcpSessionService.startSweep();
 
   const server = app.listen(config.port, () => {
     console.log(`QTask API listening on http://localhost:${config.port}`);
@@ -18,6 +20,7 @@ async function main() {
     stopEmbeddingWorker();
     stopFeedbackVisionWorker();
     stagingService.stopSweep();
+    mcpSessionService.stopSweep();
     server.close();
     await disconnectDb();
     process.exit(0);

@@ -1,5 +1,7 @@
+import { isValidObjectId } from 'mongoose';
 import {
   ConversationModel,
+  McpSessionModel,
   ProjectModel,
   TaskModel,
 } from '../models/index.js';
@@ -14,6 +16,14 @@ const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 
 let sweepTimer: NodeJS.Timeout | null = null;
 
+/** `conversationId` here is dual-purpose: MCP write-tool staging passes an
+ *  MCP session id (a UUID string) through this same field, since staged
+ *  Task/Project docs only have one `staging.conversationId` slot. A
+ *  Conversation's real `_id` is an ObjectId and never collides with a
+ *  UUID, so route to the right model instead of always querying
+ *  ConversationModel — that used to throw a CastError for MCP session ids
+ *  (aborting the rest of the sweep) and left the proposal stuck 'pending'
+ *  in McpSessionModel forever even after its staged entity was deleted. */
 async function setProposalStatuses(
   userId: string,
   conversationId: string,
@@ -21,11 +31,14 @@ async function setProposalStatuses(
   status: PendingProposal['status']
 ) {
   if (proposalIds.length === 0) return;
-  const conversation = await ConversationModel.findOne({ _id: conversationId, userId });
-  if (!conversation) return;
+
+  const doc = isValidObjectId(conversationId)
+    ? await ConversationModel.findOne({ _id: conversationId, userId })
+    : await McpSessionModel.findOne({ _id: conversationId, userId });
+  if (!doc) return;
 
   const ids = new Set(proposalIds);
-  const proposals = (conversation.pendingProposals ?? []) as PendingProposal[];
+  const proposals = (doc.pendingProposals ?? []) as PendingProposal[];
   let changed = false;
   for (const proposal of proposals) {
     if (ids.has(proposal.id) && proposal.status === 'pending') {
@@ -34,8 +47,8 @@ async function setProposalStatuses(
     }
   }
   if (changed) {
-    conversation.markModified('pendingProposals');
-    await conversation.save();
+    doc.markModified('pendingProposals');
+    await doc.save();
   }
 }
 

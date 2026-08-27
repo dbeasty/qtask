@@ -126,6 +126,14 @@ export function resolveDropAction(drag: DragPayload, target: DropTarget): DropAc
       };
     }
 
+    // Dropping before/after a node whose parent is the dragged node itself
+    // (or one of its descendants) would reparent the dragged node into its
+    // own subtree, creating a cycle — the 'inside' branch above already
+    // guards this for a direct drop, but this sibling-insertion branch
+    // reads target.parentPath instead of target.path and needs the same
+    // check.
+    if (isDescendantPath(drag.path, target.parentPath)) return null;
+
     let index = target.siblingIndex;
     if (target.zone === 'after') index += 1;
 

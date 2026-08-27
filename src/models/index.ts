@@ -149,11 +149,17 @@ const subtaskSchema = new Schema(
     trainingHourlyRate: { type: Number, min: 0 },
     trainingHoursSpent: { type: Number, min: 0 },
     trainingHoursRemaining: { type: Number, min: 0 },
-    subtasks: { type: [Schema.Types.Mixed], default: [] },
     links: { type: [taskLinkSchema], default: [] },
   },
   { timestamps: true }
 );
+
+// Self-reference added after construction — a schema can't reference its
+// own variable inside its own definition object. Without this, subtasks
+// nested past depth 1 were typed as Schema.Types.Mixed and got no
+// validation at all (missing title, invalid status/priority, negative
+// percentComplete, arbitrary fields — none of it rejected).
+subtaskSchema.add({ subtasks: { type: [subtaskSchema], default: [] } });
 
 const taskSchema = new Schema(
   {
@@ -258,6 +264,10 @@ const embeddingJobSchema = new Schema(
     },
     attempts: { type: Number, default: 0 },
     lastError: { type: String },
+    /** Set when this entity was edited again while its job was already
+     *  'processing' — checked when the job finishes so the edit isn't
+     *  silently dropped (see enqueueEntityEmbeddingJob / finishEmbeddingJob). */
+    dirty: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

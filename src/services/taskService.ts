@@ -18,6 +18,7 @@ import { buildSubtaskTree, normalizeLaborLinesInput, normalizeMaterialsInput, no
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
 import { searchService } from './searchService.js';
+import { escapeRegex } from './searchUtils.js';
 
 async function projects() {
   const { projectService } = await import('./projectService.js');
@@ -30,6 +31,10 @@ function isVersionError(err: unknown): boolean {
 }
 
 const taskSaveLocks = new Map<string, Promise<void>>();
+
+/** Highest first. Sorting by the raw string ("urgent" > "medium" > "low" >
+ *  "high" alphabetically) put high-priority tasks below low-priority ones. */
+const PRIORITY_WEIGHT: Record<string, number> = { urgent: 3, high: 2, medium: 1, low: 0 };
 
 async function withTaskSaveLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
   const prior = taskSaveLocks.get(taskId) ?? Promise.resolve();
@@ -416,7 +421,20 @@ export class TaskService {
     return serializeTask(withPercent as unknown as Record<string, unknown>);
   }
 
-  async listTasks(userId: string, filters: TaskSearchFilters = {}) {
+  async listTasks(
+    userId: string,
+    filters?: TaskSearchFilters
+  ): Promise<Array<Record<string, unknown>>>;
+  async listTasks(
+    userId: string,
+    filters: TaskSearchFilters,
+    pagination: { limit: number; offset: number }
+  ): Promise<{ tasks: Array<Record<string, unknown>>; total: number }>;
+  async listTasks(
+    userId: string,
+    filters: TaskSearchFilters = {},
+    pagination?: { limit: number; offset: number }
+  ): Promise<Array<Record<string, unknown>> | { tasks: Array<Record<string, unknown>>; total: number }> {
     if (filters.projectId) {
       await (await projects()).assertProjectAccess(userId, filters.projectId, 'viewer');
     }
@@ -449,23 +467,75 @@ export class TaskService {
       if (filters.dueAfter) (query.dueDate as Record<string, Date>).$gte = new Date(filters.dueAfter);
     }
 
-    let tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();
-
     if (filters.query) {
       const searched = await searchService.searchTasksWithFilters(userId, filters);
       if (searched.length > 0) {
+        if (pagination) {
+          return {
+            tasks: searched.slice(pagination.offset, pagination.offset + pagination.limit),
+            total: searched.length,
+          };
+        }
         return searched;
       }
 
-      const regex = new RegExp(filters.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      tasks = tasks.filter(
-        (t) =>
-          regex.test(t.title) ||
-          (t.description && regex.test(t.description)) ||
-          t.tags.some((tag) => regex.test(tag)) ||
-          (t.steps ?? []).some((step) => regex.test(step.text))
+      // Hybrid/text search found nothing — fall back to a plain substring
+      // match, pushed down to Mongo instead of loading every accessible
+      // task into memory to filter with a JS regex. `query` may already
+      // carry its own top-level $or (project-access boundary) or $and
+      // (projectId filter), so the regex clause is AND-ed in via a
+      // wrapping $and rather than spread in, which would silently
+      // overwrite either one.
+      const regex = new RegExp(escapeRegex(filters.query), 'i');
+      const fallbackTasks = await TaskModel.find({
+        $and: [
+          query,
+          { $or: [{ title: regex }, { description: regex }, { tags: regex }, { 'steps.text': regex }] },
+        ],
+      })
+        .sort({ sortOrder: 1, createdAt: -1 })
+        .lean();
+
+      const mapped = fallbackTasks.map((task) =>
+        serializeTask(
+          applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<
+            string,
+            unknown
+          >
+        )
       );
+      if (pagination) {
+        return {
+          tasks: mapped.slice(pagination.offset, pagination.offset + pagination.limit),
+          total: mapped.length,
+        };
+      }
+      return mapped;
     }
+
+    if (pagination) {
+      const [tasks, total] = await Promise.all([
+        TaskModel.find(query)
+          .sort({ sortOrder: 1, createdAt: -1 })
+          .skip(pagination.offset)
+          .limit(pagination.limit)
+          .lean(),
+        TaskModel.countDocuments(query),
+      ]);
+      return {
+        tasks: tasks.map((task) =>
+          serializeTask(
+            applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<
+              string,
+              unknown
+            >
+          )
+        ),
+        total,
+      };
+    }
+
+    const tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();
 
     return tasks.map((task) =>
       serializeTask(applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<string, unknown>)
@@ -738,21 +808,33 @@ export class TaskService {
       query.assigneeId = assigneeId;
     }
 
-    const tasks = await TaskModel.find(query).sort({ priority: -1, dueDate: 1 }).lean();
-    return tasks.map((task) => {
-      const withPercent = applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]);
-      return {
-        _id: String(task._id),
-        title: task.title,
-        status: task.status,
-        priority: task.priority,
-        percentComplete: withPercent.percentComplete,
-        dueDate: task.dueDate?.toISOString(),
-        projectId: this.getDocProjectIds(task)[0],
-        projectIds: this.getDocProjectIds(task),
-        assigneeId: task.assigneeId,
-      };
-    });
+    // Sorted in memory rather than via Mongo's { priority: -1 } — that
+    // sorts the priority string alphabetically descending (urgent, medium,
+    // low, high), putting high-priority tasks below low-priority ones.
+    const tasks = await TaskModel.find(query).lean();
+    return tasks
+      .map((task) => {
+        const withPercent = applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]);
+        return {
+          _id: String(task._id),
+          title: task.title,
+          status: task.status,
+          priority: task.priority,
+          percentComplete: withPercent.percentComplete,
+          dueDate: task.dueDate,
+          projectId: this.getDocProjectIds(task)[0],
+          projectIds: this.getDocProjectIds(task),
+          assigneeId: task.assigneeId,
+        };
+      })
+      .sort((a, b) => {
+        const weightDiff = (PRIORITY_WEIGHT[b.priority] ?? -1) - (PRIORITY_WEIGHT[a.priority] ?? -1);
+        if (weightDiff !== 0) return weightDiff;
+        const aTime = a.dueDate ? a.dueDate.getTime() : Infinity;
+        const bTime = b.dueDate ? b.dueDate.getTime() : Infinity;
+        return aTime - bTime;
+      })
+      .map((task) => ({ ...task, dueDate: task.dueDate?.toISOString() }));
   }
 
   async addSubtask(
@@ -761,35 +843,37 @@ export class TaskService {
     subtaskPath: string[],
     input: CreateTaskInput['subtasks'] extends (infer U)[] | undefined ? U : never
   ) {
-    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
-    if (!task) return null;
+    return withTaskSaveLock(taskId, async () => {
+      const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+      if (!task) return null;
 
-    const newSubtask = buildSubtaskTree(input);
-    (newSubtask as { _id: Types.ObjectId })._id = new Types.ObjectId();
+      const newSubtask = buildSubtaskTree(input);
+      (newSubtask as { _id: Types.ObjectId })._id = new Types.ObjectId();
 
-    if (subtaskPath.length === 0) {
-      task.subtasks.push(newSubtask as unknown as (typeof task.subtasks)[0]);
-    } else {
-      const parent = this.findSubtaskByPath(task.subtasks, subtaskPath);
-      if (!parent) return null;
-      parent.subtasks = parent.subtasks ?? [];
-      parent.subtasks.push(newSubtask as unknown as (typeof parent.subtasks)[0]);
-    }
+      if (subtaskPath.length === 0) {
+        task.subtasks.push(newSubtask as unknown as (typeof task.subtasks)[0]);
+      } else {
+        const parent = this.findSubtaskByPath(task.subtasks, subtaskPath);
+        if (!parent) return null;
+        parent.subtasks = parent.subtasks ?? [];
+        parent.subtasks.push(newSubtask as unknown as (typeof parent.subtasks)[0]);
+      }
 
-    finalizeTaskProgress(task);
-    task.markModified('subtasks');
-    await task.save();
+      finalizeTaskProgress(task);
+      task.markModified('subtasks');
+      await task.save();
 
-    await logActivity({
-      taskId,
-      userId,
-      action: 'subtask.added',
-      details: { title: input.title, path: subtaskPath },
+      await logActivity({
+        taskId,
+        userId,
+        action: 'subtask.added',
+        details: { title: input.title, path: subtaskPath },
+      });
+
+      await this.notifyProjectProgress(this.getDocProjectIds(task));
+
+      return serializeTask(task.toObject());
     });
-
-    await this.notifyProjectProgress(this.getDocProjectIds(task));
-
-    return serializeTask(task.toObject());
   }
 
   async updateSubtask(
@@ -882,126 +966,130 @@ export class TaskService {
       throw new Error('fromPath is required');
     }
 
-    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
-    if (!task) return null;
+    return withTaskSaveLock(taskId, async () => {
+      const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+      if (!task) return null;
 
-    const nodeId = fromPath[fromPath.length - 1]!;
-    const currentParentPath = fromPath.slice(0, -1);
+      const nodeId = fromPath[fromPath.length - 1]!;
+      const currentParentPath = fromPath.slice(0, -1);
 
-    if (this.isDescendantOrSelfPath(fromPath, toParentPath)) {
-      throw new Error('Cannot move a subtask into itself or its descendants');
-    }
+      if (this.isDescendantOrSelfPath(fromPath, toParentPath)) {
+        throw new Error('Cannot move a subtask into itself or its descendants');
+      }
 
-    const currentParentArray = this.getParentArray(task, currentParentPath);
-    if (!currentParentArray) return null;
+      const currentParentArray = this.getParentArray(task, currentParentPath);
+      if (!currentParentArray) return null;
 
-    const fromIndex = currentParentArray.findIndex((s) => String(s._id) === nodeId);
-    if (fromIndex === -1) return null;
+      const fromIndex = currentParentArray.findIndex((s) => String(s._id) === nodeId);
+      if (fromIndex === -1) return null;
 
-    const targetParentArray = this.getParentArray(task, toParentPath);
-    if (!targetParentArray) return null;
+      const targetParentArray = this.getParentArray(task, toParentPath);
+      if (!targetParentArray) return null;
 
-    const isSameParent =
-      currentParentPath.length === toParentPath.length &&
-      currentParentPath.every((id, i) => id === toParentPath[i]);
+      const isSameParent =
+        currentParentPath.length === toParentPath.length &&
+        currentParentPath.every((id, i) => id === toParentPath[i]);
 
-    const [node] = currentParentArray.splice(fromIndex, 1);
+      const [node] = currentParentArray.splice(fromIndex, 1);
 
-    let insertIndex = index ?? targetParentArray.length;
-    if (isSameParent && insertIndex > fromIndex) {
-      insertIndex -= 1;
-    }
-    insertIndex = Math.max(0, Math.min(insertIndex, targetParentArray.length));
+      let insertIndex = index ?? targetParentArray.length;
+      if (isSameParent && insertIndex > fromIndex) {
+        insertIndex -= 1;
+      }
+      insertIndex = Math.max(0, Math.min(insertIndex, targetParentArray.length));
 
-    targetParentArray.splice(insertIndex, 0, node!);
+      targetParentArray.splice(insertIndex, 0, node!);
 
-    finalizeTaskProgress(task);
-    task.markModified('subtasks');
-    await task.save();
+      finalizeTaskProgress(task);
+      task.markModified('subtasks');
+      await task.save();
 
-    await logActivity({
-      taskId,
-      userId,
-      action: 'subtask.moved',
-      details: { fromPath, toParentPath, index: insertIndex },
+      await logActivity({
+        taskId,
+        userId,
+        action: 'subtask.moved',
+        details: { fromPath, toParentPath, index: insertIndex },
+      });
+
+      await this.notifyProjectProgress(this.getDocProjectIds(task));
+
+      return serializeTask(task.toObject());
     });
-
-    await this.notifyProjectProgress(this.getDocProjectIds(task));
-
-    return serializeTask(task.toObject());
   }
 
   async promoteSubtaskToTask(userId: string, taskId: string, subtaskPath: string[]) {
     if (subtaskPath.length === 0) return null;
 
-    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
-    if (!task) return null;
+    return withTaskSaveLock(taskId, async () => {
+      const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+      if (!task) return null;
 
-    const subtaskId = subtaskPath[subtaskPath.length - 1]!;
-    const currentParentPath = subtaskPath.slice(0, -1);
-    const currentParentArray = this.getParentArray(task, currentParentPath);
-    if (!currentParentArray) return null;
+      const subtaskId = subtaskPath[subtaskPath.length - 1]!;
+      const currentParentPath = subtaskPath.slice(0, -1);
+      const currentParentArray = this.getParentArray(task, currentParentPath);
+      if (!currentParentArray) return null;
 
-    const fromIndex = currentParentArray.findIndex((s) => String(s._id) === subtaskId);
-    if (fromIndex === -1) return null;
+      const fromIndex = currentParentArray.findIndex((s) => String(s._id) === subtaskId);
+      if (fromIndex === -1) return null;
 
-    const [node] = currentParentArray.splice(fromIndex, 1);
-    const nodeObj = node as Record<string, unknown>;
+      const [node] = currentParentArray.splice(fromIndex, 1);
+      const nodeObj = node as Record<string, unknown>;
 
-    let projectIds = this.getDocProjectIds(task).filter((id) => Types.ObjectId.isValid(id));
-    if (projectIds.length === 0) {
-      projectIds = [await (await projects()).ensureDefaultProject(userId)];
-    }
-    const projectId = projectIds[0]!;
+      let projectIds = this.getDocProjectIds(task).filter((id) => Types.ObjectId.isValid(id));
+      if (projectIds.length === 0) {
+        projectIds = [await (await projects()).ensureDefaultProject(userId)];
+      }
+      const projectId = projectIds[0]!;
 
-    const promotedDoc = new TaskModel({
-      userId,
-      projectId,
-      projectIds: [...projectIds],
-      ...this.sharedTaskFields(nodeObj),
-      subtasks: nodeObj.subtasks ?? [],
+      const promotedDoc = new TaskModel({
+        userId,
+        projectId,
+        projectIds: [...projectIds],
+        ...this.sharedTaskFields(nodeObj),
+        subtasks: nodeObj.subtasks ?? [],
+      });
+
+      const minTask = await TaskModel.findOne({
+        $or: [{ projectIds: projectId }, { projectId }],
+      })
+        .sort({ sortOrder: 1 })
+        .select('sortOrder')
+        .lean();
+      promotedDoc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
+
+      const withPercent = applyPercentComplete(
+        promotedDoc.toObject() as Parameters<typeof applyPercentComplete>[0]
+      );
+      promotedDoc.status = withPercent.status as typeof promotedDoc.status;
+      promotedDoc.percentComplete = withPercent.percentComplete;
+      promotedDoc.subtasks = withPercent.subtasks as typeof promotedDoc.subtasks;
+
+      await promotedDoc.save();
+      const promotedId = String(promotedDoc._id);
+      await enqueueEmbeddingJob(promotedId);
+
+      if (!task.links.some((l) => l.taskId === promotedId && l.type === 'related')) {
+        task.links.push({ taskId: promotedId, type: 'related' });
+      }
+
+      finalizeTaskProgress(task);
+      task.markModified('subtasks');
+      await task.save();
+
+      await logActivity({
+        taskId,
+        userId,
+        action: 'subtask.promoted',
+        details: { path: subtaskPath, promotedTaskId: promotedId, title: nodeObj.title },
+      });
+
+      await this.notifyProjectProgress(this.getDocProjectIds(task));
+
+      return {
+        task: serializeTask(task.toObject()),
+        promotedTask: serializeTask(promotedDoc.toObject()),
+      };
     });
-
-    const minTask = await TaskModel.findOne({
-      $or: [{ projectIds: projectId }, { projectId }],
-    })
-      .sort({ sortOrder: 1 })
-      .select('sortOrder')
-      .lean();
-    promotedDoc.sortOrder = minTask ? (minTask.sortOrder ?? 0) - 1 : 0;
-
-    const withPercent = applyPercentComplete(
-      promotedDoc.toObject() as Parameters<typeof applyPercentComplete>[0]
-    );
-    promotedDoc.status = withPercent.status as typeof promotedDoc.status;
-    promotedDoc.percentComplete = withPercent.percentComplete;
-    promotedDoc.subtasks = withPercent.subtasks as typeof promotedDoc.subtasks;
-
-    await promotedDoc.save();
-    const promotedId = String(promotedDoc._id);
-    await enqueueEmbeddingJob(promotedId);
-
-    if (!task.links.some((l) => l.taskId === promotedId && l.type === 'related')) {
-      task.links.push({ taskId: promotedId, type: 'related' });
-    }
-
-    finalizeTaskProgress(task);
-    task.markModified('subtasks');
-    await task.save();
-
-    await logActivity({
-      taskId,
-      userId,
-      action: 'subtask.promoted',
-      details: { path: subtaskPath, promotedTaskId: promotedId, title: nodeObj.title },
-    });
-
-    await this.notifyProjectProgress(this.getDocProjectIds(task));
-
-    return {
-      task: serializeTask(task.toObject()),
-      promotedTask: serializeTask(promotedDoc.toObject()),
-    };
   }
 
   async attachTaskAsSubtask(
@@ -1015,69 +1103,71 @@ export class TaskService {
       throw new Error('Cannot attach a task to itself');
     }
 
-    const [sourceTask, targetTask] = await Promise.all([
-      this.loadAccessibleTask(userId, sourceTaskId, 'editor'),
-      this.loadAccessibleTask(userId, targetTaskId, 'editor'),
-    ]);
+    return withTaskSaveLock(targetTaskId, async () => {
+      const [sourceTask, targetTask] = await Promise.all([
+        this.loadAccessibleTask(userId, sourceTaskId, 'editor'),
+        this.loadAccessibleTask(userId, targetTaskId, 'editor'),
+      ]);
 
-    if (!sourceTask || !targetTask) return null;
+      if (!sourceTask || !targetTask) return null;
 
-    const [sourceProjectIds, targetProjectIds] = await Promise.all([
-      this.resolveTaskProjectIds(userId, sourceTask),
-      this.resolveTaskProjectIds(userId, targetTask),
-    ]);
-    const shareAny = sourceProjectIds.some((id) => targetProjectIds.includes(id));
-    if (!shareAny) {
-      throw new Error('Tasks must share at least one project');
-    }
+      const [sourceProjectIds, targetProjectIds] = await Promise.all([
+        this.resolveTaskProjectIds(userId, sourceTask),
+        this.resolveTaskProjectIds(userId, targetTask),
+      ]);
+      const shareAny = sourceProjectIds.some((id) => targetProjectIds.includes(id));
+      if (!shareAny) {
+        throw new Error('Tasks must share at least one project');
+      }
 
-    if (this.getDocProjectIds(targetTask).length === 0) {
-      (targetTask as { projectIds: string[] }).projectIds = targetProjectIds;
-      targetTask.projectId = targetProjectIds[0];
-    }
+      if (this.getDocProjectIds(targetTask).length === 0) {
+        (targetTask as { projectIds: string[] }).projectIds = targetProjectIds;
+        targetTask.projectId = targetProjectIds[0];
+      }
 
-    const targetParentArray = this.getParentArray(targetTask, parentPath);
-    if (!targetParentArray) return null;
+      const targetParentArray = this.getParentArray(targetTask, parentPath);
+      if (!targetParentArray) return null;
 
-    const sourceObj = sourceTask.toObject() as Record<string, unknown>;
-    const newSubtask = this.taskDocToSubtaskNode(sourceObj);
-    const subtaskId = String((newSubtask as { _id: Types.ObjectId })._id);
+      const sourceObj = sourceTask.toObject() as Record<string, unknown>;
+      const newSubtask = this.taskDocToSubtaskNode(sourceObj);
+      const subtaskId = String((newSubtask as { _id: Types.ObjectId })._id);
 
-    let insertIndex = index ?? targetParentArray.length;
-    insertIndex = Math.max(0, Math.min(insertIndex, targetParentArray.length));
-    targetParentArray.splice(insertIndex, 0, newSubtask as (typeof targetParentArray)[0]);
+      let insertIndex = index ?? targetParentArray.length;
+      insertIndex = Math.max(0, Math.min(insertIndex, targetParentArray.length));
+      targetParentArray.splice(insertIndex, 0, newSubtask as (typeof targetParentArray)[0]);
 
-    if (!targetTask.links.some((l) => l.taskId === sourceTaskId && l.type === 'related')) {
-      targetTask.links.push({ taskId: sourceTaskId, type: 'related' });
-    }
+      if (!targetTask.links.some((l) => l.taskId === sourceTaskId && l.type === 'related')) {
+        targetTask.links.push({ taskId: sourceTaskId, type: 'related' });
+      }
 
-    finalizeTaskProgress(targetTask);
-    targetTask.markModified('subtasks');
-    await targetTask.save();
-    await TaskModel.deleteOne({ _id: sourceTaskId });
-    await CommentModel.deleteMany({ taskId: sourceTaskId });
-    await enqueueEmbeddingJob(targetTaskId);
+      finalizeTaskProgress(targetTask);
+      targetTask.markModified('subtasks');
+      await targetTask.save();
+      await TaskModel.deleteOne({ _id: sourceTaskId });
+      await CommentModel.deleteMany({ taskId: sourceTaskId });
+      await enqueueEmbeddingJob(targetTaskId);
 
-    await logActivity({
-      taskId: targetTaskId,
-      userId,
-      action: 'task.attached_as_subtask',
-      details: {
-        sourceTaskId,
-        parentPath,
-        index: insertIndex,
+      await logActivity({
+        taskId: targetTaskId,
+        userId,
+        action: 'task.attached_as_subtask',
+        details: {
+          sourceTaskId,
+          parentPath,
+          index: insertIndex,
+          subtaskId,
+          title: sourceObj.title,
+        },
+      });
+
+      await this.notifyProjectProgress([...sourceProjectIds, ...targetProjectIds]);
+
+      return {
+        targetTask: serializeTask(targetTask.toObject()),
+        removedTaskId: sourceTaskId,
         subtaskId,
-        title: sourceObj.title,
-      },
+      };
     });
-
-    await this.notifyProjectProgress([...sourceProjectIds, ...targetProjectIds]);
-
-    return {
-      targetTask: serializeTask(targetTask.toObject()),
-      removedTaskId: sourceTaskId,
-      subtaskId,
-    };
   }
 
   async reorderProjectTask(userId: string, projectId: string, taskId: string, index: number) {
@@ -1334,49 +1424,51 @@ export class TaskService {
     subtaskPath: string[],
     options: { keepChildren?: boolean } = {}
   ) {
-    const task = await this.loadAccessibleTask(userId, taskId, 'editor');
-    if (!task || subtaskPath.length === 0) return null;
+    return withTaskSaveLock(taskId, async () => {
+      const task = await this.loadAccessibleTask(userId, taskId, 'editor');
+      if (!task || subtaskPath.length === 0) return null;
 
-    const subtaskId = subtaskPath[subtaskPath.length - 1]!;
-    const parentPath = subtaskPath.slice(0, -1);
-    const parentArray = this.getParentArray(task, parentPath);
-    if (!parentArray) return null;
+      const subtaskId = subtaskPath[subtaskPath.length - 1]!;
+      const parentPath = subtaskPath.slice(0, -1);
+      const parentArray = this.getParentArray(task, parentPath);
+      if (!parentArray) return null;
 
-    const index = parentArray.findIndex((s) => String(s._id) === subtaskId);
-    if (index === -1) return null;
+      const index = parentArray.findIndex((s) => String(s._id) === subtaskId);
+      if (index === -1) return null;
 
-    const node = parentArray[index] as {
-      title?: string;
-      subtasks?: Array<{ _id: Types.ObjectId; subtasks?: unknown[] }>;
-    };
-    const deletedTitle = node.title;
-    const children = [...(node.subtasks ?? [])];
-    const keepChildren = Boolean(options.keepChildren) && children.length > 0;
+      const node = parentArray[index] as {
+        title?: string;
+        subtasks?: Array<{ _id: Types.ObjectId; subtasks?: unknown[] }>;
+      };
+      const deletedTitle = node.title;
+      const children = [...(node.subtasks ?? [])];
+      const keepChildren = Boolean(options.keepChildren) && children.length > 0;
 
-    parentArray.splice(index, 1);
-    if (keepChildren) {
-      parentArray.splice(index, 0, ...children);
-    }
+      parentArray.splice(index, 1);
+      if (keepChildren) {
+        parentArray.splice(index, 0, ...children);
+      }
 
-    finalizeTaskProgress(task);
-    task.markModified('subtasks');
-    await task.save();
-    await enqueueEmbeddingJob(taskId);
+      finalizeTaskProgress(task);
+      task.markModified('subtasks');
+      await task.save();
+      await enqueueEmbeddingJob(taskId);
 
-    await logActivity({
-      taskId,
-      userId,
-      action: keepChildren ? 'subtask.deleted_keep_children' : 'subtask.deleted',
-      details: {
-        title: deletedTitle,
-        path: subtaskPath,
-        promotedChildIds: keepChildren ? children.map((child) => String(child._id)) : undefined,
-      },
+      await logActivity({
+        taskId,
+        userId,
+        action: keepChildren ? 'subtask.deleted_keep_children' : 'subtask.deleted',
+        details: {
+          title: deletedTitle,
+          path: subtaskPath,
+          promotedChildIds: keepChildren ? children.map((child) => String(child._id)) : undefined,
+        },
+      });
+
+      await this.notifyProjectProgress(this.getDocProjectIds(task));
+
+      return serializeTask(task.toObject());
     });
-
-    await this.notifyProjectProgress(this.getDocProjectIds(task));
-
-    return serializeTask(task.toObject());
   }
 
   /**

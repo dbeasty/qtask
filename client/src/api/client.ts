@@ -157,7 +157,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function consumeSseStream(
+export async function consumeSseStream(
   response: Response,
   onEvent: (event: import('../types').AgentStreamEvent) => void,
   signal?: AbortSignal
@@ -202,13 +202,23 @@ async function consumeSseStream(
       for (const part of parts) {
         const line = part.trim();
         if (!line.startsWith('data: ')) continue;
-        const event = JSON.parse(line.slice(6)) as import('../types').AgentStreamEvent;
-        onEvent(event);
+        // One malformed frame must not kill the rest of the stream —
+        // skip it and keep reading instead of throwing out of the loop.
+        try {
+          const event = JSON.parse(line.slice(6)) as import('../types').AgentStreamEvent;
+          onEvent(event);
+        } catch (parseError) {
+          console.error('Failed to parse SSE event', parseError);
+        }
       }
     }
   } catch (error) {
     if (signal?.aborted) return;
     throw error;
+  } finally {
+    if (signal) {
+      signal.removeEventListener('abort', abortReader);
+    }
   }
 }
 
@@ -248,8 +258,32 @@ export async function checkHealth(): Promise<{
   }>;
 }
 
-export async function listTasks(): Promise<{ tasks: import('../types').Task[] }> {
-  return request('/api/tasks');
+export async function listTasks(
+  pagination?: { limit?: number; offset?: number }
+): Promise<{ tasks: import('../types').Task[]; total: number; limit: number; offset: number }> {
+  const params = new URLSearchParams();
+  if (pagination?.limit !== undefined) params.set('limit', String(pagination.limit));
+  if (pagination?.offset !== undefined) params.set('offset', String(pagination.offset));
+  const qs = params.toString();
+  return request(`/api/tasks${qs ? `?${qs}` : ''}`);
+}
+
+/** Pages through GET /api/tasks until every accessible task has been
+ *  fetched, reassembling the same complete flat array callers previously
+ *  got from a single unbounded response. Each individual HTTP
+ *  request/response stays bounded (see DEFAULT_TASKS_PAGE_LIMIT server
+ *  side) — callers that depend on holding the full task list (drag-and
+ *  -drop ordering, cross-project grouping) keep working unmodified. */
+export async function listAllTasks(pageSize = 200): Promise<import('../types').Task[]> {
+  const tasks: import('../types').Task[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await listTasks({ limit: pageSize, offset });
+    tasks.push(...page.tasks);
+    offset += page.tasks.length;
+    if (page.tasks.length === 0 || tasks.length >= page.total) break;
+  }
+  return tasks;
 }
 
 export async function listProjects(): Promise<{ projects: import('../types').Project[] }> {

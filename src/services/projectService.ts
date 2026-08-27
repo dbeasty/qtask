@@ -1,5 +1,5 @@
 import { isValidObjectId } from 'mongoose';
-import { InviteModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
+import { CommentModel, InviteModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
 import { config } from '../config/index.js';
 import {
   enqueueProjectEmbeddingJob,
@@ -36,6 +36,35 @@ import { createLlmCallTracker, type OllamaTimingFields } from './llmMetrics.js';
 import type { StagingContext } from '../types/staging.js';
 
 export const DEFAULT_PROJECT_NAME = 'Project One';
+
+const defaultProjectLocks = new Map<string, Promise<void>>();
+
+/** Serializes ensureDefaultProject() per user so two concurrent calls (e.g.
+ *  two requests firing right after registration) can't both see zero
+ *  projects and each create their own "Project One". */
+async function withDefaultProjectLock<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const prior = defaultProjectLocks.get(userId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = prior.then(
+    () => gate,
+    () => gate
+  );
+  defaultProjectLocks.set(userId, queued);
+  await prior;
+  try {
+    return await fn();
+  } finally {
+    release();
+    void queued.finally(() => {
+      if (defaultProjectLocks.get(userId) === queued) {
+        defaultProjectLocks.delete(userId);
+      }
+    });
+  }
+}
 
 type LeanProject = {
   _id: unknown;
@@ -180,24 +209,26 @@ export class ProjectService {
   }
 
   async ensureDefaultProject(userId: string): Promise<string> {
-    const count = await ProjectModel.countDocuments({ userId, staging: { $exists: false } });
-    if (count > 0) {
-      const existing = await ProjectModel.findOne({ userId, staging: { $exists: false } })
-        .sort({ createdAt: 1 })
-        .lean();
-      return String(existing!._id);
-    }
+    return withDefaultProjectLock(userId, async () => {
+      const count = await ProjectModel.countDocuments({ userId, staging: { $exists: false } });
+      if (count > 0) {
+        const existing = await ProjectModel.findOne({ userId, staging: { $exists: false } })
+          .sort({ createdAt: 1 })
+          .lean();
+        return String(existing!._id);
+      }
 
-    const project = await ProjectModel.create({
-      userId,
-      name: DEFAULT_PROJECT_NAME,
-      collaborators: [],
-      parentId: null,
-      sortOrder: 0,
-      status: 'todo',
-      percentComplete: 0,
+      const project = await ProjectModel.create({
+        userId,
+        name: DEFAULT_PROJECT_NAME,
+        collaborators: [],
+        parentId: null,
+        sortOrder: 0,
+        status: 'todo',
+        percentComplete: 0,
+      });
+      return String(project._id);
     });
-    return String(project._id);
   }
 
   /** Projects the user owns or collaborates on. */
@@ -672,7 +703,8 @@ export class ProjectService {
       .lean();
 
     const otherProjectIds = new Set<string>();
-    let deletedTaskCount = 0;
+    const taskIdsToDelete: string[] = [];
+    const taskUpdates: Array<{ id: unknown; remaining: string[] }> = [];
     for (const task of linkedTasks) {
       const ids = new Set<string>();
       if (Array.isArray(task.projectIds)) {
@@ -682,17 +714,33 @@ export class ProjectService {
       ids.delete(projectId);
 
       if (ids.size === 0) {
-        await TaskModel.deleteOne({ _id: task._id });
-        deletedTaskCount += 1;
+        taskIdsToDelete.push(String(task._id));
       } else {
         const remaining = [...ids];
         for (const id of remaining) otherProjectIds.add(id);
-        await TaskModel.updateOne(
-          { _id: task._id },
-          { $set: { projectIds: remaining, projectId: remaining[0] } }
-        );
+        taskUpdates.push({ id: task._id, remaining });
       }
     }
+
+    // Batched instead of one round trip per task: a project with hundreds
+    // of tasks used to issue hundreds of sequential deleteOne/updateOne
+    // calls. Deleting tasks this way also used to skip their comments
+    // entirely, leaving them orphaned once the owning task was gone.
+    if (taskIdsToDelete.length > 0) {
+      await TaskModel.deleteMany({ _id: { $in: taskIdsToDelete } });
+      await CommentModel.deleteMany({ taskId: { $in: taskIdsToDelete } });
+    }
+    if (taskUpdates.length > 0) {
+      await TaskModel.bulkWrite(
+        taskUpdates.map(({ id, remaining }) => ({
+          updateOne: {
+            filter: { _id: id },
+            update: { $set: { projectIds: remaining, projectId: remaining[0] } },
+          },
+        }))
+      );
+    }
+    const deletedTaskCount = taskIdsToDelete.length;
 
     const { ConversationModel } = await import('../models/index.js');
     await ConversationModel.deleteMany({ projectId });
@@ -1269,6 +1317,10 @@ export class ProjectService {
           stream: false,
           keep_alive: config.ollama.keepAlive,
         }),
+        // Without a timeout, a stalled/overloaded Ollama instance would
+        // hang this request indefinitely instead of falling back to the
+        // plain-text summary below.
+        signal: AbortSignal.timeout(60_000),
       });
 
       if (!response.ok) {

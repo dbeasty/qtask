@@ -8,6 +8,7 @@ import type { Express } from 'express';
 process.env.NODE_ENV = 'production';
 process.env.QTASK_SKIP_DOTENV = 'true';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
+process.env.ADMIN_JWT_SECRET = 'test-admin-jwt-secret-for-ci-only';
 process.env.MCP_OAUTH_JWT_SECRET = 'test-mcp-oauth-jwt-secret-for-ci-only';
 process.env.SERVE_CLIENT = 'false';
 delete process.env.SMTP_HOST;

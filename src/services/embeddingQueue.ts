@@ -19,23 +19,35 @@ async function enqueueEntityEmbeddingJob(
   entityType: 'task' | 'project',
   entityId: string
 ): Promise<void> {
-  const existing = await EmbeddingJobModel.findOne({ entityType, entityId }).lean();
-  if (existing?.status === 'processing') {
-    return;
-  }
-
+  // A single atomic pipeline update instead of a separate findOne-then-write
+  // (which raced with the job's own status changes): if the job is
+  // currently 'processing', leave it running and just mark it dirty so it
+  // gets requeued the moment it finishes, instead of dropping this edit's
+  // re-embed and leaving a stale embedding until some unrelated later edit
+  // happens to trigger one. Otherwise, behave as before — mark it pending.
+  // Note: setDefaultsOnInsert does not apply schema defaults for
+  // pipeline-style ($set-array) updates, so defaults for a brand-new
+  // document (attempts, dirty) must be spelled out explicitly here —
+  // otherwise a freshly-upserted job is missing `attempts` entirely and
+  // never matches processNextJob's `attempts: { $lt: MAX_ATTEMPTS }` pickup
+  // query, leaving it stuck at 'pending' forever.
   await EmbeddingJobModel.findOneAndUpdate(
     { entityType, entityId },
-    {
-      $set: {
-        status: 'pending',
-        lastError: undefined,
-        entityType,
-        entityId,
-        ...(entityType === 'task' ? { taskId: entityId } : {}),
+    [
+      {
+        $set: {
+          entityType,
+          entityId,
+          ...(entityType === 'task' ? { taskId: entityId } : {}),
+          status: { $cond: [{ $eq: ['$status', 'processing'] }, 'processing', 'pending'] },
+          dirty: {
+            $cond: [{ $eq: ['$status', 'processing'] }, true, { $ifNull: ['$dirty', false] }],
+          },
+          attempts: { $ifNull: ['$attempts', 0] },
+          lastError: undefined,
+        },
       },
-      $setOnInsert: { attempts: 0 },
-    },
+    ] as unknown as Record<string, unknown>,
     { upsert: true }
   );
 
@@ -87,6 +99,29 @@ async function resolveProjectNames(task: {
   return projects.map((project) => project.name);
 }
 
+/**
+ * Writes a job's terminal (or retry) status, but atomically checks whether
+ * it was marked dirty (edited again while processing) first — if so, the
+ * requested status is overridden back to 'pending' and dirty is cleared,
+ * so the next drain pass picks it up and re-embeds with the latest data
+ * instead of leaving a stale embedding with nothing left to requeue it.
+ */
+async function finishEmbeddingJob(
+  jobId: unknown,
+  status: 'completed' | 'failed' | 'pending',
+  lastError?: string
+): Promise<void> {
+  await EmbeddingJobModel.findByIdAndUpdate(jobId, [
+    {
+      $set: {
+        status: { $cond: [{ $eq: ['$dirty', true] }, 'pending', status] },
+        lastError: { $cond: [{ $eq: ['$dirty', true] }, undefined, lastError] },
+        dirty: false,
+      },
+    },
+  ] as unknown as Record<string, unknown>);
+}
+
 async function processNextJob(): Promise<void> {
   if (drainDisabled || processing) return;
   processing = true;
@@ -105,10 +140,7 @@ async function processNextJob(): Promise<void> {
     const entityType = job.entityType ?? 'task';
     const entityId = job.entityId ?? job.taskId;
     if (!entityId) {
-      await EmbeddingJobModel.findByIdAndUpdate(job._id, {
-        status: 'failed',
-        lastError: 'Missing entity id',
-      });
+      await finishEmbeddingJob(job._id, 'failed', 'Missing entity id');
       return;
     }
 
@@ -116,10 +148,7 @@ async function processNextJob(): Promise<void> {
       if (entityType === 'project') {
         const project = await ProjectModel.findById(entityId);
         if (!project || project.staging) {
-          await EmbeddingJobModel.findByIdAndUpdate(job._id, {
-            status: 'failed',
-            lastError: 'Project not found',
-          });
+          await finishEmbeddingJob(job._id, 'failed', 'Project not found');
           return;
         }
 
@@ -134,19 +163,13 @@ async function processNextJob(): Promise<void> {
         });
 
         await ProjectModel.findByIdAndUpdate(project._id, { embedding });
-        await EmbeddingJobModel.findByIdAndUpdate(job._id, {
-          status: 'completed',
-          lastError: undefined,
-        });
+        await finishEmbeddingJob(job._id, 'completed');
         return;
       }
 
       const task = await TaskModel.findById(entityId);
       if (!task) {
-        await EmbeddingJobModel.findByIdAndUpdate(job._id, {
-          status: 'failed',
-          lastError: 'Task not found',
-        });
+        await finishEmbeddingJob(job._id, 'failed', 'Task not found');
         return;
       }
 
@@ -184,18 +207,11 @@ async function processNextJob(): Promise<void> {
       });
 
       await TaskModel.findByIdAndUpdate(task._id, { embedding });
-      await EmbeddingJobModel.findByIdAndUpdate(job._id, {
-        status: 'completed',
-        lastError: undefined,
-      });
+      await finishEmbeddingJob(job._id, 'completed');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const status = job.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending';
-
-      await EmbeddingJobModel.findByIdAndUpdate(job._id, {
-        status,
-        lastError: message,
-      });
+      await finishEmbeddingJob(job._id, status, message);
     }
   } finally {
     processing = false;

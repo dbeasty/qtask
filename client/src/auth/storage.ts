@@ -100,6 +100,40 @@ async function parseAuthResponse(response: Response, fallbackError: string) {
   return body;
 }
 
+/** Authenticated PATCH with a single refresh-and-retry on 401, mirroring
+ *  authorizedFetch() in api/client.ts — that helper can't be reused
+ *  directly here since it imports from this module (getStoredToken/
+ *  refreshSessionRequest/setStoredToken), and importing it back would
+ *  create a cycle. Without this, updateProfile/updatePreferences (unlike
+ *  every request routed through api/client.ts) failed immediately on an
+ *  expired token instead of transparently refreshing and retrying. */
+async function patchAuthenticated(path: string, body: unknown): Promise<Response> {
+  const doFetch = () => {
+    const token = getStoredToken();
+    return fetch(path, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  };
+
+  const response = await doFetch();
+  if (response.status !== 401 || !getStoredToken()) {
+    return response;
+  }
+
+  try {
+    const refreshed = await refreshSessionRequest();
+    setStoredToken(refreshed.token);
+  } catch {
+    return response;
+  }
+  return doFetch();
+}
+
 export async function getAuthConfig(): Promise<{
   registrationEnabled: boolean;
   oauthProviders?: OAuthProviderPublicInfo[];
@@ -219,30 +253,14 @@ export async function changePassword(
 export async function updateProfile(
   body: { displayName?: string | null; hourlyRate?: number | null }
 ): Promise<{ user: AuthUser }> {
-  const token = getStoredToken();
-  const response = await fetch('/api/auth/me', {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  const response = await patchAuthenticated('/api/auth/me', body);
   return parseAuthResponse(response, 'Could not update profile') as Promise<{ user: AuthUser }>;
 }
 
 export async function updatePreferences(
   preferences: Partial<UserPreferences>
 ): Promise<{ user: AuthUser }> {
-  const token = getStoredToken();
-  const response = await fetch('/api/auth/me', {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ preferences }),
-  });
+  const response = await patchAuthenticated('/api/auth/me', { preferences });
   return parseAuthResponse(response, 'Could not update preferences') as Promise<{ user: AuthUser }>;
 }
 

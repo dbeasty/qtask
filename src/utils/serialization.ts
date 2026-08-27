@@ -145,9 +145,12 @@ export function serializeTask(doc: Record<string, unknown>): SerializedTask {
     : doc;
 
   const projectIds = normalizeTaskProjectIds(obj);
+  // The raw doc's `embedding` vector is internal (semantic search only) —
+  // never send it to clients.
+  const { embedding: _embedding, ...rest } = obj;
 
   return {
-    ...obj,
+    ...rest,
     _id: String(obj._id),
     title: String(obj.title ?? ''),
     status: String(obj.status ?? 'todo'),
