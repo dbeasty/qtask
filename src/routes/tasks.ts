@@ -20,6 +20,140 @@ const updateCommentSchema = z.object({
   body: z.string().trim().min(1, 'body is required').max(10000),
 });
 
+const taskStepInputSchema = z.object({
+  _id: z.string().optional(),
+  text: z.string(),
+  done: z.boolean().optional(),
+});
+
+const materialLineInputSchema = z.object({
+  _id: z.string().optional(),
+  description: z.string(),
+  quantity: z.number(),
+  unitPrice: z.number(),
+});
+
+const laborLineInputSchema = z.object({
+  _id: z.string().optional(),
+  description: z.string().optional(),
+  hours: z.number(),
+});
+
+const taskStatusSchema = z.enum(['todo', 'in_progress', 'done', 'cancelled']);
+const taskPrioritySchema = z.enum(['low', 'medium', 'high', 'urgent']);
+const progressFieldSchema = z.enum(['percent', 'hoursSpent', 'hoursRemaining']);
+
+function dueDateSchema() {
+  return z.union([z.string(), z.date()]).refine((value) => !Number.isNaN(new Date(value).getTime()), {
+    message: 'dueDate must be a valid date',
+  });
+}
+
+type CreateSubtaskBody = {
+  title: string;
+  description?: string;
+  steps?: z.infer<typeof taskStepInputSchema>[];
+  status?: z.infer<typeof taskStatusSchema>;
+  priority?: z.infer<typeof taskPrioritySchema>;
+  dueDate?: string | Date;
+  tags?: string[];
+  percentComplete?: number;
+  percentCompleteOverride?: number;
+  progressShare?: number;
+  hoursSpent?: number;
+  hoursRemaining?: number;
+  lastProgressField?: z.infer<typeof progressFieldSchema>;
+  materials?: z.infer<typeof materialLineInputSchema>[];
+  laborLines?: z.infer<typeof laborLineInputSchema>[];
+  hourlyRate?: number;
+  subtasks?: CreateSubtaskBody[];
+};
+
+const createSubtaskSchema: z.ZodType<CreateSubtaskBody> = z.lazy(() =>
+  z.object({
+    title: z.string().trim().min(1, 'title is required'),
+    description: z.string().optional(),
+    steps: z.array(taskStepInputSchema).optional(),
+    status: taskStatusSchema.optional(),
+    priority: taskPrioritySchema.optional(),
+    dueDate: dueDateSchema().optional(),
+    tags: z.array(z.string()).optional(),
+    percentComplete: z.number().optional(),
+    percentCompleteOverride: z.number().optional(),
+    progressShare: z.number().optional(),
+    hoursSpent: z.number().optional(),
+    hoursRemaining: z.number().optional(),
+    lastProgressField: progressFieldSchema.optional(),
+    materials: z.array(materialLineInputSchema).optional(),
+    laborLines: z.array(laborLineInputSchema).optional(),
+    hourlyRate: z.number().optional(),
+    subtasks: z.array(createSubtaskSchema).optional(),
+  })
+);
+
+const createTaskSchema = z.object({
+  title: z.string().trim().min(1, 'title is required'),
+  description: z.string().optional(),
+  steps: z.array(taskStepInputSchema).optional(),
+  status: taskStatusSchema.optional(),
+  priority: taskPrioritySchema.optional(),
+  dueDate: dueDateSchema().optional(),
+  tags: z.array(z.string()).optional(),
+  percentComplete: z.number().optional(),
+  percentCompleteOverride: z.number().optional(),
+  progressShare: z.number().optional(),
+  hoursSpent: z.number().optional(),
+  hoursRemaining: z.number().optional(),
+  lastProgressField: progressFieldSchema.optional(),
+  materials: z.array(materialLineInputSchema).optional(),
+  laborLines: z.array(laborLineInputSchema).optional(),
+  hourlyRate: z.number().optional(),
+  projectId: z.string().optional(),
+  projectIds: z.array(z.string()).optional(),
+  subtasks: z.array(createSubtaskSchema).optional(),
+});
+
+const updateTaskSchema = z.object({
+  title: z.string().trim().min(1, 'title cannot be empty').optional(),
+  description: z.string().optional(),
+  steps: z.array(taskStepInputSchema).optional(),
+  status: taskStatusSchema.optional(),
+  priority: taskPrioritySchema.optional(),
+  dueDate: dueDateSchema().nullable().optional(),
+  tags: z.array(z.string()).optional(),
+  percentComplete: z.number().optional(),
+  percentCompleteOverride: z.number().nullable().optional(),
+  progressShare: z.number().nullable().optional(),
+  hoursSpent: z.number().nullable().optional(),
+  hoursRemaining: z.number().nullable().optional(),
+  lastProgressField: progressFieldSchema.nullable().optional(),
+  materials: z.array(materialLineInputSchema).optional(),
+  laborLines: z.array(laborLineInputSchema).optional(),
+  hourlyRate: z.number().nullable().optional(),
+  projectId: z.string().nullable().optional(),
+  projectIds: z.array(z.string()).nullable().optional(),
+  assigneeId: z.string().nullable().optional(),
+});
+
+const updateSubtaskSchema = z.object({
+  title: z.string().trim().min(1, 'title cannot be empty').optional(),
+  description: z.string().optional(),
+  steps: z.array(taskStepInputSchema).optional(),
+  status: taskStatusSchema.optional(),
+  priority: taskPrioritySchema.optional(),
+  dueDate: dueDateSchema().nullable().optional(),
+  tags: z.array(z.string()).optional(),
+  percentComplete: z.number().optional(),
+  percentCompleteOverride: z.number().nullable().optional(),
+  progressShare: z.number().nullable().optional(),
+  hoursSpent: z.number().nullable().optional(),
+  hoursRemaining: z.number().nullable().optional(),
+  lastProgressField: progressFieldSchema.nullable().optional(),
+  materials: z.array(materialLineInputSchema).optional(),
+  laborLines: z.array(laborLineInputSchema).optional(),
+  hourlyRate: z.number().nullable().optional(),
+});
+
 function parseSubtaskPathQuery(value: unknown): string[] | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined;
   return value.split(',').filter(Boolean);
@@ -54,7 +188,7 @@ tasksRouter.get('/', async (req, res, next) => {
   }
 });
 
-tasksRouter.post('/', async (req, res, next) => {
+tasksRouter.post('/', validateBody(createTaskSchema), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const task = await taskService.createTask(userId, req.body);
@@ -89,10 +223,10 @@ tasksRouter.get('/:id', async (req, res, next) => {
   }
 });
 
-tasksRouter.patch('/:id', async (req, res, next) => {
+tasksRouter.patch('/:id', validateBody(updateTaskSchema), async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const task = await taskService.updateTask(userId, req.params.id!, req.body);
+    const task = await taskService.updateTask(userId, String(req.params.id), req.body);
     if (!task) {
       res.status(404).json({ error: 'Task not found' });
       return;
@@ -238,11 +372,11 @@ tasksRouter.delete('/:id/links/:linkedTaskId/:type', async (req, res, next) => {
   }
 });
 
-tasksRouter.post('/:id/subtasks', async (req, res, next) => {
+tasksRouter.post('/:id/subtasks', validateBody(createSubtaskSchema), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const path = (req.query.path as string)?.split(',').filter(Boolean) ?? [];
-    const task = await taskService.addSubtask(userId, req.params.id!, path, req.body);
+    const task = await taskService.addSubtask(userId, String(req.params.id), path, req.body);
     if (!task) {
       res.status(404).json({ error: 'Task or parent subtask not found' });
       return;
@@ -253,7 +387,7 @@ tasksRouter.post('/:id/subtasks', async (req, res, next) => {
   }
 });
 
-tasksRouter.patch('/:id/subtasks', async (req, res, next) => {
+tasksRouter.patch('/:id/subtasks', validateBody(updateSubtaskSchema), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const path = (req.query.path as string)?.split(',').filter(Boolean) ?? [];
@@ -261,7 +395,7 @@ tasksRouter.patch('/:id/subtasks', async (req, res, next) => {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
-    const task = await taskService.updateSubtask(userId, req.params.id!, path, req.body);
+    const task = await taskService.updateSubtask(userId, String(req.params.id), path, req.body);
     if (!task) {
       res.status(404).json({ error: 'Task or subtask not found' });
       return;
