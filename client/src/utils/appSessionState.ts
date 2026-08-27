@@ -21,8 +21,19 @@ export interface AppSessionState {
 const STORAGE_KEY = 'qtask_app_session_state';
 const MAIN_VIEWS: MainView[] = ['agent', 'projects', 'tasks'];
 
-let persistTimer: ReturnType<typeof setTimeout> | undefined;
+// Keyed per top-level field set (tasks/projects/agent) rather than one
+// shared timer — AgentPage stays mounted (hidden) behind whichever of
+// TasksPage/ProjectsPage is active, so its own debounced conversationId
+// updates can fire in the same window as the visible page's debounced
+// selection/expansion updates. A single shared timer meant whichever
+// call landed last within the debounce window silently discarded any
+// other pending update, even though they touch unrelated fields.
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let skipPersist = true;
+
+function channelKey(partial: Partial<Omit<AppSessionState, 'version'>>): string {
+  return Object.keys(partial).sort().join(',');
+}
 
 export function setSessionPersistEnabled(enabled: boolean): void {
   skipPersist = !enabled;
@@ -129,11 +140,16 @@ export function mergeAppSessionStateDebounced(
   delayMs = 300
 ): void {
   if (skipPersist) return;
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    persistTimer = undefined;
-    mergeAppSessionState(partial);
-  }, delayMs);
+  const key = channelKey(partial);
+  const existing = persistTimers.get(key);
+  if (existing) clearTimeout(existing);
+  persistTimers.set(
+    key,
+    setTimeout(() => {
+      persistTimers.delete(key);
+      mergeAppSessionState(partial);
+    }, delayMs)
+  );
 }
 
 export function resolveStartupView(
