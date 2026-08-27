@@ -1,5 +1,5 @@
 import { isValidObjectId } from 'mongoose';
-import { InviteModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
+import { CommentModel, InviteModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
 import { config } from '../config/index.js';
 import {
   enqueueProjectEmbeddingJob,
@@ -703,7 +703,8 @@ export class ProjectService {
       .lean();
 
     const otherProjectIds = new Set<string>();
-    let deletedTaskCount = 0;
+    const taskIdsToDelete: string[] = [];
+    const taskUpdates: Array<{ id: unknown; remaining: string[] }> = [];
     for (const task of linkedTasks) {
       const ids = new Set<string>();
       if (Array.isArray(task.projectIds)) {
@@ -713,17 +714,33 @@ export class ProjectService {
       ids.delete(projectId);
 
       if (ids.size === 0) {
-        await TaskModel.deleteOne({ _id: task._id });
-        deletedTaskCount += 1;
+        taskIdsToDelete.push(String(task._id));
       } else {
         const remaining = [...ids];
         for (const id of remaining) otherProjectIds.add(id);
-        await TaskModel.updateOne(
-          { _id: task._id },
-          { $set: { projectIds: remaining, projectId: remaining[0] } }
-        );
+        taskUpdates.push({ id: task._id, remaining });
       }
     }
+
+    // Batched instead of one round trip per task: a project with hundreds
+    // of tasks used to issue hundreds of sequential deleteOne/updateOne
+    // calls. Deleting tasks this way also used to skip their comments
+    // entirely, leaving them orphaned once the owning task was gone.
+    if (taskIdsToDelete.length > 0) {
+      await TaskModel.deleteMany({ _id: { $in: taskIdsToDelete } });
+      await CommentModel.deleteMany({ taskId: { $in: taskIdsToDelete } });
+    }
+    if (taskUpdates.length > 0) {
+      await TaskModel.bulkWrite(
+        taskUpdates.map(({ id, remaining }) => ({
+          updateOne: {
+            filter: { _id: id },
+            update: { $set: { projectIds: remaining, projectId: remaining[0] } },
+          },
+        }))
+      );
+    }
+    const deletedTaskCount = taskIdsToDelete.length;
 
     const { ConversationModel } = await import('../models/index.js');
     await ConversationModel.deleteMany({ projectId });
