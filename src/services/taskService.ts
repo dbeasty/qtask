@@ -18,6 +18,7 @@ import { buildSubtaskTree, normalizeLaborLinesInput, normalizeMaterialsInput, no
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
 import { searchService } from './searchService.js';
+import { escapeRegex } from './searchUtils.js';
 
 async function projects() {
   const { projectService } = await import('./projectService.js');
@@ -453,23 +454,40 @@ export class TaskService {
       if (filters.dueAfter) (query.dueDate as Record<string, Date>).$gte = new Date(filters.dueAfter);
     }
 
-    let tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();
-
     if (filters.query) {
       const searched = await searchService.searchTasksWithFilters(userId, filters);
       if (searched.length > 0) {
         return searched;
       }
 
-      const regex = new RegExp(filters.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      tasks = tasks.filter(
-        (t) =>
-          regex.test(t.title) ||
-          (t.description && regex.test(t.description)) ||
-          t.tags.some((tag) => regex.test(tag)) ||
-          (t.steps ?? []).some((step) => regex.test(step.text))
+      // Hybrid/text search found nothing — fall back to a plain substring
+      // match, pushed down to Mongo instead of loading every accessible
+      // task into memory to filter with a JS regex. `query` may already
+      // carry its own top-level $or (project-access boundary) or $and
+      // (projectId filter), so the regex clause is AND-ed in via a
+      // wrapping $and rather than spread in, which would silently
+      // overwrite either one.
+      const regex = new RegExp(escapeRegex(filters.query), 'i');
+      const fallbackTasks = await TaskModel.find({
+        $and: [
+          query,
+          { $or: [{ title: regex }, { description: regex }, { tags: regex }, { 'steps.text': regex }] },
+        ],
+      })
+        .sort({ sortOrder: 1, createdAt: -1 })
+        .lean();
+
+      return fallbackTasks.map((task) =>
+        serializeTask(
+          applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<
+            string,
+            unknown
+          >
+        )
       );
     }
+
+    const tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();
 
     return tasks.map((task) =>
       serializeTask(applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<string, unknown>)

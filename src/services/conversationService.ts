@@ -85,7 +85,14 @@ export class ConversationService {
   async listConversations(userId: string, projectId?: string): Promise<ConversationSummary[]> {
     const filter: Record<string, unknown> = { userId };
     if (projectId) filter.projectId = projectId;
-    const docs = await ConversationModel.find(filter).sort({ updatedAt: -1 }).lean();
+    // toSummary() only needs these fields — project them explicitly so
+    // listing a user's conversations doesn't pull every conversation's
+    // full message history (and pendingProposals/pausedBatch) into memory
+    // just to build a lightweight summary list.
+    const docs = await ConversationModel.find(filter)
+      .select('userId projectId title createdAt updatedAt')
+      .sort({ updatedAt: -1 })
+      .lean();
     return docs.map((doc) => toSummary(doc as Parameters<typeof toSummary>[0]));
   }
 
