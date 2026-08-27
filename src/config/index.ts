@@ -143,11 +143,11 @@ export const config = {
     hashAdminPassword: process.env.HASH_ADMIN_PASSWORD === 'true',
     password: process.env.ADMIN_PASSWORD,
     passwordHash: process.env.ADMIN_PASSWORD_HASH,
-    jwtSecret:
-      process.env.ADMIN_JWT_SECRET ??
-      ((process.env.NODE_ENV ?? 'development') === 'production'
-        ? ''
-        : 'dev-admin-jwt-secret-change-me'),
+    jwtSecret: requireSecret(
+      'ADMIN_JWT_SECRET',
+      process.env.ADMIN_JWT_SECRET,
+      'dev-admin-jwt-secret-change-me'
+    ),
     proxySecret: process.env.ADMIN_PROXY_SECRET,
     cookieSecure:
       process.env.ADMIN_COOKIE_SECURE === 'true' ||
