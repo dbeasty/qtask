@@ -166,23 +166,49 @@ function parseKeepChildren(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
+const DEFAULT_TASKS_PAGE_LIMIT = 200;
+const MAX_TASKS_PAGE_LIMIT = 500;
+
+function parseLimitParam(value: unknown): number {
+  const parsed = parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TASKS_PAGE_LIMIT;
+  return Math.min(parsed, MAX_TASKS_PAGE_LIMIT);
+}
+
+function parseOffsetParam(value: unknown): number {
+  const parsed = parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
 tasksRouter.get('/', async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { status, priority, projectId, assigneeId, tags, dueBefore, dueAfter, query } = req.query;
 
-    const tasks = await taskService.listTasks(userId, {
-      status: status as never,
-      priority: priority as never,
-      projectId: projectId as string | undefined,
-      assigneeId: assigneeId as string | undefined,
-      tags: tags ? String(tags).split(',') : undefined,
-      dueBefore: dueBefore as string | undefined,
-      dueAfter: dueAfter as string | undefined,
-      query: query as string | undefined,
-    });
+    // A default limit applies even when the client sends none, so a
+    // single request can never pull an unbounded number of tasks into
+    // one response — the previous behavior for an account with many
+    // tasks.
+    const limit = parseLimitParam(req.query.limit);
+    const offset = parseOffsetParam(req.query.offset);
 
-    res.json({ tasks });
+    const { tasks, total } = await taskService.listTasks(
+      userId,
+      {
+        status: status as never,
+        priority: priority as never,
+        projectId: projectId as string | undefined,
+        assigneeId: assigneeId as string | undefined,
+        tags: tags ? String(tags).split(',') : undefined,
+        dueBefore: dueBefore as string | undefined,
+        dueAfter: dueAfter as string | undefined,
+        query: query as string | undefined,
+      },
+      { limit, offset }
+    );
+
+    res.json({ tasks, total, limit, offset });
   } catch (error) {
     next(error);
   }

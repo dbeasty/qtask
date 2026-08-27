@@ -421,7 +421,20 @@ export class TaskService {
     return serializeTask(withPercent as unknown as Record<string, unknown>);
   }
 
-  async listTasks(userId: string, filters: TaskSearchFilters = {}) {
+  async listTasks(
+    userId: string,
+    filters?: TaskSearchFilters
+  ): Promise<Array<Record<string, unknown>>>;
+  async listTasks(
+    userId: string,
+    filters: TaskSearchFilters,
+    pagination: { limit: number; offset: number }
+  ): Promise<{ tasks: Array<Record<string, unknown>>; total: number }>;
+  async listTasks(
+    userId: string,
+    filters: TaskSearchFilters = {},
+    pagination?: { limit: number; offset: number }
+  ): Promise<Array<Record<string, unknown>> | { tasks: Array<Record<string, unknown>>; total: number }> {
     if (filters.projectId) {
       await (await projects()).assertProjectAccess(userId, filters.projectId, 'viewer');
     }
@@ -457,6 +470,12 @@ export class TaskService {
     if (filters.query) {
       const searched = await searchService.searchTasksWithFilters(userId, filters);
       if (searched.length > 0) {
+        if (pagination) {
+          return {
+            tasks: searched.slice(pagination.offset, pagination.offset + pagination.limit),
+            total: searched.length,
+          };
+        }
         return searched;
       }
 
@@ -477,7 +496,7 @@ export class TaskService {
         .sort({ sortOrder: 1, createdAt: -1 })
         .lean();
 
-      return fallbackTasks.map((task) =>
+      const mapped = fallbackTasks.map((task) =>
         serializeTask(
           applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<
             string,
@@ -485,6 +504,35 @@ export class TaskService {
           >
         )
       );
+      if (pagination) {
+        return {
+          tasks: mapped.slice(pagination.offset, pagination.offset + pagination.limit),
+          total: mapped.length,
+        };
+      }
+      return mapped;
+    }
+
+    if (pagination) {
+      const [tasks, total] = await Promise.all([
+        TaskModel.find(query)
+          .sort({ sortOrder: 1, createdAt: -1 })
+          .skip(pagination.offset)
+          .limit(pagination.limit)
+          .lean(),
+        TaskModel.countDocuments(query),
+      ]);
+      return {
+        tasks: tasks.map((task) =>
+          serializeTask(
+            applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<
+              string,
+              unknown
+            >
+          )
+        ),
+        total,
+      };
     }
 
     const tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();

@@ -258,8 +258,32 @@ export async function checkHealth(): Promise<{
   }>;
 }
 
-export async function listTasks(): Promise<{ tasks: import('../types').Task[] }> {
-  return request('/api/tasks');
+export async function listTasks(
+  pagination?: { limit?: number; offset?: number }
+): Promise<{ tasks: import('../types').Task[]; total: number; limit: number; offset: number }> {
+  const params = new URLSearchParams();
+  if (pagination?.limit !== undefined) params.set('limit', String(pagination.limit));
+  if (pagination?.offset !== undefined) params.set('offset', String(pagination.offset));
+  const qs = params.toString();
+  return request(`/api/tasks${qs ? `?${qs}` : ''}`);
+}
+
+/** Pages through GET /api/tasks until every accessible task has been
+ *  fetched, reassembling the same complete flat array callers previously
+ *  got from a single unbounded response. Each individual HTTP
+ *  request/response stays bounded (see DEFAULT_TASKS_PAGE_LIMIT server
+ *  side) — callers that depend on holding the full task list (drag-and
+ *  -drop ordering, cross-project grouping) keep working unmodified. */
+export async function listAllTasks(pageSize = 200): Promise<import('../types').Task[]> {
+  const tasks: import('../types').Task[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await listTasks({ limit: pageSize, offset });
+    tasks.push(...page.tasks);
+    offset += page.tasks.length;
+    if (page.tasks.length === 0 || tasks.length >= page.total) break;
+  }
+  return tasks;
 }
 
 export async function listProjects(): Promise<{ projects: import('../types').Project[] }> {
