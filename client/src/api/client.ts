@@ -157,7 +157,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function consumeSseStream(
+export async function consumeSseStream(
   response: Response,
   onEvent: (event: import('../types').AgentStreamEvent) => void,
   signal?: AbortSignal
@@ -202,13 +202,23 @@ async function consumeSseStream(
       for (const part of parts) {
         const line = part.trim();
         if (!line.startsWith('data: ')) continue;
-        const event = JSON.parse(line.slice(6)) as import('../types').AgentStreamEvent;
-        onEvent(event);
+        // One malformed frame must not kill the rest of the stream —
+        // skip it and keep reading instead of throwing out of the loop.
+        try {
+          const event = JSON.parse(line.slice(6)) as import('../types').AgentStreamEvent;
+          onEvent(event);
+        } catch (parseError) {
+          console.error('Failed to parse SSE event', parseError);
+        }
       }
     }
   } catch (error) {
     if (signal?.aborted) return;
     throw error;
+  } finally {
+    if (signal) {
+      signal.removeEventListener('abort', abortReader);
+    }
   }
 }
 
