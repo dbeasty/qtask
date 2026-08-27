@@ -28,15 +28,6 @@ function isInitializeRequest(body: unknown): boolean {
   );
 }
 
-function findInMemorySession(userId: string, keyId: string): SessionEntry | undefined {
-  for (const entry of sessions.values()) {
-    if (entry.ctx.userId === userId && entry.ctx.keyId === keyId) {
-      return entry;
-    }
-  }
-  return undefined;
-}
-
 async function buildSessionEntry(
   userId: string,
   keyId: string,
@@ -163,14 +154,17 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
     }
 
     if (!sessionId && isInitializeRequest(req.body)) {
-      const inMemory = findInMemorySession(userId, keyId);
-      if (inMemory) {
-        sessions.delete(inMemory.ctx.sessionId);
-      }
-
+      // A fresh initialize (no session header) means a new client
+      // connection — it must never steal a session that's still live in
+      // this process's `sessions` map, since two independent clients can
+      // legitimately share one API key concurrently (e.g. Claude Desktop
+      // and Cursor). Only reuse a Mongo-recorded session that isn't
+      // currently live, so a genuinely idle/rehydrated session still
+      // carries its pending-proposal history forward without evicting
+      // (and silently corrupting) another client's active connection.
+      const candidateSessionId = await mcpSessionService.findReusableMongoSession(userId, keyId);
       const reusableSessionId =
-        inMemory?.ctx.sessionId ??
-        (await mcpSessionService.findReusableMongoSession(userId, keyId));
+        candidateSessionId && !sessions.has(candidateSessionId) ? candidateSessionId : undefined;
 
       const { entry, reused, source } = reusableSessionId
         ? await getOrCreateSessionEntry(userId, keyId, scope, reusableSessionId)
@@ -181,7 +175,7 @@ export async function handleMcpHttpRequest(req: Request, res: Response): Promise
           userId,
           keyId,
           sessionId: entry.ctx.sessionId,
-          source: source ?? (inMemory ? 'memory' : 'mongo'),
+          source,
         });
       } else {
         log.info('MCP session initialized', {

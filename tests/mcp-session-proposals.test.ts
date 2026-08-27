@@ -120,14 +120,37 @@ describe('MCP cross-session proposals (Option B)', () => {
 });
 
 describe('MCP session reuse and rehydration (Option A)', () => {
-  it('reuses the same mongo session on a second initialize for the same key', async () => {
+  it('gives two concurrent clients on the same key independent sessions instead of one stealing the other', async () => {
+    // A fresh initialize with no session header means a NEW client
+    // connection — two AI tools (e.g. Claude Desktop + Cursor) can
+    // legitimately share one API key at the same time. The old behavior
+    // evicted whichever session was already live and rebound its session
+    // id to the new client's transport, so the first client's next
+    // request silently got routed to the second client's connection.
     const { secret, userId } = await createMcpContext();
     const { McpSessionModel } = await import('../src/models/index.js');
 
     const sessionA = await mcpInitialize(app, secret);
     const sessionB = await mcpInitialize(app, secret);
 
-    assert.equal(sessionB, sessionA);
+    assert.notEqual(sessionB, sessionA, 'two live concurrent clients must not collapse into one session');
+    assert.equal(await McpSessionModel.countDocuments({ userId }), 2);
+  });
+
+  it('still reuses a recent mongo session once it is no longer live in memory', async () => {
+    // The consolidation this "Option A" describes is for a single client
+    // reconnecting after its old session stopped being live (e.g. a
+    // process restart) — not for two simultaneously-live clients.
+    const { secret, userId } = await createMcpContext();
+    const { McpSessionModel } = await import('../src/models/index.js');
+    const { _closeMcpTransportForTests } = await import('../src/mcp/httpHandler.js');
+
+    const sessionA = await mcpInitialize(app, secret);
+    _closeMcpTransportForTests(sessionA);
+
+    const sessionB = await mcpInitialize(app, secret);
+
+    assert.equal(sessionB, sessionA, 'reconnecting after the old session is no longer live should reuse it');
     assert.equal(await McpSessionModel.countDocuments({ userId }), 1);
   });
 
