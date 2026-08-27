@@ -40,6 +40,12 @@ jobs:
       - name: Build client
         run: npm run build --prefix client
 
+      - name: Install admin-client dependencies
+        run: npm ci --prefix admin-client
+
+      - name: Build admin-client
+        run: npm run build --prefix admin-client
+
       - name: Install mobile dependencies
         run: npm ci --prefix mobile
 
