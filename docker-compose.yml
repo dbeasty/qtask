@@ -8,7 +8,13 @@ services:
     volumes:
       - qtask_mongo_data:/data/db
     ports:
-      - "${MONGO_PORT:-27017}:27017"
+      # Loopback only — MONGO_INITDB_ROOT_USERNAME/PASSWORD default to
+      # empty above, which skips creating a root user entirely and starts
+      # Mongo with no auth at all if they're unset; without an explicit
+      # 127.0.0.1 binding here, that would be reachable from the rest of
+      # the network, not just this host. Matches deploy/docker-compose
+      # .mongodb.yml's existing binding.
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     networks:
       - qtask
 
