@@ -1317,6 +1317,10 @@ export class ProjectService {
           stream: false,
           keep_alive: config.ollama.keepAlive,
         }),
+        // Without a timeout, a stalled/overloaded Ollama instance would
+        // hang this request indefinitely instead of falling back to the
+        // plain-text summary below.
+        signal: AbortSignal.timeout(60_000),
       });
 
       if (!response.ok) {
