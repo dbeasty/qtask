@@ -63,12 +63,17 @@ SECRET_PATH="${VAULT_SECRET_PATH:-secret/qtask/production}"
 CLI_PATH="${SECRET_PATH#secret/data/}"
 CLI_PATH="${CLI_PATH#secret/}"
 
+SEEDED_ADMIN_PASSWORD=""
 if ! vault kv get "secret/${CLI_PATH}" >/dev/null 2>&1; then
   echo "Seeding placeholder secrets at secret/${CLI_PATH}"
+  # Every seeded value is randomly generated, not a static placeholder —
+  # a fixed "change-me" string here would be a real credential (this
+  # script is public) if an operator ever forgot the follow-up step.
+  SEEDED_ADMIN_PASSWORD="$(openssl rand -hex 16)"
   vault kv put "secret/${CLI_PATH}" \
     JWT_SECRET="change-me-$(openssl rand -hex 16)" \
     ADMIN_JWT_SECRET="change-me-$(openssl rand -hex 16)" \
-    ADMIN_PASSWORD="change-me-admin-password" \
+    ADMIN_PASSWORD="${SEEDED_ADMIN_PASSWORD}" \
     ADMIN_PROXY_SECRET="" \
     RESEND_API_KEY="" \
     SMTP_USER="" \
@@ -83,6 +88,12 @@ fi
 
 ROLE_ID="$(vault read -field=role_id auth/approle/role/qtask/role-id)"
 SECRET_ID="$(vault write -f -field=secret_id auth/approle/role/qtask/secret-id)"
+
+if [[ -n "${SEEDED_ADMIN_PASSWORD}" ]]; then
+  echo ""
+  echo "=== Generated admin panel password (shown once; also in Vault at secret/${CLI_PATH}) ==="
+  echo "ADMIN_PASSWORD=${SEEDED_ADMIN_PASSWORD}"
+fi
 
 echo ""
 echo "=== AppRole credentials (store with systemd-creds; do not put in .env) ==="
