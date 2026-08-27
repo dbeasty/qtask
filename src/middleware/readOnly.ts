@@ -35,6 +35,15 @@ export function readOnlyMiddleware(req: Request, res: Response, next: NextFuncti
     return;
   }
 
+  // MCP multiplexes its entire protocol (handshake + every tool call, both
+  // reads and writes) through a single POST endpoint, so gating by HTTP
+  // method here would block read-only tools too — mcpToolHandler.ts
+  // already does the correct per-tool read/write check before dispatch.
+  if (req.path === '/api/mcp' || req.path.startsWith('/api/mcp/')) {
+    next();
+    return;
+  }
+
   const message = config.deployment.message;
   res.status(503).json({
     error: message,
