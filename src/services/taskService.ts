@@ -421,6 +421,17 @@ export class TaskService {
     return serializeTask(withPercent as unknown as Record<string, unknown>);
   }
 
+  /**
+   * sortOrder defaults to 0 for every task and createdAt collides at
+   * millisecond granularity for tasks created in the same batch, so
+   * { sortOrder, createdAt } alone is not a total order. Paginated reads use
+   * skip/limit across separate queries, where MongoDB gives no stable
+   * ordering for tied documents — pages then overlap, and rows that get
+   * shuffled past an offset are never returned at all. Appending the unique
+   * _id makes the ordering total, so paging is complete and repeatable.
+   */
+  private static readonly LIST_SORT = { sortOrder: 1, createdAt: -1, _id: 1 } as const;
+
   async listTasks(
     userId: string,
     filters?: TaskSearchFilters
@@ -493,7 +504,7 @@ export class TaskService {
           { $or: [{ title: regex }, { description: regex }, { tags: regex }, { 'steps.text': regex }] },
         ],
       })
-        .sort({ sortOrder: 1, createdAt: -1 })
+        .sort(TaskService.LIST_SORT)
         .lean();
 
       const mapped = fallbackTasks.map((task) =>
@@ -516,7 +527,7 @@ export class TaskService {
     if (pagination) {
       const [tasks, total] = await Promise.all([
         TaskModel.find(query)
-          .sort({ sortOrder: 1, createdAt: -1 })
+          .sort(TaskService.LIST_SORT)
           .skip(pagination.offset)
           .limit(pagination.limit)
           .lean(),
@@ -535,7 +546,7 @@ export class TaskService {
       };
     }
 
-    const tasks = await TaskModel.find(query).sort({ sortOrder: 1, createdAt: -1 }).lean();
+    const tasks = await TaskModel.find(query).sort(TaskService.LIST_SORT).lean();
 
     return tasks.map((task) =>
       serializeTask(applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<string, unknown>)

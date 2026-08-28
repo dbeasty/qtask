@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import dns from 'node:dns';
 import net from 'node:net';
+import { Types } from 'mongoose';
 import { McpOAuthClientModel } from '../models/index.js';
 import type { McpOAuthClientSource, McpOAuthClientSummary } from '../types/mcp.js';
 import { HttpError } from '../utils/httpError.js';
@@ -239,6 +240,11 @@ export class McpOAuthClientService {
   }
 
   async revokeRegisteredClient(userId: string, id: string): Promise<McpOAuthClientSummary | null> {
+    // A caller-supplied id that isn't an ObjectId would make Mongoose throw a
+    // CastError, surfacing as a 500 instead of the 404 the route already
+    // handles for an id that simply doesn't exist.
+    if (!Types.ObjectId.isValid(id)) return null;
+
     const doc = await McpOAuthClientModel.findOneAndUpdate(
       { _id: id, userId, source: 'registered', revokedAt: { $exists: false } },
       { $set: { revokedAt: new Date() } },

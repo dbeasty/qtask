@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { Types } from 'mongoose';
 import { McpApiKeyModel } from '../models/index.js';
 import type { McpApiKeySummary, McpKeyScope } from '../types/mcp.js';
 import { HttpError } from '../utils/httpError.js';
@@ -58,6 +59,10 @@ export class McpKeyService {
   }
 
   async revokeKey(userId: string, keyId: string): Promise<McpApiKeySummary | null> {
+    // See revokeRegisteredClient: a non-ObjectId id must read as "not found",
+    // not as a CastError bubbling up to a 500.
+    if (!Types.ObjectId.isValid(keyId)) return null;
+
     const doc = await McpApiKeyModel.findOneAndUpdate(
       { _id: keyId, userId, revokedAt: { $exists: false } },
       { $set: { revokedAt: new Date() } },
