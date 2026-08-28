@@ -839,7 +839,7 @@ export function TasksPage({
         return subtask ? subtaskToFormValues(subtask) : values;
       }
     },
-    [activeProject, applyTaskUpdate, projects, resolveAndRefreshProjects]
+    [taskCanEdit, taskCanUpdateStatus, applyTaskUpdate, projects, resolveAndRefreshProjects]
   );
 
   const handleAutoSaveTaskDetail = useCallback(
