@@ -244,9 +244,15 @@ export const toolDefinitions: ToolDefinition[] = [
       projectId: objectIdSchema.nullable().optional(),
       assigneeId: objectIdSchema.nullable().optional(),
     },
-    async execute(userId, input) {
+    async execute(userId, input, context) {
       const { taskId, ...updates } = input;
-      const task = await taskService.updateTask(userId, String(taskId), updates, 'ai');
+      const task = await taskService.updateTask(
+        userId,
+        String(taskId),
+        updates,
+        'ai',
+        context?.conversationId
+      );
       if (!task) return err('Task not found');
       return ok(JSON.stringify(task, null, 2));
     },
@@ -307,10 +313,14 @@ export const toolDefinitions: ToolDefinition[] = [
     zodShape: {
       taskId: objectIdSchema.describe('Task ID'),
     },
-    async execute(userId, input) {
-      const task = await taskService.getTask(userId, String(input.taskId));
+    async execute(userId, input, context) {
+      const task = await taskService.getTask(userId, String(input.taskId), context?.conversationId);
       if (!task) return err('Task not found');
-      const comments = await commentService.listCommentsForTask(userId, String(input.taskId));
+      const comments = await commentService.listCommentsForTask(
+        userId,
+        String(input.taskId),
+        context?.conversationId
+      );
       const payload = {
         ...slimTaskForTool(task as Record<string, unknown>),
         comments: comments.map((comment) => ({
@@ -359,13 +369,18 @@ export const toolDefinitions: ToolDefinition[] = [
       parentId: objectIdSchema.optional().describe('Parent comment id for replies'),
       notifyByEmail: z.boolean().optional().describe('Email collaborators (default false)'),
     },
-    async execute(userId, input) {
-      const comment = await commentService.createComment(userId, String(input.taskId), {
-        body: String(input.body),
-        subtaskPath: input.subtaskPath as string[] | undefined,
-        parentId: input.parentId as string | undefined,
-        notifyByEmail: Boolean(input.notifyByEmail),
-      });
+    async execute(userId, input, context) {
+      const comment = await commentService.createComment(
+        userId,
+        String(input.taskId),
+        {
+          body: String(input.body),
+          subtaskPath: input.subtaskPath as string[] | undefined,
+          parentId: input.parentId as string | undefined,
+          notifyByEmail: Boolean(input.notifyByEmail),
+        },
+        context?.conversationId
+      );
       return ok(JSON.stringify({ comment }, null, 2));
     },
   },
@@ -656,8 +671,12 @@ export const toolDefinitions: ToolDefinition[] = [
     zodShape: {
       projectId: objectIdSchema,
     },
-    async execute(userId, input) {
-      const project = await projectService.getProject(userId, String(input.projectId));
+    async execute(userId, input, context) {
+      const project = await projectService.getProject(
+        userId,
+        String(input.projectId),
+        context?.conversationId
+      );
       if (!project) return err('Project not found');
       return ok(JSON.stringify(slimProjectForTool(project as unknown as Record<string, unknown>), null, 2));
     },
@@ -697,9 +716,14 @@ export const toolDefinitions: ToolDefinition[] = [
       description: z.string().nullable().optional(),
       hourlyRate: z.number().min(0).nullable().optional(),
     },
-    async execute(userId, input) {
+    async execute(userId, input, context) {
       const { projectId, ...updates } = input;
-      const project = await projectService.updateProject(userId, String(projectId), updates);
+      const project = await projectService.updateProject(
+        userId,
+        String(projectId),
+        updates,
+        context?.conversationId
+      );
       if (!project) return err('Project not found');
       return ok(JSON.stringify(project, null, 2));
     },

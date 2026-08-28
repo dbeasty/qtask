@@ -1098,7 +1098,7 @@ export class AgentService {
       }
 
       yield { type: 'tool_call', name, arguments: args };
-      const result = await executeTool(name, args, userId, { source: 'agent' });
+      const result = await executeTool(name, args, userId, { source: 'agent', conversationId });
       const scopeForFilter = highlightedProjectId;
       const entityLinkSource = await entityLinkSourceForToolResult(
         userId,
@@ -1487,7 +1487,10 @@ export class AgentService {
         }
       } else {
         yield { type: 'tool_call', name: proposal.name, arguments: validation.data };
-        const result = await executeTool(proposal.name, validation.data, userId, { source: 'agent' });
+        const result = await executeTool(proposal.name, validation.data, userId, {
+          source: 'agent',
+          conversationId,
+        });
         yield toolResultEvent(proposal.name, result.success, result.text);
         extraMessages.push({
           role: 'tool',
