@@ -174,7 +174,9 @@ export async function listUserFeedback(userId: string, page: number, limit: numb
   const [total, items] = await Promise.all([
     FeedbackModel.countDocuments({ userId }),
     FeedbackModel.find({ userId })
-      .sort({ createdAt: -1 })
+      // Unique tiebreaker: skip/limit over a non-unique sort key can
+      // silently omit rows between pages.
+      .sort({ createdAt: -1, _id: 1 })
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -230,7 +232,7 @@ export async function listAdminFeedback(params: {
   const skip = (params.page - 1) * params.limit;
   const [total, items] = await Promise.all([
     FeedbackModel.countDocuments(filter),
-    FeedbackModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(params.limit).lean(),
+    FeedbackModel.find(filter).sort({ createdAt: -1, _id: 1 }).skip(skip).limit(params.limit).lean(),
   ]);
 
   const { UserModel } = await import('../models/index.js');

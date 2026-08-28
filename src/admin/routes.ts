@@ -121,7 +121,9 @@ router.get('/users', async (req, res, next) => {
     const [total, users] = await Promise.all([
       UserModel.countDocuments(match),
       UserModel.find(match)
-        .sort({ createdAt: -1 })
+        // _id breaks ties so skip/limit paging cannot drop or repeat rows
+        // when several users share a createdAt millisecond.
+        .sort({ createdAt: -1, _id: 1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
@@ -484,7 +486,9 @@ router.get('/ollama/calls', async (req, res, next) => {
     const [total, calls] = await Promise.all([
       LlmCallMetricModel.countDocuments(filter),
       LlmCallMetricModel.find(filter)
-        .sort({ startedAt: -1 })
+        // See the users listing: a unique tiebreaker keeps paging total.
+        // LLM metrics are written in bursts, so startedAt ties are common.
+        .sort({ startedAt: -1, _id: 1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),

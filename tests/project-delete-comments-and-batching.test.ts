@@ -107,21 +107,26 @@ describe('deleteProject cleans up comments and batches its writes', () => {
     const originalUpdateOne = TaskModel.updateOne.bind(TaskModel);
     const originalDeleteMany = TaskModel.deleteMany.bind(TaskModel);
     const originalBulkWrite = TaskModel.bulkWrite.bind(TaskModel);
+    // These counting wrappers forward an unknown[] rest arg to overloaded
+    // Mongoose methods, which TypeScript cannot match to any single overload.
+    // Widen the callee to a variadic signature so the forwarding typechecks.
+    const forward = <T>(fn: (...a: never[]) => T) => fn as unknown as (...a: unknown[]) => T;
+
     TaskModel.deleteOne = ((...args: unknown[]) => {
       deleteOneCalls += 1;
-      return originalDeleteOne(...(args as []));
+      return forward(originalDeleteOne)(...args);
     }) as typeof TaskModel.deleteOne;
     TaskModel.updateOne = ((...args: unknown[]) => {
       updateOneCalls += 1;
-      return originalUpdateOne(...(args as []));
+      return forward(originalUpdateOne)(...args);
     }) as typeof TaskModel.updateOne;
     TaskModel.deleteMany = ((...args: unknown[]) => {
       deleteManyCalls += 1;
-      return originalDeleteMany(...(args as []));
+      return forward(originalDeleteMany)(...args);
     }) as typeof TaskModel.deleteMany;
     TaskModel.bulkWrite = ((...args: unknown[]) => {
       bulkWriteCalls += 1;
-      return originalBulkWrite(...(args as []));
+      return forward(originalBulkWrite)(...args);
     }) as typeof TaskModel.bulkWrite;
 
     let result;

@@ -19,6 +19,7 @@
     "test": "node --import tsx --test tests/**/*.test.ts",
     "test:shared": "node --import tsx --test shared/src/**/*.test.ts",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "test:perf": "node --import tsx --test tests/performance.test.ts",
     "hash-admin-password": "tsx src/scripts/hash-admin-password.ts",
     "release": "bash scripts/build-release.sh",
     "release:jetson": "bash scripts/build-jetson-release.sh",

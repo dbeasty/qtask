@@ -180,6 +180,47 @@ describe('user OAuth sign-in', () => {
   });
 });
 
+describe('GET /api/auth/oauth/:provider/callback', () => {
+  it('redirects to the SPA with an error instead of 500ing on an unknown provider', async () => {
+    const res = await request(app)
+      .get('/api/auth/oauth/not-a-provider/callback?code=abc&state=xyz')
+      .expect(302);
+
+    const location = res.headers.location!;
+    assert.ok(location, 'must redirect rather than surface a server error');
+    assert.match(location, /error=/, 'the SPA needs the failure reason on the query string');
+  });
+
+  it('redirects with an error when the provider is disabled', async () => {
+    const res = await request(app)
+      .get('/api/auth/oauth/google/callback?code=abc&state=xyz')
+      .expect(302);
+    assert.match(res.headers.location!, /error=/);
+  });
+
+  it('redirects with an error when the IdP reports one', async () => {
+    const res = await request(app)
+      .get('/api/auth/oauth/google/callback?error=access_denied')
+      .expect(302);
+    assert.match(res.headers.location!, /error=/);
+  });
+
+  it('does not honour an unsigned returnTo as an open redirect', async () => {
+    const res = await request(app)
+      .get(
+        '/api/auth/oauth/google/callback?code=abc&state=' +
+          encodeURIComponent('https://evil.example.com')
+      )
+      .expect(302);
+
+    const location = res.headers.location!;
+    assert.ok(
+      !location.startsWith('https://evil.example.com'),
+      `callback must not redirect off-site: ${location}`
+    );
+  });
+});
+
 describe('OAuth state', () => {
   it('round-trips signed OAuth state', async () => {
     const { createOAuthState, verifyOAuthState } = await import('../src/auth/userOAuth/state.js');
