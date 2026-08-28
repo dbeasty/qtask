@@ -1,3 +1,5 @@
+import type { StagingContext } from './staging.js';
+
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 export type TaskLinkType = 'related' | 'blocking' | 'blocked_by';
@@ -77,6 +79,9 @@ export interface Subtask {
   materials?: MaterialLine[];
   laborLines?: LaborLine[];
   hourlyRate?: number;
+  trainingHourlyRate?: number;
+  trainingHoursSpent?: number;
+  trainingHoursRemaining?: number;
   subtasks: Subtask[];
   links: TaskLink[];
   createdAt: Date;
@@ -105,10 +110,15 @@ export interface Task {
   materials?: MaterialLine[];
   laborLines?: LaborLine[];
   hourlyRate?: number;
+  trainingHourlyRate?: number;
+  trainingHoursSpent?: number;
+  trainingHoursRemaining?: number;
   subtasks: Subtask[];
   links: TaskLink[];
+  sortOrder: number;
   assigneeId?: string;
   embedding?: number[];
+  staging?: StagingContext & { stagedAt: Date };
   createdAt: Date;
   updatedAt: Date;
 }
