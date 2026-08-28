@@ -985,7 +985,7 @@ export class TaskService {
       const currentParentPath = fromPath.slice(0, -1);
 
       if (this.isDescendantOrSelfPath(fromPath, toParentPath)) {
-        throw new Error('Cannot move a subtask into itself or its descendants');
+        throw new HttpError(400, 'Cannot move a subtask into itself or its descendants');
       }
 
       const currentParentArray = this.getParentArray(task, currentParentPath);
@@ -1111,7 +1111,7 @@ export class TaskService {
     const { sourceTaskId, parentPath, index } = input;
 
     if (sourceTaskId === targetTaskId) {
-      throw new Error('Cannot attach a task to itself');
+      throw new HttpError(400, 'Cannot attach a task to itself');
     }
 
     return withTaskSaveLock(targetTaskId, async () => {
@@ -1128,7 +1128,7 @@ export class TaskService {
       ]);
       const shareAny = sourceProjectIds.some((id) => targetProjectIds.includes(id));
       if (!shareAny) {
-        throw new Error('Tasks must share at least one project');
+        throw new HttpError(400, 'Tasks must share at least one project');
       }
 
       if (this.getDocProjectIds(targetTask).length === 0) {
