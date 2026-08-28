@@ -4,6 +4,8 @@ import { signToken } from '../auth/jwt.js';
 import { createOneTimeToken, hashToken } from '../auth/oneTimeToken.js';
 import type { OAuthProfile } from '../auth/userOAuth/types.js';
 import type { IdentityProviderId } from '../auth/userOAuth/types.js';
+import { providerRequiresLinkConfirmation } from '../auth/userOAuth/types.js';
+import { createLinkConfirmationToken, verifyLinkConfirmationToken } from '../auth/userOAuth/linkConfirmation.js';
 import { HttpError } from '../utils/httpError.js';
 import { createLogger } from '../utils/logger.js';
 import { projectService } from './projectService.js';
@@ -362,12 +364,33 @@ export class AuthService {
     let user = await UserModel.findOne({ email });
 
     if (user) {
-      const subOwner = await findUserByProvider(profile.provider, profile.providerUserId);
-      if (subOwner && String(subOwner._id) !== String(user._id)) {
-        throw new HttpError(409, 'Could not sign in with this provider. Contact support.');
+      const alreadyLinked = hasLinkedProvider(user, profile.provider, profile.providerUserId);
+
+      if (!alreadyLinked && providerRequiresLinkConfirmation(profile.provider)) {
+        if (!user.passwordHash) {
+          // No password to confirm ownership with, and this provider's
+          // email-verified claim isn't trustworthy enough to merge
+          // identities on its own — the account owner must sign in with
+          // the method they originally used instead.
+          throw new HttpError(
+            409,
+            'An account with this email already exists. Sign in with your original sign-in method instead.'
+          );
+        }
+        const linkToken = createLinkConfirmationToken({
+          userId: String(user._id),
+          provider: profile.provider,
+          providerUserId: profile.providerUserId,
+          displayName: profile.displayName,
+        });
+        logger.info('OAuth provider link requires confirmation', {
+          userId: String(user._id),
+          provider: profile.provider,
+        });
+        return { linkConfirmationRequired: true as const, linkToken, email: user.email };
       }
 
-      if (!hasLinkedProvider(user, profile.provider, profile.providerUserId)) {
+      if (!alreadyLinked) {
         user.identityProviders = user.identityProviders ?? [];
         user.identityProviders.push({
           provider: profile.provider,
@@ -425,6 +448,50 @@ export class AuthService {
 
     logger.info('OAuth account created', { userId, provider: profile.provider });
     return { userId, ...this.issueSession(user) };
+  }
+
+  /**
+   * Completes a provider link that loginWithOAuthProvider deferred pending
+   * confirmation (see providerRequiresLinkConfirmation) — the caller must
+   * prove ownership of the existing account with its password before the
+   * new provider identity is merged in.
+   */
+  async confirmOAuthProviderLink(linkToken: string, password: string) {
+    const payload = verifyLinkConfirmationToken(linkToken);
+    if (!payload) {
+      throw new HttpError(400, 'Invalid or expired confirmation link');
+    }
+
+    const user = await UserModel.findById(payload.userId);
+    if (!user || !user.passwordHash) {
+      throw new HttpError(401, 'Invalid email or password');
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      throw new HttpError(401, 'Invalid email or password');
+    }
+
+    if (!hasLinkedProvider(user, payload.provider, payload.providerUserId)) {
+      user.identityProviders = user.identityProviders ?? [];
+      user.identityProviders.push({
+        provider: payload.provider,
+        providerUserId: payload.providerUserId,
+        linkedAt: new Date(),
+      });
+      logger.info('OAuth provider linked after confirmation', {
+        userId: String(user._id),
+        provider: payload.provider,
+      });
+    }
+
+    if (!user.displayName && payload.displayName) {
+      user.displayName = payload.displayName;
+    }
+
+    user.lastLoginAt = new Date();
+    await user.save();
+    return { userId: String(user._id), ...this.issueSession(user) };
   }
 
   async refreshSession(userId: string) {

@@ -13,7 +13,7 @@ export function signToken(payload: JwtPayload): string {
 }
 
 export function verifyToken(token: string): JwtPayload {
-  return jwt.verify(token, config.jwtSecret) as JwtPayload;
+  return jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as JwtPayload;
 }
 
 export interface UnsafeTokenMetadata {

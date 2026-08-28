@@ -181,6 +181,21 @@ export async function exchangeOAuthCode(code: string): Promise<LoginResult> {
   return parseAuthResponse(response, 'OAuth sign-in failed') as Promise<LoginResult>;
 }
 
+/**
+ * Completes an OAuth sign-in that matched an existing account by email but
+ * needed the account owner to prove ownership with their password before the
+ * new provider identity was merged in (see providerRequiresLinkConfirmation
+ * server-side).
+ */
+export async function confirmOAuthProviderLink(linkToken: string, password: string): Promise<LoginResult> {
+  const response = await fetch('/api/auth/oauth/confirm-link', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ linkToken, password }),
+  });
+  return parseAuthResponse(response, 'Could not confirm sign-in') as Promise<LoginResult>;
+}
+
 export async function login(email: string, password: string): Promise<LoginResult> {
   const response = await fetch('/api/auth/login', {
     method: 'POST',

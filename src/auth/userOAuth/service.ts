@@ -29,18 +29,38 @@ export function isAllowedMobileRedirectUri(uri: string, nodeEnv: string = config
   return nodeEnv !== 'production' && uri.startsWith(DEV_MOBILE_REDIRECT_SCHEME);
 }
 
+// Mirrors the client's own isSafeReturnPath() check (client/src/auth/session.ts).
+// returnTo is attacker-controlled (it round-trips through the signed OAuth
+// state and back into the SPA redirect), so it must be a same-origin
+// relative path — never an absolute URL or a protocol-relative "//host" path
+// that a browser would treat as a cross-origin redirect target.
+export function isSafeReturnToPath(path: string | undefined): path is string {
+  if (!path) return false;
+  if (!path.startsWith('/')) return false;
+  if (path.startsWith('//') || path.startsWith('/\\')) return false;
+  return true;
+}
+
 function buildSpaRedirectUrl(params: {
   code?: string;
   error?: string;
   returnTo?: string;
   mobileRedirectUri?: string;
+  linkToken?: string;
+  linkEmail?: string;
 }): string {
   const url = params.mobileRedirectUri
     ? new URL(params.mobileRedirectUri)
     : new URL('/auth/oauth/callback', config.appUrl);
   if (params.code) url.searchParams.set('code', params.code);
   if (params.error) url.searchParams.set('error', params.error);
-  if (params.returnTo && !params.mobileRedirectUri) url.searchParams.set('returnTo', params.returnTo);
+  if (params.linkToken) {
+    url.searchParams.set('linkToken', params.linkToken);
+    if (params.linkEmail) url.searchParams.set('linkEmail', params.linkEmail);
+  }
+  if (!params.mobileRedirectUri && isSafeReturnToPath(params.returnTo)) {
+    url.searchParams.set('returnTo', params.returnTo);
+  }
   return url.toString();
 }
 
@@ -69,7 +89,7 @@ export class UserOAuthService {
     const state = createOAuthState({
       provider: input.provider,
       pkceCodeVerifier,
-      returnTo: input.returnTo,
+      returnTo: isSafeReturnToPath(input.returnTo) ? input.returnTo : undefined,
       inviteToken: input.inviteToken,
       acceptLegal: input.acceptLegal,
       mobileRedirectUri: input.mobileRedirectUri,
@@ -110,6 +130,16 @@ export class UserOAuthService {
       inviteToken: state.inviteToken,
     });
 
+    if ('linkConfirmationRequired' in session && session.linkConfirmationRequired) {
+      log.info('OAuth sign-in requires link confirmation', { provider: profile.provider });
+      return buildSpaRedirectUrl({
+        linkToken: session.linkToken,
+        linkEmail: session.email,
+        returnTo: state.returnTo,
+        mobileRedirectUri: state.mobileRedirectUri,
+      });
+    }
+
     const code = await issueUserOAuthAuthCode(session.userId);
     log.info('OAuth sign-in succeeded', { provider: profile.provider, userId: session.userId });
 
@@ -120,6 +150,10 @@ export class UserOAuthService {
     const { exchangeUserOAuthAuthCode } = await import('./exchange.js');
     const userId = await exchangeUserOAuthAuthCode(code);
     return authService.createSessionForUserId(userId);
+  }
+
+  async confirmProviderLink(linkToken: string, password: string) {
+    return authService.confirmOAuthProviderLink(linkToken, password);
   }
 
   buildErrorRedirect(message: string, returnTo?: string, mobileRedirectUri?: string): string {
