@@ -278,15 +278,13 @@ export async function replyToFeedback(id: string, replyMessage: string) {
     throw new FeedbackValidationError('Reply message is too long', 400);
   }
 
-  const existing = await FeedbackModel.findById(id).lean();
-  if (!existing) return null;
-  if (existing.adminReply) {
-    throw new FeedbackValidationError('Feedback already has a reply', 409);
-  }
-
   const repliedAt = new Date();
-  const doc = await FeedbackModel.findByIdAndUpdate(
-    id,
+  // The "already replied" guard lives in the filter itself, not a preceding
+  // read, so two concurrent replies to the same feedback can't both pass a
+  // stale check and race to overwrite each other — only one findOneAndUpdate
+  // can match a document that still has no adminReply.
+  const doc = await FeedbackModel.findOneAndUpdate(
+    { _id: id, adminReply: { $exists: false } },
     {
       $set: {
         status: 'resolved',
@@ -296,11 +294,15 @@ export async function replyToFeedback(id: string, replyMessage: string) {
     { new: true }
   ).lean();
 
-  if (!doc) return null;
+  if (!doc) {
+    const existing = await FeedbackModel.findById(id).lean();
+    if (!existing) return null;
+    throw new FeedbackValidationError('Feedback already has a reply', 409);
+  }
 
-  await notificationService.createNotification(existing.userId, 'feedback_reply', {
+  await notificationService.createNotification(doc.userId, 'feedback_reply', {
     feedbackId: id,
-    message: existing.message.slice(0, 200),
+    message: doc.message.slice(0, 200),
     reply: message,
   });
 

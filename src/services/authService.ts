@@ -26,6 +26,10 @@ function isEmailVerified(user: { emailVerified?: boolean | null }): boolean {
   return user.emailVerified !== false;
 }
 
+function isDuplicateKeyError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 11000;
+}
+
 export type ThemePreference = 'dark' | 'light';
 export type StartupViewPreference = 'auto' | 'agent' | 'projects' | 'tasks' | 'last';
 
@@ -142,16 +146,28 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
     const verification = createOneTimeToken(VERIFICATION_TTL_MS);
 
-    const user = await UserModel.create({
-      email,
-      passwordHash,
-      displayName: input.displayName?.trim() || undefined,
-      emailVerified: false,
-      emailVerificationTokenHash: verification.tokenHash,
-      emailVerificationExpires: verification.expiresAt,
-      legalAcceptedAt: new Date(),
-      legalVersion: LEGAL_VERSION,
-    });
+    let user;
+    try {
+      user = await UserModel.create({
+        email,
+        passwordHash,
+        displayName: input.displayName?.trim() || undefined,
+        emailVerified: false,
+        emailVerificationTokenHash: verification.tokenHash,
+        emailVerificationExpires: verification.expiresAt,
+        legalAcceptedAt: new Date(),
+        legalVersion: LEGAL_VERSION,
+      });
+    } catch (error) {
+      // Two concurrent registrations for the same email can both pass the
+      // findOne check above before either write lands — the unique index on
+      // email then rejects the loser with a duplicate-key error instead of
+      // the clean 409 the earlier check was meant to produce.
+      if (isDuplicateKeyError(error)) {
+        throw new HttpError(409, 'An account with this email already exists');
+      }
+      throw error;
+    }
 
     const userId = String(user._id);
     await projectService.ensureDefaultProject(userId);
