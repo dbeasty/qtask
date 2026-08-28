@@ -628,10 +628,14 @@ const mcpOAuthAuthorizationCodeSchema = new Schema(
     codeChallengeMethod: { type: String, required: true, default: 'S256' },
     redirectUri: { type: String, required: true },
     resource: { type: String, required: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// Authorization codes are single-use and short-lived; without this, an
+// abandoned (never-exchanged) code sits in the collection forever.
+mcpOAuthAuthorizationCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const McpOAuthAuthorizationCodeModel = model(
   'McpOAuthAuthorizationCode',
@@ -646,10 +650,13 @@ const mcpOAuthRefreshTokenSchema = new Schema(
     scope: { type: String, required: true },
     resource: { type: String, required: true },
     revokedAt: { type: Date },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// Revoked or expired refresh tokens would otherwise accumulate forever.
+mcpOAuthRefreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const McpOAuthRefreshTokenModel = model('McpOAuthRefreshToken', mcpOAuthRefreshTokenSchema);
 
@@ -664,10 +671,14 @@ const mcpOAuthPendingConsentSchema = new Schema(
     codeChallenge: { type: String, required: true },
     codeChallengeMethod: { type: String, required: true, default: 'S256' },
     resource: { type: String, required: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// A pending consent that's never completed (user abandons the OAuth
+// authorize screen) would otherwise sit in the collection forever.
+mcpOAuthPendingConsentSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const McpOAuthPendingConsentModel = model(
   'McpOAuthPendingConsent',
@@ -678,9 +689,13 @@ const userOAuthAuthCodeSchema = new Schema(
   {
     codeHash: { type: String, required: true, unique: true, index: true },
     userId: { type: String, required: true, index: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// Exchanged codes are deleted eagerly (exchange.ts), but an abandoned
+// (never-exchanged) code would otherwise sit in the collection forever.
+userOAuthAuthCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const UserOAuthAuthCodeModel = model('UserOAuthAuthCode', userOAuthAuthCodeSchema);
