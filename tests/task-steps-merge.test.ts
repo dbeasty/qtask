@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  insertStepAt,
   mergeLocalSteps,
   stepsEqualForSave,
   stepsForApi,
@@ -71,5 +72,71 @@ describe('task steps merge and save helpers', () => {
     ];
     const merged = mergeLocalSteps(saved, local);
     assert.equal(merged[0]!.text, 'Edited locally');
+  });
+
+  // DIFF-L1: pressing Enter while editing a persisted step calls
+  // insertStepAt (TaskStepsEditor's Enter handler / insertStepAfter) to
+  // splice a new empty draft step in immediately after it. Enter also fires
+  // onStepCommit, which can trigger a save before the user types anything
+  // into the new row — these tests cover that the draft ends up in the
+  // right position and survives the resulting save/merge cycle.
+  it('Enter on a persisted step inserts the new draft step immediately after it, not at the end', () => {
+    const persistedFirst: TaskStep = {
+      _id: 'abc123def456abc123def456',
+      clientKey: 'server-first',
+      text: 'First step',
+      done: false,
+    };
+    const persistedSecond: TaskStep = {
+      _id: 'bcd234ef567bcd234ef5678',
+      clientKey: 'server-second',
+      text: 'Second step',
+      done: false,
+    };
+    const local: TaskStep[] = [persistedFirst, persistedSecond];
+
+    // Enter fires while editing index 0 (the first, persisted step).
+    const enterIndex = 0;
+    const draft: TaskStep = { _id: 'draft-new', clientKey: 'ck-new', text: '', done: false };
+    const afterEnter = insertStepAt(local, enterIndex, draft);
+
+    assert.equal(afterEnter.length, 3);
+    assert.equal(afterEnter[0]!.clientKey, 'server-first');
+    assert.equal(afterEnter[1]!.clientKey, 'ck-new', 'the new draft must land right after the step Enter was pressed in');
+    assert.equal(afterEnter[2]!.clientKey, 'server-second');
+  });
+
+  it('a draft step inserted via Enter survives the save/merge round-trip before the user types into it', () => {
+    const persistedFirst: TaskStep = {
+      _id: 'abc123def456abc123def456',
+      clientKey: 'server-first',
+      text: 'First step',
+      done: false,
+    };
+    const persistedSecond: TaskStep = {
+      _id: 'bcd234ef567bcd234ef5678',
+      clientKey: 'server-second',
+      text: 'Second step',
+      done: false,
+    };
+    const draft: TaskStep = { _id: 'draft-new', clientKey: 'ck-new', text: '', done: false };
+    // Enter was pressed in the first step, inserting the still-empty draft
+    // between the two persisted steps — onStepCommit then fires a save
+    // before the user has typed anything into it.
+    const local: TaskStep[] = [persistedFirst, draft, persistedSecond];
+
+    // stepsForApi strips the empty draft from the save payload, so the
+    // server's response (what "saved" becomes) never included it.
+    const apiPayload = stepsForApi(local);
+    assert.equal(apiPayload.length, 2, 'the empty draft must not be sent to the server');
+    const saved: TaskStep[] = apiPayload.map((step) => ({ ...step }));
+
+    const merged = mergeLocalSteps(saved, local);
+
+    assert.equal(merged.length, 3, 'the empty draft must survive the merge, not be dropped');
+    assert.equal(merged[0]!.clientKey, 'server-first');
+    assert.equal(merged[1]!.clientKey, 'ck-new', 'the draft must stay in its inserted position, not move to the end');
+    assert.equal(merged[1]!.text, '', 'the draft must still be empty and editable, not clobbered by the merge');
+    assert.equal(merged[2]!.clientKey, 'server-second');
   });
 });
