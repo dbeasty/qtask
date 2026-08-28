@@ -210,6 +210,15 @@ const taskSchema = new Schema(
 );
 
 taskSchema.index({ title: 'text', description: 'text', tags: 'text', 'steps.text': 'text' });
+// Matches accessibleTaskQuery()'s common single-owner case ({userId} plus an
+// optional status filter) — without this, that lookup only had single-field
+// userId and status indexes to intersect instead of one compound index.
+taskSchema.index({ userId: 1, status: 1 });
+// Matches project-scoped task listings, which filter by projectIds and sort
+// by sortOrder (e.g. the "insert before the current minimum" lookup in
+// createTask/promoteSubtaskToTask) — without this, that sort needed an
+// in-memory sort stage instead of walking the index in order.
+taskSchema.index({ projectIds: 1, sortOrder: 1 });
 
 export const TaskModel = model('Task', taskSchema);
 
@@ -438,7 +447,9 @@ const inviteSchema = new Schema(
       default: 'pending',
       index: true,
     },
-    token: { type: String, required: true, unique: true, index: true },
+    // unique: true already builds an index on this field; a second
+    // index: true here declared a redundant duplicate index on the same key.
+    token: { type: String, required: true, unique: true },
     expiresAt: { type: Date, required: true, index: true },
     respondedAt: { type: Date },
   },
