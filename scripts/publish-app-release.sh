@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Build app release tarball and deploy to the app server via SSH (as qtask).
+# Build app release tarball and deploy to the app server via SSH.
 # Auto-bumps patch version before building.
 # Usage:
-#   APP_SSH=qtask@192.168.13.13 ./scripts/publish-app-release.sh
-#   ./scripts/publish-app-release.sh qtask@192.168.13.13
+#   APP_SSH=user@host ./scripts/publish-app-release.sh
+#   ./scripts/publish-app-release.sh user@host
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-APP_SSH="${1:-${APP_SSH:-qtask@192.168.13.13}}"
+APP_SSH="${1:-${APP_SSH:-}}"
+if [[ -z "${APP_SSH}" ]]; then
+  echo "Error: no deploy target set. Pass one as an argument or set APP_SSH, e.g.:" >&2
+  echo "  APP_SSH=user@host ./scripts/publish-app-release.sh" >&2
+  exit 1
+fi
 
 echo "Bumping patch version..."
 npm version patch --no-git-tag-version

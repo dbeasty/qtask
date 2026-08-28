@@ -4,11 +4,11 @@
 # Usage:
 #   ./scripts/tunnel-app-server.sh              # foreground (keep terminal open)
 #   ./scripts/tunnel-app-server.sh -f           # background (-f -N)
-#   APP_SSH=qtask@192.168.13.13 ./scripts/tunnel-app-server.sh
+#   APP_SSH=user@host ./scripts/tunnel-app-server.sh
 #   npm run tunnel:app
 set -euo pipefail
 
-APP_SSH="${APP_SSH:-qtask@192.168.13.13}"
+APP_SSH="${APP_SSH:-}"
 BG=false
 
 while [[ $# -gt 0 ]]; do
@@ -26,7 +26,7 @@ SSH port forwards from the QTask app server to localhost:
   http://localhost:3006  stack B (candidate) admin
 
 Environment:
-  APP_SSH   SSH target (default: qtask@192.168.13.13)
+  APP_SSH   SSH target (required, e.g. user@host)
 EOF
       exit 0
       ;;
@@ -36,6 +36,12 @@ EOF
       ;;
   esac
 done
+
+if [[ -z "${APP_SSH}" ]]; then
+  echo "Error: APP_SSH is not set. Example:" >&2
+  echo "  APP_SSH=user@host ./scripts/tunnel-app-server.sh" >&2
+  exit 1
+fi
 
 FORWARDS=(
   -L 3003:127.0.0.1:3003
