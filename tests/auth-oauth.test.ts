@@ -58,6 +58,7 @@ describe('user OAuth sign-in', () => {
       { acceptLegal: true }
     );
 
+    assert.ok('user' in session);
     assert.equal(session.user.email, 'oauth-new@example.com');
     assert.equal(session.user.hasPassword, false);
 
@@ -88,6 +89,7 @@ describe('user OAuth sign-in', () => {
       emailVerified: true,
     });
 
+    assert.ok('userId' in session);
     assert.equal(session.userId, String(user._id));
 
     const updated = await UserModel.findById(user._id).lean();
@@ -113,6 +115,7 @@ describe('user OAuth sign-in', () => {
       emailVerified: true,
     });
 
+    assert.ok('user' in session);
     assert.equal(session.user.emailVerified, true);
 
     const updated = await UserModel.findOne({ email: 'stub@example.com' }).lean();
@@ -120,7 +123,44 @@ describe('user OAuth sign-in', () => {
     assert.equal(updated?.emailVerificationTokenHash, undefined);
   });
 
-  it('links Microsoft to the same account when email matches', async () => {
+  it('requires password confirmation before linking Microsoft to an existing password account', async () => {
+    const { authService } = await import('../src/services/authService.js');
+    const { UserModel } = await import('../src/models/index.js');
+    const bcrypt = await import('bcryptjs');
+
+    const user = await UserModel.create({
+      email: 'multi-pw@example.com',
+      passwordHash: await bcrypt.hash('password1234', 12),
+      emailVerified: true,
+      legalAcceptedAt: new Date(),
+      legalVersion: '1.0',
+    });
+
+    const pending = await authService.loginWithOAuthProvider({
+      provider: 'microsoft',
+      providerUserId: 'ms-sub-multi',
+      email: 'multi-pw@example.com',
+      emailVerified: true,
+    });
+
+    // Microsoft's "common" tenant email_verified claim isn't proof enough to
+    // silently merge into an existing account, unlike Google's.
+    assert.ok('linkConfirmationRequired' in pending && pending.linkConfirmationRequired);
+    let notYetLinked = await UserModel.findById(user._id).lean();
+    assert.equal(notYetLinked?.identityProviders?.length ?? 0, 0);
+
+    const confirmed = await authService.confirmOAuthProviderLink(
+      (pending as { linkToken: string }).linkToken,
+      'password1234'
+    );
+    assert.equal(confirmed.userId, String(user._id));
+
+    notYetLinked = await UserModel.findById(user._id).lean();
+    assert.equal(notYetLinked?.identityProviders?.length, 1);
+    assert.equal(notYetLinked?.identityProviders?.[0]?.provider, 'microsoft');
+  });
+
+  it('blocks Microsoft sign-in against an existing password-less (OAuth-only) account instead of merging', async () => {
     const { authService } = await import('../src/services/authService.js');
     const { UserModel } = await import('../src/models/index.js');
 
@@ -134,15 +174,22 @@ describe('user OAuth sign-in', () => {
       { acceptLegal: true }
     );
 
-    await authService.loginWithOAuthProvider({
-      provider: 'microsoft',
-      providerUserId: 'ms-sub-multi',
-      email: 'multi@example.com',
-      emailVerified: true,
-    });
+    // There's no password to confirm ownership with here, so this must be
+    // rejected outright rather than silently merged or left to hang on an
+    // unusable confirmation step.
+    await assert.rejects(
+      () =>
+        authService.loginWithOAuthProvider({
+          provider: 'microsoft',
+          providerUserId: 'ms-sub-multi',
+          email: 'multi@example.com',
+          emailVerified: true,
+        }),
+      (err: unknown) => err instanceof Error && err.message.includes('original sign-in method')
+    );
 
     const user = await UserModel.findOne({ email: 'multi@example.com' }).lean();
-    assert.equal(user?.identityProviders?.length, 2);
+    assert.equal(user?.identityProviders?.length, 1, 'only the original Google link must remain');
   });
 
   it('blocks password login for OAuth-only accounts', async () => {

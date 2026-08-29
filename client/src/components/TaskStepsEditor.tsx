@@ -52,6 +52,11 @@ function swapSteps(steps: TaskStep[], indexA: number, indexB: number): TaskStep[
   return next;
 }
 
+/** Insert newStep immediately after the step at index (used by the "Enter" handler). */
+export function insertStepAt(steps: TaskStep[], index: number, newStep: TaskStep): TaskStep[] {
+  return [...steps.slice(0, index + 1), newStep, ...steps.slice(index + 1)];
+}
+
 function stepRowKey(step: TaskStep, index: number): string {
   return step.clientKey ?? step._id ?? `step-${index}`;
 }
@@ -110,11 +115,7 @@ export function TaskStepsEditor({ steps, onChange, onStepCommit, disabled = fals
 
   const insertStepAfter = (index: number) => {
     const step = newDraftStep();
-    updateSteps((current) => [
-      ...current.slice(0, index + 1),
-      step,
-      ...current.slice(index + 1),
-    ]);
+    updateSteps((current) => insertStepAt(current, index, step));
     setFocusClientKey(step.clientKey!);
     debugSteps('insert step after Enter', { index, clientKey: step.clientKey });
   };

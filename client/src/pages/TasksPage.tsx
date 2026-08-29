@@ -336,30 +336,6 @@ export function TasksPage({
     refresh();
   }, [externalRefreshKey, refresh]);
 
-  useEffect(() => {
-    if (tasks.length === 0) {
-      setSelection(null);
-      return;
-    }
-
-    setSelection((current) => {
-      if (!current) {
-        return { kind: 'task', taskId: tasks[0]._id };
-      }
-
-      const task = tasks.find((item) => item._id === current.taskId);
-      if (!task) {
-        return { kind: 'task', taskId: tasks[0]._id };
-      }
-
-      if (current.kind === 'subtask' && !findSubtaskByPath(task.subtasks, current.path)) {
-        return { kind: 'task', taskId: task._id };
-      }
-
-      return current;
-    });
-  }, [tasks]);
-
   const refreshProjects = useCallback(() => {
     void listProjects()
       .then(({ projects: nextProjects }) => setProjects(nextProjects))
@@ -709,6 +685,9 @@ export function TasksPage({
         const first = tasks.find((task) => taskBelongsToProject(task, activeProjectId));
         return first ? { kind: 'task', taskId: first._id } : null;
       }
+      if (current.kind === 'subtask' && !findSubtaskByPath(selected.subtasks, current.path)) {
+        return { kind: 'task', taskId: selected._id };
+      }
       return current;
     });
   }, [
@@ -860,7 +839,7 @@ export function TasksPage({
         return subtask ? subtaskToFormValues(subtask) : values;
       }
     },
-    [activeProject, applyTaskUpdate, projects, resolveAndRefreshProjects]
+    [taskCanEdit, taskCanUpdateStatus, applyTaskUpdate, projects, resolveAndRefreshProjects]
   );
 
   const handleAutoSaveTaskDetail = useCallback(

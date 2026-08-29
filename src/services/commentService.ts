@@ -189,8 +189,8 @@ export class CommentService {
     return serializeComments(docs);
   }
 
-  async listCommentsForTask(userId: string, taskId: string): Promise<Comment[]> {
-    await taskService.assertTaskAccess(userId, taskId, 'viewer');
+  async listCommentsForTask(userId: string, taskId: string, stagingConversationId?: string): Promise<Comment[]> {
+    await taskService.assertTaskAccess(userId, taskId, 'viewer', stagingConversationId);
 
     const docs = await CommentModel.find({ taskId }).sort({ createdAt: 1 }).lean();
     return serializeComments(docs);
@@ -199,9 +199,10 @@ export class CommentService {
   async createComment(
     userId: string,
     taskId: string,
-    input: CreateCommentInput
+    input: CreateCommentInput,
+    stagingConversationId?: string
   ): Promise<Comment> {
-    const { task: taskDoc } = await taskService.assertTaskAccess(userId, taskId, 'executor');
+    const { task: taskDoc } = await taskService.assertTaskAccess(userId, taskId, 'executor', stagingConversationId);
     const task = taskDoc as {
       _id: unknown;
       userId: string;

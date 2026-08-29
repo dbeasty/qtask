@@ -29,7 +29,9 @@ export function signMcpOAuthAccessToken(payload: {
 
 export function verifyMcpOAuthAccessToken(token: string): McpOAuthAccessTokenPayload | null {
   try {
-    const decoded = jwt.verify(token, config.mcpOAuth.jwtSecret) as McpOAuthAccessTokenPayload;
+    const decoded = jwt.verify(token, config.mcpOAuth.jwtSecret, {
+      algorithms: ['HS256'],
+    }) as McpOAuthAccessTokenPayload;
     if (decoded.typ !== 'mcp_oauth') return null;
     if (!decoded.sub || !decoded.client_id || !decoded.aud) return null;
     return decoded;

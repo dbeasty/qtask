@@ -481,14 +481,6 @@ tasksRouter.post('/:id/subtasks/attach-task', async (req, res, next) => {
     }
     res.json(result);
   } catch (error) {
-    if (error instanceof Error && error.message.includes('Cannot attach')) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    if (error instanceof Error && error.message.includes('same project')) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
     next(error);
   }
 });
@@ -522,10 +514,6 @@ tasksRouter.post('/:id/subtasks/move', async (req, res, next) => {
     }
     res.json({ task });
   } catch (error) {
-    if (error instanceof Error && error.message.includes('Cannot move')) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
     next(error);
   }
 });

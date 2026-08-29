@@ -13,7 +13,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Matches the Dockerfile's node:24-alpine — the actual production
+          # runtime — so CI catches version-specific incompatibilities
+          # before they reach a deploy instead of only being caught locally.
+          node-version: 24
           cache: npm
 
       - name: Install API dependencies

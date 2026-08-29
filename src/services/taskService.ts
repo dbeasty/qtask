@@ -243,9 +243,10 @@ export class TaskService {
   async assertTaskAccess(
     userId: string,
     taskId: string,
-    minRole: ProjectRole = 'viewer'
+    minRole: ProjectRole = 'viewer',
+    stagingConversationId?: string
   ): Promise<{ task: NonNullable<Awaited<ReturnType<typeof TaskModel.findById>>>; role: ProjectRole }> {
-    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, minRole);
+    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, minRole, stagingConversationId);
     if (!loaded) {
       throw new HttpError(404, 'Task not found');
     }
@@ -266,19 +267,38 @@ export class TaskService {
     }
   }
 
-  private async loadAccessibleTask(userId: string, taskId: string, minRole: ProjectRole = 'viewer') {
-    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, minRole);
+  private async loadAccessibleTask(
+    userId: string,
+    taskId: string,
+    minRole: ProjectRole = 'viewer',
+    stagingConversationId?: string
+  ) {
+    const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, minRole, stagingConversationId);
     return loaded?.task ?? null;
   }
 
   private async loadAccessibleTaskWithRole(
     userId: string,
     taskId: string,
-    minRole: ProjectRole = 'viewer'
+    minRole: ProjectRole = 'viewer',
+    stagingConversationId?: string
   ) {
     const task = await TaskModel.findById(taskId);
     if (!task) return null;
-    if (task.staging) return null;
+    if (task.staging) {
+      // A staged task is hidden from every normal access path until
+      // approved — except back to the same conversation that staged it,
+      // which the agent's own tool instructions promise can reference it
+      // in later calls within the same turn (see stagedToolContent()).
+      if (
+        stagingConversationId &&
+        task.staging.conversationId === stagingConversationId &&
+        task.userId === userId
+      ) {
+        return { task, role: 'owner' as ProjectRole };
+      }
+      return null;
+    }
 
     const projectIds = this.getDocProjectIds(task).filter((id) => Types.ObjectId.isValid(id));
     if (projectIds.length > 0) {
@@ -413,8 +433,8 @@ export class TaskService {
     return serializeTask(taskDoc.toObject());
   }
 
-  async getTask(userId: string, taskId: string) {
-    const task = await this.loadAccessibleTask(userId, taskId, 'viewer');
+  async getTask(userId: string, taskId: string, stagingConversationId?: string) {
+    const task = await this.loadAccessibleTask(userId, taskId, 'viewer', stagingConversationId);
     if (!task) return null;
 
     const withPercent = applyPercentComplete(task.toObject() as Parameters<typeof applyPercentComplete>[0]);
@@ -571,10 +591,11 @@ export class TaskService {
     userId: string,
     taskId: string,
     input: UpdateTaskInput,
-    source: 'user' | 'ai' = 'user'
+    source: 'user' | 'ai' = 'user',
+    stagingConversationId?: string
   ) {
     return withTaskSaveLock(taskId, async () => {
-      const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor');
+      const loaded = await this.loadAccessibleTaskWithRole(userId, taskId, 'executor', stagingConversationId);
       if (!loaded) return null;
       const { role } = loaded;
 
@@ -985,7 +1006,7 @@ export class TaskService {
       const currentParentPath = fromPath.slice(0, -1);
 
       if (this.isDescendantOrSelfPath(fromPath, toParentPath)) {
-        throw new Error('Cannot move a subtask into itself or its descendants');
+        throw new HttpError(400, 'Cannot move a subtask into itself or its descendants');
       }
 
       const currentParentArray = this.getParentArray(task, currentParentPath);
@@ -1111,7 +1132,7 @@ export class TaskService {
     const { sourceTaskId, parentPath, index } = input;
 
     if (sourceTaskId === targetTaskId) {
-      throw new Error('Cannot attach a task to itself');
+      throw new HttpError(400, 'Cannot attach a task to itself');
     }
 
     return withTaskSaveLock(targetTaskId, async () => {
@@ -1128,7 +1149,7 @@ export class TaskService {
       ]);
       const shareAny = sourceProjectIds.some((id) => targetProjectIds.includes(id));
       if (!shareAny) {
-        throw new Error('Tasks must share at least one project');
+        throw new HttpError(400, 'Tasks must share at least one project');
       }
 
       if (this.getDocProjectIds(targetTask).length === 0) {

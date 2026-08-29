@@ -248,7 +248,8 @@ export class ProjectService {
 
   async getProjectAccess(
     userId: string,
-    projectId: string
+    projectId: string,
+    stagingConversationId?: string
   ): Promise<{ project: LeanProject; role: ProjectRole } | null> {
     // Guard against orphaned/invalid projectId values (e.g. a stray title string)
     // so callers get a clean "not found" instead of a Mongoose CastError (HTTP 500).
@@ -258,12 +259,28 @@ export class ProjectService {
       _id: projectId,
       ...this.accessibleProjectFilter(userId),
     }).lean();
-    if (!project) return null;
+    if (project) {
+      const role = resolveRole(project as LeanProject, userId);
+      if (!role) return null;
+      return { project: project as LeanProject, role };
+    }
 
-    const role = resolveRole(project as LeanProject, userId);
-    if (!role) return null;
+    // A staged project is hidden from every normal access path until
+    // approved — except back to the same conversation that staged it,
+    // which the agent's own tool instructions promise can reference it in
+    // later calls within the same turn (see stagedToolContent()).
+    if (stagingConversationId) {
+      const staged = await ProjectModel.findOne({
+        _id: projectId,
+        userId,
+        'staging.conversationId': stagingConversationId,
+      }).lean();
+      if (staged) {
+        return { project: staged as LeanProject, role: 'owner' };
+      }
+    }
 
-    return { project: project as LeanProject, role };
+    return null;
   }
 
   /**
@@ -272,9 +289,10 @@ export class ProjectService {
   async assertProjectAccess(
     userId: string,
     projectId: string,
-    minRole: ProjectRole = 'viewer'
+    minRole: ProjectRole = 'viewer',
+    stagingConversationId?: string
   ): Promise<{ project: LeanProject; role: ProjectRole }> {
-    const access = await this.getProjectAccess(userId, projectId);
+    const access = await this.getProjectAccess(userId, projectId, stagingConversationId);
     if (!access) {
       throw new HttpError(404, 'Project not found');
     }
@@ -310,7 +328,8 @@ export class ProjectService {
       progressShare?: number | null;
       hourlyRate?: number | null;
       done?: boolean;
-    }
+    },
+    stagingConversationId?: string
   ) {
     const structural =
       input.name !== undefined ||
@@ -332,11 +351,11 @@ export class ProjectService {
       input.hourlyRate === undefined;
 
     if (structural) {
-      await this.assertProjectAccess(userId, projectId, 'manager');
+      await this.assertProjectAccess(userId, projectId, 'manager', stagingConversationId);
     } else if (doneOnly) {
-      await this.assertProjectAccess(userId, projectId, 'executor');
+      await this.assertProjectAccess(userId, projectId, 'executor', stagingConversationId);
     } else {
-      await this.assertProjectAccess(userId, projectId, 'editor');
+      await this.assertProjectAccess(userId, projectId, 'editor', stagingConversationId);
     }
 
     const project = await ProjectModel.findById(projectId);
@@ -582,8 +601,8 @@ export class ProjectService {
     }
   }
 
-  async getProject(userId: string, projectId: string) {
-    const access = await this.getProjectAccess(userId, projectId);
+  async getProject(userId: string, projectId: string, stagingConversationId?: string) {
+    const access = await this.getProjectAccess(userId, projectId, stagingConversationId);
     if (!access) return null;
     return serializeProject(access.project, userId);
   }

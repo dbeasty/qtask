@@ -210,6 +210,15 @@ const taskSchema = new Schema(
 );
 
 taskSchema.index({ title: 'text', description: 'text', tags: 'text', 'steps.text': 'text' });
+// Matches accessibleTaskQuery()'s common single-owner case ({userId} plus an
+// optional status filter) — without this, that lookup only had single-field
+// userId and status indexes to intersect instead of one compound index.
+taskSchema.index({ userId: 1, status: 1 });
+// Matches project-scoped task listings, which filter by projectIds and sort
+// by sortOrder (e.g. the "insert before the current minimum" lookup in
+// createTask/promoteSubtaskToTask) — without this, that sort needed an
+// in-memory sort stage instead of walking the index in order.
+taskSchema.index({ projectIds: 1, sortOrder: 1 });
 
 export const TaskModel = model('Task', taskSchema);
 
@@ -438,7 +447,9 @@ const inviteSchema = new Schema(
       default: 'pending',
       index: true,
     },
-    token: { type: String, required: true, unique: true, index: true },
+    // unique: true already builds an index on this field; a second
+    // index: true here declared a redundant duplicate index on the same key.
+    token: { type: String, required: true, unique: true },
     expiresAt: { type: Date, required: true, index: true },
     respondedAt: { type: Date },
   },
@@ -628,10 +639,14 @@ const mcpOAuthAuthorizationCodeSchema = new Schema(
     codeChallengeMethod: { type: String, required: true, default: 'S256' },
     redirectUri: { type: String, required: true },
     resource: { type: String, required: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// Authorization codes are single-use and short-lived; without this, an
+// abandoned (never-exchanged) code sits in the collection forever.
+mcpOAuthAuthorizationCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const McpOAuthAuthorizationCodeModel = model(
   'McpOAuthAuthorizationCode',
@@ -646,10 +661,13 @@ const mcpOAuthRefreshTokenSchema = new Schema(
     scope: { type: String, required: true },
     resource: { type: String, required: true },
     revokedAt: { type: Date },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// Revoked or expired refresh tokens would otherwise accumulate forever.
+mcpOAuthRefreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const McpOAuthRefreshTokenModel = model('McpOAuthRefreshToken', mcpOAuthRefreshTokenSchema);
 
@@ -664,10 +682,14 @@ const mcpOAuthPendingConsentSchema = new Schema(
     codeChallenge: { type: String, required: true },
     codeChallengeMethod: { type: String, required: true, default: 'S256' },
     resource: { type: String, required: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// A pending consent that's never completed (user abandons the OAuth
+// authorize screen) would otherwise sit in the collection forever.
+mcpOAuthPendingConsentSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const McpOAuthPendingConsentModel = model(
   'McpOAuthPendingConsent',
@@ -678,9 +700,13 @@ const userOAuthAuthCodeSchema = new Schema(
   {
     codeHash: { type: String, required: true, unique: true, index: true },
     userId: { type: String, required: true, index: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 );
+
+// Exchanged codes are deleted eagerly (exchange.ts), but an abandoned
+// (never-exchanged) code would otherwise sit in the collection forever.
+userOAuthAuthCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const UserOAuthAuthCodeModel = model('UserOAuthAuthCode', userOAuthAuthCodeSchema);

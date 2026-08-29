@@ -69,6 +69,11 @@ const oauthExchangeSchema = z.object({
   code: z.string().min(1, 'Code is required'),
 });
 
+const oauthConfirmLinkSchema = z.object({
+  linkToken: z.string().min(1, 'Token is required'),
+  password: z.string().min(1, 'Password is required'),
+});
+
 authRouter.get('/config', (_req, res) => {
   const mcp = getMcpPublicConfig();
   res.json({
@@ -131,6 +136,15 @@ authRouter.get('/oauth/:provider/callback', async (req, res, next) => {
 authRouter.post('/oauth/exchange', validateBody(oauthExchangeSchema), async (req, res, next) => {
   try {
     const result = await userOAuthService.exchangeAuthCode(req.body.code);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post('/oauth/confirm-link', validateBody(oauthConfirmLinkSchema), async (req, res, next) => {
+  try {
+    const result = await userOAuthService.confirmProviderLink(req.body.linkToken, req.body.password);
     res.json(result);
   } catch (error) {
     next(error);
