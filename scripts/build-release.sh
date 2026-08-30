@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT}"
 
 echo "Bumping patch version..."
@@ -36,7 +37,7 @@ cp -R deploy "${STAGING}/deploy"
 chmod +x "${STAGING}/deploy/"*.sh
 
 mkdir -p "${ROOT}/release"
-tar -czf "${ARCHIVE}" -C "${ROOT}/release" "qtask-${VERSION}"
+"${SCRIPT_DIR}/lib/create-release-tarball.sh" "${ARCHIVE}" "${ROOT}/release" "qtask-${VERSION}"
 
 CHECKSUM="$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')"
 

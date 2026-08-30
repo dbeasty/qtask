@@ -491,6 +491,10 @@ docker compose -p qtask-ollama -f /opt/qtask-ollama/deploy/docker-compose.jetson
 
 **Troubleshooting:** `container name already in use` — old stack still running; `start-ollama-jetson.sh` removes it on the next deploy, or run `docker rm -f qtask-ollama qtask-ollama-docker-proxy` then redeploy.
 
+**Boot / restart:** `qtask-ollama.service` waits for `JETSON_BIND_ADDRESS` and Docker before `docker compose up`, skips tearing down containers when Ollama is already healthy, retries on failure (`Restart=on-failure`, 30s interval), and **warms agent + embedding models** after start so the first prod request is not a multi-minute cold load. Set `QTASK_SKIP_WARMUP=1` when calling `start-ollama-jetson.sh` manually before a model pull. If the stack is down after a reboot, check VLAN timing: `ip addr show` should list the service IP before `sudo systemctl restart qtask-ollama.service`.
+
+**Agent SSE via Cloudflare:** nginx uses `proxy_read_timeout 3600s`, but Cloudflare can drop idle proxied streams after ~100s. The API sends a `Working…` SSE status every 25s during long Ollama calls so [qtask.dev](https://qtask.dev/) agent sessions stay connected through cold starts.
+
 See also [`deploy/.env.jetson.example`](../deploy/.env.jetson.example), [`deploy/deploy-jetson-ollama.sh`](../deploy/deploy-jetson-ollama.sh), and [`scripts/publish-jetson-release.sh`](../scripts/publish-jetson-release.sh).
 
 #### 4.1.2 App server (QTask API + MongoDB)
@@ -514,14 +518,20 @@ sudo visudo -cf /etc/sudoers.d/qtask-deploy
 ssh-copy-id -i ~/.ssh/id_ed25519.pub qtask@192.168.13.13
 ```
 
-**One command from dev machine** (bump version → build → scp → install → MongoDB → systemd → health checks):
+**One command from dev machine** (preferred for day-to-day deploys — auto-bumps patch version, builds fresh artifacts, uploads tarball, runs `qtask-deploy prepare` on the server):
 
 ```bash
 npm run publish:app
 # or: APP_SSH=qtask@192.168.13.13 npm run publish:app
 ```
 
-Each `publish:app` auto-bumps the patch version in root, `client`, and `admin-client` `package.json` files (e.g. `0.1.1` → `0.1.2`). Commit the bumped `package.json` and lockfiles after publishing.
+Each `publish:app` run:
+
+1. **Bumps** the patch version in root, `client`, and `admin-client` `package.json` files (e.g. `0.1.58` → `0.1.59`) via `npm version patch --no-git-tag-version`
+2. **Builds** a new release tarball (`npm ci` + `npm run build` for API, client, and admin-client) at `release/qtask-<version>-linux.tar.gz`
+3. **Deploys** by uploading the tarball and running `qtask-deploy prepare` on the app server
+
+Commit the bumped `package.json` and lockfiles after publishing. See [§4.6 Routine release workflow](#routine-release-workflow) for the full promote/test flow.
 
 **What publish updates**
 
@@ -604,7 +614,7 @@ Publish to Jetson (build + scp + deploy):
 npm run publish:jetson
 ```
 
-Publish to app server (bump patch version, build, scp, deploy):
+Publish to app server (**preferred** — bump patch version, build, scp, deploy; same as [Routine release workflow](#routine-release-workflow)):
 
 ```bash
 npm run publish:app
@@ -640,6 +650,10 @@ curl http://127.0.0.1:3003/health && curl http://127.0.0.1:3004/health
 See §5 for admin auth, reverse proxy, and firewall details.
 
 #### Updating a release install (systemd + MongoDB Docker)
+
+> **Preferred:** For servers using A/B deploy (`qtask-deploy`), use the [Routine release workflow](#routine-release-workflow) (`npm run publish:app` from your dev machine) instead of the manual steps below. It bumps the version, builds, uploads, and stages a candidate automatically.
+
+The manual steps below are for servers **without** `qtask-deploy` init, or for offline/bootstrap scenarios.
 
 Use this when the server was bootstrapped from a release tar (e.g. `/opt/qtask`) and is **not** a git checkout.
 
@@ -685,7 +699,7 @@ cd /opt/qtask
 
 This runs `git pull`, rebuilds API, client, and admin-client, reinstalls production dependencies, and restarts the `qtask` and `qtask-admin` systemd services if they are running.
 
-**Combo workflow:** use the release tar for first install, then either repeat the release-tar update steps above, or convert to a git checkout (`git clone` into `/opt/qtask` and copy `.env`) and use `update-from-git.sh` for day-to-day updates.
+**Combo workflow:** use the release tar for first install and `qtask-deploy init`, then use the [Routine release workflow](#routine-release-workflow) (`npm run publish:app`) for day-to-day updates. The git-based `update-from-git.sh` path is a legacy alternative for servers that remain a git checkout without A/B deploy.
 
 #### Updating a Docker Compose deployment
 
@@ -766,12 +780,21 @@ Every `prepare` runs a **pre-release MongoDB backup** first (unless `--skip-back
 
 #### Routine release workflow
 
+**This is the preferred way to ship new code** to a production app server that has `qtask-deploy` initialized. It replaces manual tarball copy, in-place git pulls, and direct `systemctl restart` for normal releases.
+
 From your dev machine:
 
 ```bash
 npm run publish:app
-# builds, uploads tarball, runs qtask-deploy prepare on the server
+# or: APP_SSH=qtask@192.168.13.13 npm run publish:app
 ```
+
+This single command:
+
+1. Bumps the patch version (root + `client` + `admin-client`)
+2. Builds a fresh release tarball at the new version
+3. Uploads it to the app server
+4. Runs `qtask-deploy prepare` to stage a **candidate** stack (live stays serving users)
 
 On the server:
 
@@ -782,6 +805,8 @@ qtask-deploy promote         # cut over to new version
 ```
 
 Users keep editing on live during candidate testing. Cutover is a brief nginx upstream reload.
+
+After a successful promote, commit the version-bumped `package.json` and lockfiles from your dev machine.
 
 #### Major release workflow (read-only UI)
 

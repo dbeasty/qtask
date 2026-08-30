@@ -12,6 +12,8 @@ INSTALL_DIR="${QTASK_JETSON_INSTALL_DIR:-/opt/qtask-ollama}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/docker-compose.sh
 source "${SCRIPT_DIR}/lib/docker-compose.sh"
+# shellcheck source=lib/warm-jetson-models.sh
+source "${SCRIPT_DIR}/lib/warm-jetson-models.sh"
 
 SKIP_MODELS=false
 SKIP_SYSTEMD=false
@@ -57,15 +59,9 @@ if [[ "${INSTALL_ONLY}" == true ]]; then
 fi
 
 echo "==> Starting stack (bind ${JETSON_BIND_ADDRESS})"
-QTASK_JETSON_ENV_FILE="${ENV_FILE}" "${INSTALL_DIR}/deploy/start-ollama-jetson.sh"
+QTASK_SKIP_WARMUP=1 QTASK_JETSON_ENV_FILE="${ENV_FILE}" "${INSTALL_DIR}/deploy/start-ollama-jetson.sh"
 
-echo "==> Waiting for Ollama"
-for _ in $(seq 1 30); do
-  if curl -sf "http://${JETSON_BIND_ADDRESS}:11434/api/tags" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 2
-done
+qtask_wait_jetson_ollama_api "${JETSON_BIND_ADDRESS}"
 
 echo "==> Waiting for GPU stats sidecar"
 for _ in $(seq 1 15); do
@@ -82,26 +78,7 @@ if [[ "${SKIP_MODELS}" != true ]]; then
 fi
 
 echo "==> Warming agent + embedding models"
-warm_agent_model() {
-  curl -sf --max-time 300 \
-    -H "Content-Type: application/json" \
-    "http://${JETSON_BIND_ADDRESS}:11434/api/chat" \
-    -d "{\"model\":\"${CHAT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false,\"keep_alive\":-1}" >/dev/null
-}
-
-warm_embedding_model() {
-  curl -sf --max-time 300 \
-    -H "Content-Type: application/json" \
-    "http://${JETSON_BIND_ADDRESS}:11434/api/embeddings" \
-    -d "{\"model\":\"${EMBED_MODEL}\",\"prompt\":\"warmup\",\"keep_alive\":-1,\"options\":{\"num_gpu\":0}}" >/dev/null
-}
-
-warm_agent_model
-warm_agent_model
-warm_embedding_model
-
-echo "==> Loaded models"
-docker exec qtask-ollama ollama ps || true
+qtask_warm_jetson_models "${JETSON_BIND_ADDRESS}" "${CHAT_MODEL}" "${EMBED_MODEL}"
 
 if [[ "${SKIP_SYSTEMD}" != true ]]; then
   echo "==> Enabling systemd (qtask-ollama.service)"

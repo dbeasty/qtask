@@ -22,6 +22,8 @@ JETSON_FILES=(
 
 LIB_FILES=(
   lib/docker-compose.sh
+  lib/wait-jetson-ready.sh
+  lib/warm-jetson-models.sh
 )
 
 echo "Installing Jetson Ollama stack to ${INSTALL_DIR}..."

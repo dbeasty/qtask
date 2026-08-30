@@ -28,19 +28,62 @@ export function createRequestAbortSignal(res: import('express').Response): Abort
   return controller.signal;
 }
 
-async function streamEvents(
+/** Keep Cloudflare / reverse proxies from closing idle agent SSE streams during long Ollama loads. */
+export const AGENT_SSE_KEEPALIVE_MS = 25_000;
+
+function flushSseChunk(res: import('express').Response) {
+  (res as import('express').Response & { flush?: () => void }).flush?.();
+}
+
+function writeSseEvent(
+  res: import('express').Response,
+  event: import('../types/conversation.js').AgentStreamEvent
+) {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  flushSseChunk(res);
+}
+
+export async function streamEvents(
   res: import('express').Response,
   generator: AsyncGenerator<import('../types/conversation.js').AgentStreamEvent>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { keepaliveMs?: number }
 ) {
+  const iterator = generator[Symbol.asyncIterator]();
+  let pending = iterator.next();
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  const keepaliveMs = options?.keepaliveMs ?? AGENT_SSE_KEEPALIVE_MS;
+
+  const clearHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    }
+  };
+
+  const startHeartbeat = () => {
+    heartbeatTimer = setInterval(() => {
+      if (signal?.aborted || res.writableEnded) {
+        clearHeartbeat();
+        return;
+      }
+      writeSseEvent(res, { type: 'status', message: 'Working…' });
+    }, keepaliveMs);
+  };
+
   try {
-    for await (const event of generator) {
+    startHeartbeat();
+    while (true) {
+      const result = await pending;
+      if (result.done) break;
       if (signal?.aborted) break;
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      writeSseEvent(res, result.value);
+      pending = iterator.next();
     }
   } catch (error) {
     if (!(error instanceof AbortError)) throw error;
   } finally {
+    clearHeartbeat();
     if (!res.writableEnded) {
       res.end();
     }

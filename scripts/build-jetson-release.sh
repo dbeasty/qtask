@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT}"
 
 VERSION="$(node -p "require('./package.json').version")"
@@ -20,6 +21,8 @@ JETSON_FILES=(
 
 LIB_FILES=(
   lib/docker-compose.sh
+  lib/wait-jetson-ready.sh
+  lib/warm-jetson-models.sh
 )
 
 echo "Building Jetson Ollama release ${VERSION}..."
@@ -41,10 +44,12 @@ chmod +x \
   "${STAGING}/deploy/stop-ollama-jetson.sh" \
   "${STAGING}/deploy/deploy-jetson-ollama.sh" \
   "${STAGING}/deploy/install-jetson-ollama.sh" \
-  "${STAGING}/deploy/lib/docker-compose.sh"
+  "${STAGING}/deploy/lib/docker-compose.sh" \
+  "${STAGING}/deploy/lib/wait-jetson-ready.sh" \
+  "${STAGING}/deploy/lib/warm-jetson-models.sh"
 
 mkdir -p "${ROOT}/release"
-tar -czf "${ARCHIVE}" -C "${ROOT}/release" "qtask-ollama-${VERSION}"
+"${SCRIPT_DIR}/lib/create-release-tarball.sh" "${ARCHIVE}" "${ROOT}/release" "qtask-ollama-${VERSION}"
 
 CHECKSUM="$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')"
 

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT}"
 
 VERSION="$(node -p "require('./package.json').version")"
@@ -37,7 +38,7 @@ chmod +x "${STAGING}/deploy/migrate-to-user-systemd.sh" 2>/dev/null || true
 cp -R deploy/systemd-user "${STAGING}/deploy/systemd-user"
 
 mkdir -p "${ROOT}/release"
-tar -czf "${ARCHIVE}" -C "${ROOT}/release" "qtask-${VERSION}"
+"${SCRIPT_DIR}/lib/create-release-tarball.sh" "${ARCHIVE}" "${ROOT}/release" "qtask-${VERSION}"
 
 CHECKSUM="$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')"
 
