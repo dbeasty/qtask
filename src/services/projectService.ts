@@ -536,6 +536,8 @@ export class ProjectService {
     const previousParentId =
       project.parentId !== undefined && project.parentId !== null ? String(project.parentId) : null;
     const newParentId = input.parentId;
+    await this.assertMoveKeepsActorAccess(userId, project.userId, previousParentId, newParentId);
+
     const siblings = await ProjectModel.find({
       ...this.accessibleProjectFilter(userId),
       parentId: newParentId,
@@ -555,6 +557,8 @@ export class ProjectService {
     project.parentId = newParentId;
     project.sortOrder = insertIndex;
     await project.save();
+
+    await this.reconcileCollaboratorsAfterMove(projectId, previousParentId, newParentId);
 
     await Promise.all(
       orderedIds.map((id, sortOrder) =>
@@ -713,6 +717,16 @@ export class ProjectService {
       { parentId: projectId },
       { $set: { parentId } }
     );
+
+    // Promoting a child is a move, so its collaborators have to be
+    // reconciled like one — otherwise deleting a shared project leaves its
+    // children behind still carrying that project's members, and someone
+    // invited to the deleted project keeps access to the orphans. This runs
+    // before the project document is removed below, because the
+    // reconciliation reads the old parent's collaborator list.
+    for (const childId of childIds) {
+      await this.reconcileCollaboratorsAfterMove(childId, projectId, parentId ? String(parentId) : null);
+    }
 
     // Unlink shared tasks; delete tasks that only belonged to this project.
     const linkedTasks = await TaskModel.find({
@@ -1122,6 +1136,112 @@ export class ProjectService {
     }
   }
 
+  /**
+   * Lifting a project out of the subtree a collaborator was invited to
+   * un-shares it (see reconcileCollaboratorsAfterMove), which would strip
+   * the mover's own access and leave them unable to see the result of their
+   * own drag. Un-sharing is an owner action — `canManageMembers` is
+   * owner-only — so refuse the move rather than half-apply it. Moves that
+   * stay inside the shared subtree are unaffected.
+   */
+  private async assertMoveKeepsActorAccess(
+    userId: string,
+    projectOwnerId: string,
+    previousParentId: string | null,
+    newParentId: string | null
+  ): Promise<void> {
+    if (projectOwnerId === userId) return;
+    if (previousParentId === newParentId) return;
+
+    const isCollaboratorOn = async (parentId: string | null) => {
+      if (!parentId) return false;
+      const parent = await ProjectModel.findById(parentId).select('collaborators').lean();
+      return (parent?.collaborators ?? []).some((c) => c.userId === userId);
+    };
+
+    const [onPrevious, onNext] = await Promise.all([
+      isCollaboratorOn(previousParentId),
+      isCollaboratorOn(newParentId),
+    ]);
+
+    if (onPrevious && !onNext) {
+      throw new HttpError(403, 'Only the project owner can move a project out of a shared project');
+    }
+  }
+
+  /**
+   * Collaborators are not derived from the tree at read time — they are
+   * copied onto every project document, at invite time
+   * (grantCollaboratorAccess) or at creation (createProject inherits the
+   * parent's list). Nothing re-derives them afterwards, so a move has to
+   * reconcile the moved subtree itself: pick up the new parent's members,
+   * and drop the ones that were only present because of the old parent.
+   * Without this, dragging a project under a shared parent shares nothing
+   * (the collaborator sees an empty project the owner believes is full),
+   * and dragging one out of a shared parent revokes nothing.
+   *
+   * A member added directly to the moved project survives, unless the old
+   * parent also carried them — the two cases are indistinguishable once
+   * written, so the reconciliation errs toward removing access.
+   */
+  private async reconcileCollaboratorsAfterMove(
+    movedProjectId: string,
+    previousParentId: string | null,
+    newParentId: string | null
+  ): Promise<void> {
+    if (previousParentId === newParentId) return;
+
+    const parentCollaborators = async (parentId: string | null) => {
+      if (!parentId) return [] as Array<{ userId: string; role: CollaboratorRole }>;
+      const parent = await ProjectModel.findById(parentId).select('collaborators').lean();
+      return (parent?.collaborators ?? []).map((c) => ({ userId: c.userId, role: c.role }));
+    };
+
+    const [previous, next] = await Promise.all([
+      parentCollaborators(previousParentId),
+      parentCollaborators(newParentId),
+    ]);
+
+    const nextRoleByUser = new Map(next.map((c) => [c.userId, c.role]));
+    const droppedWithOldParent = new Set(
+      previous.filter((c) => !nextRoleByUser.has(c.userId)).map((c) => c.userId)
+    );
+    if (nextRoleByUser.size === 0 && droppedWithOldParent.size === 0) return;
+
+    const projectIds = [movedProjectId, ...(await this.getDescendantProjectIds(movedProjectId))];
+
+    for (const pid of projectIds) {
+      const project = await ProjectModel.findById(pid);
+      if (!project) continue;
+
+      const existing = (project.collaborators ?? []).map((c) => ({
+        userId: c.userId,
+        role: c.role,
+      }));
+
+      const collaborators = existing
+        .filter((c) => !droppedWithOldParent.has(c.userId))
+        .map((c) => ({ userId: c.userId, role: nextRoleByUser.get(c.userId) ?? c.role }));
+
+      for (const [userId, role] of nextRoleByUser) {
+        if (project.userId === userId) continue;
+        if (!collaborators.some((c) => c.userId === userId)) {
+          collaborators.push({ userId, role });
+        }
+      }
+
+      const key = (list: Array<{ userId: string; role: CollaboratorRole }>) =>
+        list
+          .map((c) => `${c.userId}:${c.role}`)
+          .sort()
+          .join(',');
+      if (key(existing) === key(collaborators)) continue;
+
+      project.set('collaborators', collaborators);
+      await project.save();
+    }
+  }
+
   private async removeCollaboratorFromTree(
     rootProjectId: string,
     collaboratorUserId: string
@@ -1240,9 +1360,16 @@ export class ProjectService {
       throw new HttpError(404, 'Collaborator not found');
     }
 
-    collab.role = role;
-    await project.save();
-    return serializeProject(project.toObject() as LeanProject, userId);
+    // Granting and removing both walk the subtree, so a role change has to
+    // as well — otherwise a collaborator demoted on the root keeps their
+    // old role on every sub-project.
+    await this.grantCollaboratorAccess(projectId, collaboratorUserId, role);
+
+    const refreshed = await ProjectModel.findById(projectId);
+    if (!refreshed) {
+      throw new HttpError(404, 'Project not found');
+    }
+    return serializeProject(refreshed.toObject() as LeanProject, userId);
   }
 
   async removeCollaborator(userId: string, projectId: string, collaboratorUserId: string) {

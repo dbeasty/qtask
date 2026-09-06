@@ -77,6 +77,40 @@ async function inviteCollaborator(
   return inviteRes.body.invite;
 }
 
+async function createProject(token: string, name: string, parentId?: string) {
+  const res = await request(app)
+    .post('/api/projects')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ name, ...(parentId ? { parentId } : {}) })
+    .expect(201);
+  return res.body.project._id as string;
+}
+
+async function createTask(token: string, title: string, projectId: string) {
+  const res = await request(app)
+    .post('/api/tasks')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ title, projectId })
+    .expect(201);
+  return res.body.task._id as string;
+}
+
+async function listProjects(token: string) {
+  const res = await request(app)
+    .get('/api/projects')
+    .set('Authorization', `Bearer ${token}`)
+    .expect(200);
+  return res.body.projects as Array<{ _id: string; name: string }>;
+}
+
+async function listTasks(token: string) {
+  const res = await request(app)
+    .get('/api/tasks')
+    .set('Authorization', `Bearer ${token}`)
+    .expect(200);
+  return res.body.tasks as Array<{ _id: string; title: string }>;
+}
+
 describe('project collaboration', () => {
   it('keeps non-members isolated from projects and tasks', async () => {
     const alice = await registerAndVerify('collab-alice@example.com');
@@ -580,5 +614,273 @@ describe('project collaboration', () => {
     const filteredEmails = filtered.body.contacts.map((c: { email: string }) => c.email);
     assert.equal(filteredEmails.includes(bob.email), false);
     assert.ok(filteredEmails.includes(carol.email));
+  });
+
+  it('grants collaborators access to a project moved under a shared parent', async () => {
+    const alice = await registerAndVerify('move-in-alice@example.com');
+    const bob = await registerAndVerify('move-in-bob@example.com');
+
+    const sharedId = await createProject(alice.token, 'Move-in Shared Root');
+    await inviteCollaborator(alice.token, bob, sharedId, 'editor');
+
+    // Alice already had a separate project holding real work, and drags it
+    // under the shared root to share it. The share summary counts it, so the
+    // collaborator has to see it too.
+    const existingId = await createProject(alice.token, 'Move-in Pre-existing');
+    const taskId = await createTask(alice.token, 'Work item', existingId);
+
+    await request(app)
+      .post(`/api/projects/${existingId}/move`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ parentId: sharedId })
+      .expect(200);
+
+    const summary = await request(app)
+      .get(`/api/projects/${sharedId}/share-summary`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+    assert.equal(summary.body.summary.totalTaskCount, 1);
+
+    const bobProjects = await listProjects(bob.token);
+    assert.ok(
+      bobProjects.some((p) => p._id === existingId),
+      'moved project should be visible to the collaborator'
+    );
+
+    const bobTasks = await listTasks(bob.token);
+    assert.ok(
+      bobTasks.some((t) => t._id === taskId),
+      'tasks in the moved project should be visible to the collaborator'
+    );
+
+    await request(app)
+      .get(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
+  });
+
+  it('revokes collaborator access when a project moves out of a shared parent', async () => {
+    const alice = await registerAndVerify('move-out-alice@example.com');
+    const bob = await registerAndVerify('move-out-bob@example.com');
+
+    const sharedId = await createProject(alice.token, 'Move-out Shared Root');
+    const childId = await createProject(alice.token, 'Move-out Child', sharedId);
+    const taskId = await createTask(alice.token, 'Private again', childId);
+    await inviteCollaborator(alice.token, bob, sharedId, 'editor');
+
+    await request(app)
+      .post(`/api/projects/${childId}/move`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ parentId: null })
+      .expect(200);
+
+    const bobProjects = await listProjects(bob.token);
+    assert.equal(
+      bobProjects.some((p) => p._id === childId),
+      false,
+      'project moved out of the shared subtree should no longer be visible'
+    );
+
+    const bobTasks = await listTasks(bob.token);
+    assert.equal(bobTasks.some((t) => t._id === taskId), false);
+
+    await request(app)
+      .get(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(404);
+
+    // The shared root itself is untouched.
+    assert.ok(bobProjects.some((p) => p._id === sharedId));
+  });
+
+  it('keeps a collaborator added directly to the moved project', async () => {
+    const alice = await registerAndVerify('move-direct-alice@example.com');
+    const bob = await registerAndVerify('move-direct-bob@example.com');
+
+    const parentId = await createProject(alice.token, 'Move-direct Parent');
+    const childId = await createProject(alice.token, 'Move-direct Child', parentId);
+    // Bob is invited to the child alone, never to the parent.
+    await inviteCollaborator(alice.token, bob, childId, 'editor');
+
+    await request(app)
+      .post(`/api/projects/${childId}/move`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ parentId: null })
+      .expect(200);
+
+    const bobProjects = await listProjects(bob.token);
+    assert.ok(
+      bobProjects.some((p) => p._id === childId),
+      'a direct share should survive a move that does not involve a shared parent'
+    );
+  });
+
+  it('lets a manager reparent inside the shared tree but not out of it', async () => {
+    const alice = await registerAndVerify('mgr-move-alice@example.com');
+    const bob = await registerAndVerify('mgr-move-bob@example.com');
+
+    const rootId = await createProject(alice.token, 'Mgr-move Root');
+    const branchId = await createProject(alice.token, 'Mgr-move Branch', rootId);
+    const leafId = await createProject(alice.token, 'Mgr-move Leaf', rootId);
+    await inviteCollaborator(alice.token, bob, rootId, 'manager');
+
+    // Inside the shared tree: allowed, and bob keeps access.
+    await request(app)
+      .post(`/api/projects/${leafId}/move`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ parentId: branchId })
+      .expect(200);
+
+    const afterInner = await listProjects(bob.token);
+    assert.ok(afterInner.some((p) => p._id === leafId));
+
+    // Out of the shared tree: that is an un-share, so it is owner-only. The
+    // move must be refused outright rather than applied and then reported as
+    // a failure because the mover just lost sight of it.
+    await request(app)
+      .post(`/api/projects/${leafId}/move`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ parentId: null })
+      .expect(403);
+
+    const afterOuter = await listProjects(bob.token);
+    assert.ok(
+      afterOuter.some((p) => p._id === leafId),
+      'a refused move must not have changed anything'
+    );
+
+    const aliceProjects = await listProjects(alice.token);
+    const leaf = aliceProjects.find((p) => p._id === leafId) as unknown as {
+      parentId: string | null;
+    };
+    assert.equal(leaf.parentId, branchId, 'the refused move must not have reparented the project');
+
+    // The owner can do it, and that un-shares the project.
+    await request(app)
+      .post(`/api/projects/${leafId}/move`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ parentId: null })
+      .expect(200);
+
+    const finalBob = await listProjects(bob.token);
+    assert.equal(finalBob.some((p) => p._id === leafId), false);
+  });
+
+  it('revokes collaborator access to children promoted by deleting a shared project', async () => {
+    const alice = await registerAndVerify('del-revoke-alice@example.com');
+    const bob = await registerAndVerify('del-revoke-bob@example.com');
+
+    const sharedId = await createProject(alice.token, 'Del-revoke Shared');
+    const childId = await createProject(alice.token, 'Del-revoke Child', sharedId);
+    const taskId = await createTask(alice.token, 'Orphaned work', childId);
+    await inviteCollaborator(alice.token, bob, sharedId, 'editor');
+
+    // Deleting the shared project promotes the child to the top level, out
+    // of the subtree bob was invited to.
+    await request(app)
+      .delete(`/api/projects/${sharedId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+
+    const bobProjects = await listProjects(bob.token);
+    assert.equal(
+      bobProjects.some((p) => p._id === childId),
+      false,
+      'a child promoted out of a deleted shared project should not stay shared'
+    );
+
+    const bobTasks = await listTasks(bob.token);
+    assert.equal(bobTasks.some((t) => t._id === taskId), false);
+
+    await request(app)
+      .get(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(404);
+
+    // Alice still owns the promoted child and its task.
+    const aliceProjects = await listProjects(alice.token);
+    assert.ok(aliceProjects.some((p) => p._id === childId));
+    await request(app)
+      .get(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+  });
+
+  it('keeps collaborator access when the promoted child stays inside a shared tree', async () => {
+    const alice = await registerAndVerify('del-keep-alice@example.com');
+    const bob = await registerAndVerify('del-keep-bob@example.com');
+
+    const rootId = await createProject(alice.token, 'Del-keep Root');
+    const middleId = await createProject(alice.token, 'Del-keep Middle', rootId);
+    const childId = await createProject(alice.token, 'Del-keep Child', middleId);
+    const taskId = await createTask(alice.token, 'Still shared', childId);
+    await inviteCollaborator(alice.token, bob, rootId, 'editor');
+
+    // Deleting the middle project promotes the child to the shared root, so
+    // bob keeps access.
+    await request(app)
+      .delete(`/api/projects/${middleId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+
+    const bobProjects = await listProjects(bob.token);
+    assert.ok(
+      bobProjects.some((p) => p._id === childId),
+      'a child promoted within the shared tree should stay shared'
+    );
+
+    await request(app)
+      .get(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
+
+    // And still as an editor, not some downgraded role.
+    await request(app)
+      .patch(`/api/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ title: 'edited after promotion' })
+      .expect(200);
+  });
+
+  it('cascades a collaborator role change to descendant sub-projects', async () => {
+    const alice = await registerAndVerify('demote-alice@example.com');
+    const bob = await registerAndVerify('demote-bob@example.com');
+
+    const rootId = await createProject(alice.token, 'Demote Root');
+    const childId = await createProject(alice.token, 'Demote Child', rootId);
+    const childTaskId = await createTask(alice.token, 'Child task', childId);
+    await inviteCollaborator(alice.token, bob, rootId, 'editor');
+
+    await request(app)
+      .patch(`/api/projects/${rootId}/collaborators/${bob.userId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ role: 'viewer' })
+      .expect(200);
+
+    // Demoted on the root, so bob must not still be an editor on the child.
+    await request(app)
+      .patch(`/api/tasks/${childTaskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ title: 'edited by demoted collaborator' })
+      .expect(403);
+
+    // Still a viewer, though.
+    await request(app)
+      .get(`/api/tasks/${childTaskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .expect(200);
+
+    // And a promotion cascades the same way.
+    await request(app)
+      .patch(`/api/projects/${rootId}/collaborators/${bob.userId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ role: 'editor' })
+      .expect(200);
+
+    await request(app)
+      .patch(`/api/tasks/${childTaskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ title: 'edited after promotion' })
+      .expect(200);
   });
 });
