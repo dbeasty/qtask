@@ -25,7 +25,7 @@ import { startEmbeddingWorker } from './services/embeddingQueue.js';
 import { startFeedbackVisionWorker } from './services/feedbackVisionQueue.js';
 import { config, getHealthFeaturesPayload } from './config/index.js';
 import { initEmail, getEmailStatus } from './services/emailService.js';
-import { APP_VERSION } from './version.js';
+import { APP_VERSION, GIT_SHA } from './version.js';
 import { fetchAiStackVersion } from './services/aiStackVersion.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -97,6 +97,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
         res.status(503).json({
           status: 'degraded',
           version: APP_VERSION,
+          gitSha: GIT_SHA,
           checks,
           deployment: getDeploymentHealthPayload(),
         });
@@ -109,6 +110,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
       res.status(503).json({
         status: 'degraded',
         version: APP_VERSION,
+        gitSha: GIT_SHA,
         checks,
         deployment: getDeploymentHealthPayload(),
       });
@@ -122,6 +124,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
       status: 'ok',
       service: 'qtask',
       version: APP_VERSION,
+      gitSha: GIT_SHA,
       aiVersion,
       checks,
       features: getHealthFeaturesPayload(),

@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && cp src/agent/context.md src/agent/context-mcp.md dist/agent/",
+    "build": "tsc && cp src/agent/context.md src/agent/context-mcp.md dist/agent/ && bash scripts/write-git-sha.sh",
     "start": "node dist/index.js",
     "admin": "tsx src/admin/index.ts",
     "start:admin": "node dist/admin/index.js",

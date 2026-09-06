@@ -4,22 +4,26 @@ import { GITHUB_REPO_URL, SITE_URL } from '../constants/brand';
 
 interface AboutPageProps {
   apiVersion?: string | null;
+  apiGitSha?: string | null;
   aiVersion?: string | null;
   onBack?: () => void;
 }
 
 export function AboutPage({
   apiVersion: apiVersionProp,
+  apiGitSha: apiGitShaProp,
   aiVersion: aiVersionProp,
   onBack,
 }: AboutPageProps) {
   const [apiVersion, setApiVersion] = useState<string | null>(apiVersionProp ?? null);
+  const [apiGitSha, setApiGitSha] = useState<string | null>(apiGitShaProp ?? null);
   const [aiVersion, setAiVersion] = useState<string | null>(aiVersionProp ?? null);
   const [apiStatus, setApiStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (apiVersionProp !== undefined) {
       setApiVersion(apiVersionProp);
+      setApiGitSha(apiGitShaProp ?? null);
       setAiVersion(aiVersionProp ?? null);
       return;
     }
@@ -28,12 +32,13 @@ export function AboutPage({
       .then((result) => {
         setApiStatus(result.status);
         if (result.version) setApiVersion(result.version);
+        setApiGitSha(result.gitSha ?? null);
         setAiVersion(result.aiVersion ?? null);
       })
       .catch(() => {
         setApiStatus('offline');
       });
-  }, [apiVersionProp, aiVersionProp]);
+  }, [apiVersionProp, apiGitShaProp, aiVersionProp]);
 
   const aiVersionLabel =
     aiVersion ??
@@ -73,6 +78,21 @@ export function AboutPage({
               <dt>API server</dt>
               <dd>
                 {apiVersion ?? (apiStatus === 'offline' ? 'Unavailable' : 'Checking…')}
+              </dd>
+            </div>
+            <div className="about-version-row">
+              <dt>Git commit</dt>
+              <dd>
+                {apiGitSha && apiGitSha !== 'unknown' ? (
+                  <a
+                    href={`${GITHUB_REPO_URL}/commit/${apiGitSha.replace(/-dirty$/, '')}`}
+                    rel="noopener noreferrer"
+                  >
+                    {apiGitSha}
+                  </a>
+                ) : (
+                  (apiGitSha ?? (apiStatus === 'offline' ? 'Unavailable' : 'Checking…'))
+                )}
               </dd>
             </div>
             <div className="about-version-row">

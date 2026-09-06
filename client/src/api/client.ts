@@ -226,6 +226,7 @@ export async function checkHealth(): Promise<{
   status: string;
   service: string;
   version?: string;
+  gitSha?: string;
   aiVersion?: string | null;
   features?: {
     feedback: boolean;
@@ -245,6 +246,7 @@ export async function checkHealth(): Promise<{
     status: string;
     service: string;
     version?: string;
+    gitSha?: string;
     aiVersion?: string | null;
     features?: {
       feedback: boolean;
