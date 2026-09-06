@@ -170,6 +170,11 @@ interface TaskFormBaseProps {
   canEditProject?: boolean;
   onProjectRateChange?: (rate: number | null) => Promise<void>;
   onUserRateChange?: (rate: number | null) => Promise<void>;
+  /**
+   * Fired after every edit. Create mode has no server-side autosave, so the
+   * parent uses this to mirror unsaved work into a local draft.
+   */
+  onValuesChange?: (values: TaskFormValues) => void;
 }
 
 interface TaskFormSubmitProps extends TaskFormBaseProps {
@@ -214,6 +219,7 @@ export function TaskForm(props: TaskFormProps) {
     canEditProject = false,
     onProjectRateChange,
     onUserRateChange,
+    onValuesChange,
     autoSave,
   } = props;
 
@@ -310,6 +316,13 @@ export function TaskForm(props: TaskFormProps) {
     setSaveStatus('idle');
     setSaveError(null);
   }, [initialValues, clearDebounce]);
+
+  const onValuesChangeRef = useRef(onValuesChange);
+  onValuesChangeRef.current = onValuesChange;
+
+  useEffect(() => {
+    onValuesChangeRef.current?.(values);
+  }, [values]);
 
   const runAutoSave = useCallback(
     async (nextValues: TaskFormValues) => {

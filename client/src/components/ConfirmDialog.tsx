@@ -7,6 +7,8 @@ export interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   dontAskAgainLabel?: string;
+  /** Hide the "don't ask again" opt-out for prompts that must always be shown. */
+  showDontAskAgain?: boolean;
   busy?: boolean;
   onConfirm: (dontAskAgain: boolean) => void | Promise<void>;
   onCancel: () => void;
@@ -18,6 +20,7 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   dontAskAgainLabel = "Don't ask again",
+  showDontAskAgain = true,
   busy = false,
   onConfirm,
   onCancel,
@@ -39,15 +42,17 @@ export function ConfirmDialog({
           {message}
         </p>
 
-        <label className="confirm-dialog-checkbox">
-          <input
-            type="checkbox"
-            checked={dontAskAgain}
-            disabled={busy}
-            onChange={(event) => setDontAskAgain(event.target.checked)}
-          />
-          <span>{dontAskAgainLabel}</span>
-        </label>
+        {showDontAskAgain && (
+          <label className="confirm-dialog-checkbox">
+            <input
+              type="checkbox"
+              checked={dontAskAgain}
+              disabled={busy}
+              onChange={(event) => setDontAskAgain(event.target.checked)}
+            />
+            <span>{dontAskAgainLabel}</span>
+          </label>
+        )}
 
         <div className="auth-dialog-actions">
           <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>

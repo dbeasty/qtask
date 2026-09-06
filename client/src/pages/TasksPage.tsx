@@ -56,6 +56,16 @@ import {
   getMoveUpAction,
 } from '../utils/taskTree';
 import { mergeAppSessionStateDebounced } from '../utils/appSessionState';
+import {
+  applyTaskDraft,
+  clearTaskDraft,
+  flushTaskDraft,
+  hasTaskDraftContent,
+  readTaskDraft,
+  saveTaskDraft,
+  taskDraftScopesEqual,
+  type TaskDraftScope,
+} from '../utils/taskDraft';
 
 interface TasksPageProps {
   suggestedProjectName?: string;
@@ -75,12 +85,19 @@ interface TasksPageProps {
   editsDisabled?: boolean;
 }
 
-type PendingConfirm = {
-  kind: 'delete-item';
-  label: string;
-  keepChildren: boolean;
-  hasChildren: boolean;
-};
+type PendingConfirm =
+  | {
+      kind: 'delete-item';
+      label: string;
+      keepChildren: boolean;
+      hasChildren: boolean;
+    }
+  | {
+      kind: 'discard-draft';
+      /** 'task' or 'subtask' — what the abandoned create form was building. */
+      label: string;
+      proceed: () => void;
+    };
 
 interface DetailItem {
   title: string;
@@ -295,6 +312,60 @@ export function TasksPage({
   const [confirmBusy, setConfirmBusy] = useState(false);
   const lastExternalRefreshKey = useRef(externalRefreshKey);
 
+  // A task/subtask being created only exists in the form until submit, so it is
+  // mirrored into a local draft while it is edited and restored when the form
+  // is reopened. draftScopeRef is non-null exactly while a create form is open.
+  const draftScopeRef = useRef<TaskDraftScope | null>(null);
+  const draftValuesRef = useRef<TaskFormValues | null>(null);
+  const draftRestoreAppliedRef = useRef(false);
+
+  const handleDraftValuesChange = useCallback((values: TaskFormValues) => {
+    const scope = draftScopeRef.current;
+    if (!scope) return;
+    draftValuesRef.current = values;
+    saveTaskDraft(scope, values);
+  }, []);
+
+  const discardDraft = useCallback(() => {
+    draftScopeRef.current = null;
+    draftValuesRef.current = null;
+    clearTaskDraft();
+  }, []);
+
+  /**
+   * Runs `proceed` unless the open create form holds unsaved work, in which
+   * case the user is asked whether to discard it first.
+   */
+  const confirmLeaveDraft = useCallback(
+    (proceed: () => void) => {
+      const scope = draftScopeRef.current;
+      const values = draftValuesRef.current;
+      if (!scope || !values || !hasTaskDraftContent(values)) {
+        discardDraft();
+        proceed();
+        return;
+      }
+      setPendingConfirm({
+        kind: 'discard-draft',
+        label: scope.kind === 'subtask' ? 'subtask' : 'task',
+        proceed,
+      });
+    },
+    [discardDraft]
+  );
+
+  // Commit a debounced draft write before the tab goes away or the page unmounts.
+  useEffect(() => {
+    const flush = () => flushTaskDraft();
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', flush);
+      flushTaskDraft();
+    };
+  }, []);
+
   useEffect(() => {
     mergeAppSessionStateDebounced({
       tasks: { selection, taskListExpanded },
@@ -311,6 +382,60 @@ export function TasksPage({
       setTaskListExpanded(true);
     }
   }, [creatingTaskForProjectId, addingSubtask]);
+
+  // Seeded once when a create form opens (from a stored draft when there is
+  // one) rather than derived per render, so TaskForm does not resync the
+  // fields out from under the user while they type.
+  const [newTaskFormValues, setNewTaskFormValues] = useState<TaskFormValues>(() =>
+    emptyFormValues()
+  );
+  const [newSubtaskFormValues, setNewSubtaskFormValues] = useState<TaskFormValues>(() =>
+    emptyFormValues()
+  );
+
+  const seedFromDraft = useCallback((scope: TaskDraftScope, base: TaskFormValues): TaskFormValues => {
+    const draft = readTaskDraft();
+    return draft && taskDraftScopesEqual(draft.scope, scope) ? applyTaskDraft(base, draft) : base;
+  }, []);
+
+  const openTaskCreateForm = useCallback(
+    (projectId: string) => {
+      const scope: TaskDraftScope = { kind: 'task', projectId };
+      const seeded = seedFromDraft(scope, emptyFormValues(projectIdToName(projectId, projects)));
+      draftScopeRef.current = scope;
+      draftValuesRef.current = seeded;
+      setNewTaskFormValues(seeded);
+      setCreatingTaskForProjectId(projectId);
+      setAddingSubtask(false);
+      setActionError(null);
+    },
+    [projects, seedFromDraft]
+  );
+
+  const openSubtaskCreateForm = useCallback(
+    (forSelection: Selection) => {
+      const scope: TaskDraftScope = {
+        kind: 'subtask',
+        taskId: forSelection.taskId,
+        path: subtaskParentPath(forSelection),
+      };
+      const seeded = seedFromDraft(scope, emptyFormValues());
+      draftScopeRef.current = scope;
+      draftValuesRef.current = seeded;
+      setNewSubtaskFormValues(seeded);
+      setAddingSubtask(true);
+      setCreatingTaskForProjectId(null);
+      setActionError(null);
+    },
+    [seedFromDraft]
+  );
+
+  const closeCreateForms = useCallback(() => {
+    discardDraft();
+    setCreatingTaskForProjectId(null);
+    setAddingSubtask(false);
+    setActionError(null);
+  }, [discardDraft]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -354,9 +479,10 @@ export function TasksPage({
   );
 
   const resetHierarchyModes = useCallback(() => {
+    discardDraft();
     setAddingSubtask(false);
     setActionError(null);
-  }, []);
+  }, [discardDraft]);
 
   const resolveAndRefreshProjects = useCallback(async (projectName: string) => {
     const projectId = await resolveProjectId(projectName, projects, createProject);
@@ -381,6 +507,7 @@ export function TasksPage({
         tags: parseTagsInput(values.tags),
       });
       setTasks((current) => [task, ...current]);
+      discardDraft();
       setSelection({ kind: 'task', taskId: task._id });
       onActiveProjectChange(forProjectId);
       setCreatingTaskForProjectId(null);
@@ -408,6 +535,7 @@ export function TasksPage({
         },
         subtaskParentPath(selection)
       );
+      discardDraft();
       applyTaskUpdate(task);
       setAddingSubtask(false);
     } catch (err) {
@@ -704,12 +832,11 @@ export function TasksPage({
     if (!pendingCreateForProjectId || loading) return;
     if (pendingCreateForProjectId !== activeProjectId) return;
 
-    setCreatingTaskForProjectId(pendingCreateForProjectId);
+    openTaskCreateForm(pendingCreateForProjectId);
     setSelection(null);
-    setAddingSubtask(false);
     setTaskListExpanded(true);
     onPendingCreateApplied?.();
-  }, [pendingCreateForProjectId, activeProjectId, loading, onPendingCreateApplied]);
+  }, [pendingCreateForProjectId, activeProjectId, loading, onPendingCreateApplied, openTaskCreateForm]);
 
   const detail = selectedTask && selection ? getDetailItem(selectedTask, selection) : null;
   const breadcrumbs = selectedTask && selection ? buildBreadcrumb(selectedTask, selection) : [];
@@ -749,6 +876,56 @@ export function TasksPage({
       onActiveProjectChange(resolvedActiveProjectId);
     }
   }, [resolvedActiveProjectId, activeProjectId, onActiveProjectChange]);
+
+  // Reopen a create form left behind by a view switch, a reload, or a closed
+  // tab. Runs once per mount; the draft is cleared on create or discard, so
+  // this only fires when there really is unsaved work.
+  useEffect(() => {
+    if (draftRestoreAppliedRef.current || loading) return;
+    if (pendingCreateForProjectId) return;
+    if (creatingTaskForProjectId || addingSubtask) {
+      draftRestoreAppliedRef.current = true;
+      return;
+    }
+
+    const draft = readTaskDraft();
+    if (!draft) {
+      draftRestoreAppliedRef.current = true;
+      return;
+    }
+
+    if (draft.scope.kind === 'task') {
+      if (!resolvedActiveProjectId) return;
+      draftRestoreAppliedRef.current = true;
+      if (draft.scope.projectId !== resolvedActiveProjectId) return;
+      openTaskCreateForm(resolvedActiveProjectId);
+      setTaskListExpanded(true);
+      return;
+    }
+
+    // A subtask draft only makes sense against the parent it was started from.
+    if (!selection) return;
+    draftRestoreAppliedRef.current = true;
+    if (
+      taskDraftScopesEqual(draft.scope, {
+        kind: 'subtask',
+        taskId: selection.taskId,
+        path: subtaskParentPath(selection),
+      })
+    ) {
+      openSubtaskCreateForm(selection);
+      setTaskListExpanded(true);
+    }
+  }, [
+    loading,
+    pendingCreateForProjectId,
+    creatingTaskForProjectId,
+    addingSubtask,
+    resolvedActiveProjectId,
+    selection,
+    openTaskCreateForm,
+    openSubtaskCreateForm,
+  ]);
 
   const editableProjects = useMemo(
     () => flattenProjectTree(buildProjectTree(projects.filter((project) => project.canEdit))),
@@ -860,13 +1037,6 @@ export function TasksPage({
     [projectGroups, resolvedActiveProjectId]
   );
 
-  const newTaskFormValues = useMemo(
-    () => emptyFormValues(activeProjectGroup?.projectName ?? ''),
-    [activeProjectGroup?.projectName]
-  );
-
-  const newSubtaskFormValues = useMemo(() => emptyFormValues(), []);
-
   const activeProjectTasks = activeProjectGroup?.tasks ?? [];
 
   const projectDialogTask = useMemo(
@@ -875,7 +1045,7 @@ export function TasksPage({
   );
 
   async function handleConfirmDialog(dontAskAgain: boolean) {
-    if (!pendingConfirm) return;
+    if (pendingConfirm?.kind !== 'delete-item') return;
     setConfirmBusy(true);
     try {
       if (dontAskAgain && !preferences.skipConfirmations) {
@@ -891,21 +1061,21 @@ export function TasksPage({
   }
 
   const handleSelect = (next: Selection) => {
-    resetHierarchyModes();
-    setCreatingTaskForProjectId(null);
-    setSelection(next);
+    confirmLeaveDraft(() => {
+      closeCreateForms();
+      setSelection(next);
+    });
   };
 
   const handleStartAddTask = (projectId: string) => {
-    setCreatingTaskForProjectId((current) => {
-      const next = current === projectId ? null : projectId;
-      if (next) {
-        setSelection(null);
-      }
-      return next;
+    if (creatingTaskForProjectId === projectId) {
+      confirmLeaveDraft(closeCreateForms);
+      return;
+    }
+    confirmLeaveDraft(() => {
+      openTaskCreateForm(projectId);
+      setSelection(null);
     });
-    setAddingSubtask(false);
-    setActionError(null);
   };
 
   const hasSelection = Boolean(selection && selectedTask);
@@ -916,8 +1086,7 @@ export function TasksPage({
 
   const handleAddTaskClick = () => {
     if (isAddingTask) {
-      setCreatingTaskForProjectId(null);
-      setActionError(null);
+      confirmLeaveDraft(closeCreateForms);
       return;
     }
     if (resolvedActiveProjectId) {
@@ -926,10 +1095,12 @@ export function TasksPage({
   };
 
   const handleAddSubtaskClick = () => {
-    if (!hasSelection) return;
-    setAddingSubtask((current) => !current);
-    setCreatingTaskForProjectId(null);
-    setActionError(null);
+    if (!hasSelection || !selection) return;
+    if (addingSubtask) {
+      confirmLeaveDraft(closeCreateForms);
+      return;
+    }
+    confirmLeaveDraft(() => openSubtaskCreateForm(selection));
   };
 
   return (
@@ -964,7 +1135,12 @@ export function TasksPage({
             taskListExpanded={taskListExpanded}
             onTaskListExpandedChange={setTaskListExpanded}
             onOpenProjects={() => onNeedProject?.()}
-            onSelectProject={onActiveProjectChange}
+            onSelectProject={(projectId) =>
+              confirmLeaveDraft(() => {
+                closeCreateForms();
+                onActiveProjectChange(projectId);
+              })
+            }
             listActions={
               <>
                 <button
@@ -1022,8 +1198,9 @@ export function TasksPage({
                   projects={projects}
                   submitLabel="Create task"
                   saving={saving}
+                  onValuesChange={handleDraftValuesChange}
                   onSubmit={(values) => handleCreateTask(values, creatingTaskForProjectId)}
-                  onCancel={() => setCreatingTaskForProjectId(null)}
+                  onCancel={() => confirmLeaveDraft(closeCreateForms)}
                 />
               </article>
             ) : addingSubtask && selection ? (
@@ -1035,8 +1212,9 @@ export function TasksPage({
                   initialValues={newSubtaskFormValues}
                   submitLabel={addSubtaskLabel}
                   saving={saving}
+                  onValuesChange={handleDraftValuesChange}
                   onSubmit={handleAddSubtask}
-                  onCancel={() => setAddingSubtask(false)}
+                  onCancel={() => confirmLeaveDraft(closeCreateForms)}
                 />
               </article>
             ) : selectedTask && detail && selection ? (
@@ -1190,7 +1368,24 @@ export function TasksPage({
         />
       )}
 
-      {pendingConfirm && (
+      {pendingConfirm?.kind === 'discard-draft' && (
+        <ConfirmDialog
+          title="Unsaved draft"
+          message={`This ${pendingConfirm.label} has not been created yet. Discard what you have written, or keep editing and create it.`}
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          showDontAskAgain={false}
+          onCancel={() => setPendingConfirm(null)}
+          onConfirm={() => {
+            const { proceed } = pendingConfirm;
+            setPendingConfirm(null);
+            discardDraft();
+            proceed();
+          }}
+        />
+      )}
+
+      {pendingConfirm?.kind === 'delete-item' && (
         <ConfirmDialog
           title="Delete"
           message={
