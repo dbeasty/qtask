@@ -569,5 +569,6 @@ describe('health', () => {
     assert.equal(res.body.checks.mongodb, 'ok');
     assert.equal(res.body.checks.email, 'configured');
     assert.ok(res.body.version);
+    assert.ok(res.body.gitSha);
   });
 });

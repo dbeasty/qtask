@@ -97,6 +97,7 @@ export function App() {
   const [feedbackEnabled, setFeedbackEnabled] = useState(true);
   const [feedbackImagesEnabled, setFeedbackImagesEnabled] = useState(true);
   const [apiVersion, setApiVersion] = useState<string | null>(null);
+  const [apiGitSha, setApiGitSha] = useState<string | null>(null);
   const [aiVersion, setAiVersion] = useState<string | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
   const [projectsVersion, setProjectsVersion] = useState(0);
@@ -219,6 +220,7 @@ export function App() {
       .then((result) => {
         setHealthy(true);
         if (result.version) setApiVersion(result.version);
+        setApiGitSha(result.gitSha ?? null);
         setAiVersion(result.aiVersion ?? null);
         setDeploymentReadOnly(result.deployment?.readOnly === true);
         setDeploymentMessage(result.deployment?.readOnly ? result.deployment.message : null);
@@ -703,7 +705,12 @@ export function App() {
             feedbackEnabled={feedbackEnabled}
           />
         ) : view === 'about' ? (
-          <AboutPage apiVersion={apiVersion} aiVersion={aiVersion} onBack={() => setAppView('projects')} />
+          <AboutPage
+            apiVersion={apiVersion}
+            apiGitSha={apiGitSha}
+            aiVersion={aiVersion}
+            onBack={() => setAppView('projects')}
+          />
         ) : view === 'tasks' ? (
           <TasksPage
             editsDisabled={deploymentReadOnly}
