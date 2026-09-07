@@ -50,6 +50,42 @@ export function shadowWritesEnabled(env: NodeJS.ProcessEnv = process.env): boole
   return env.DATA_SHADOW_WRITES === 'true';
 }
 
+/**
+ * Whether reads are also asked of the shadow and compared.
+ *
+ * Requires shadow writes: without them the shadow holds no data, so every single
+ * read would "diverge" and the signal would be worthless. Rather than silently
+ * enabling writes or silently ignoring the flag, this is a startup error — an
+ * operator who asked for read comparison and got neither deserves to be told.
+ */
+export function shadowReadsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const wantsReads = env.DATA_SHADOW_READS === 'true';
+  if (wantsReads && !shadowWritesEnabled(env)) {
+    throw new Error(
+      'DATA_SHADOW_READS requires DATA_SHADOW_WRITES — without mirrored writes the ' +
+        'shadow holds no data and every read would diverge'
+    );
+  }
+  return wantsReads;
+}
+
+/**
+ * Fraction of reads to compare, 0..1. Comparing every read doubles read work, and
+ * on a backend that scans rather than indexes that is the dominant cost — so a bake
+ * under real traffic will usually want this well below 1. Defaults to comparing
+ * everything, because a bake that silently sampled 1% would look far cleaner than
+ * the evidence supports.
+ */
+export function shadowReadSampleRate(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.DATA_SHADOW_READ_SAMPLE;
+  if (raw === undefined || raw === '') return 1;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`DATA_SHADOW_READ_SAMPLE must be a number between 0 and 1, got "${raw}"`);
+  }
+  return parsed;
+}
+
 export async function connectData(): Promise<DataStore> {
   if (store) return store;
   const backend = resolveDataBackend();
@@ -62,12 +98,21 @@ export async function connectData(): Promise<DataStore> {
   }
 
   const shadowBackend: DataBackend = backend === 'mongo' ? 'kdb' : 'mongo';
+  const compareReads = shadowReadsEnabled();
   const { ShadowDataStore, ShadowUnavailableError } = await import('./shadow/store.js');
-  const shadowed = new ShadowDataStore(primary, await createStore(shadowBackend));
+  const shadowed = new ShadowDataStore(primary, await createStore(shadowBackend), {
+    compareReads,
+    readSampleRate: shadowReadSampleRate(),
+  });
 
   try {
     await shadowed.connect();
-    log.info('shadow writes enabled', { primary: backend, shadow: shadowBackend });
+    log.info('shadow writes enabled', {
+      primary: backend,
+      shadow: shadowBackend,
+      compareReads,
+      readSampleRate: compareReads ? shadowReadSampleRate() : undefined,
+    });
     store = shadowed;
   } catch (error) {
     if (!(error instanceof ShadowUnavailableError)) throw error;
@@ -111,15 +156,19 @@ export function getDataHealth(): Record<string, unknown> {
   const shadowed = store as Partial<{
     shadowBackend: 'mongo' | 'kdb';
     stats: () => Record<string, unknown>;
+    readStats: () => Record<string, unknown> | undefined;
   }>;
   if (typeof shadowed.stats !== 'function') {
     return { backend: store.backend, shadowWrites: false };
   }
+  const readStats = shadowed.readStats?.();
   return {
     backend: store.backend,
     shadowWrites: true,
     shadowBackend: shadowed.shadowBackend,
     shadow: shadowed.stats(),
+    shadowReads: readStats !== undefined,
+    ...(readStats ? { reads: readStats } : {}),
   };
 }
 
