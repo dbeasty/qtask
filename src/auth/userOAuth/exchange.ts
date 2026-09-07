@@ -1,4 +1,4 @@
-import { UserOAuthAuthCodeModel } from '../../models/index.js';
+import { collection } from '../../data/index.js';
 import { createOneTimeToken, hashToken } from '../oneTimeToken.js';
 import { HttpError } from '../../utils/httpError.js';
 
@@ -6,13 +6,13 @@ const AUTH_CODE_TTL_MS = 60 * 1000;
 
 export async function issueUserOAuthAuthCode(userId: string): Promise<string> {
   const { token, tokenHash, expiresAt } = createOneTimeToken(AUTH_CODE_TTL_MS);
-  await UserOAuthAuthCodeModel.create({ codeHash: tokenHash, userId, expiresAt });
+  await collection('userOAuthAuthCodes').create({ codeHash: tokenHash, userId, expiresAt });
   return token;
 }
 
 export async function exchangeUserOAuthAuthCode(code: string): Promise<string> {
   const codeHash = hashToken(code);
-  const doc = await UserOAuthAuthCodeModel.findOneAndDelete({
+  const doc = await collection('userOAuthAuthCodes').findOneAndDelete({
     codeHash,
     expiresAt: { $gt: new Date() },
   });
@@ -21,5 +21,5 @@ export async function exchangeUserOAuthAuthCode(code: string): Promise<string> {
     throw new HttpError(400, 'Invalid or expired sign-in code');
   }
 
-  return doc.userId;
+  return String(doc.userId);
 }

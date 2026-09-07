@@ -3,18 +3,49 @@ import { Router } from 'express';
 import { isValidObjectId } from 'mongoose';
 import { z } from 'zod';
 import { config } from '../config/index.js';
-import {
-  ActivityModel,
-  AdminAuditModel,
-  ConversationModel,
-  EmbeddingJobModel,
-  FeedbackModel,
-  LlmCallMetricModel,
-  LlmDailyMetricModel,
-  ProjectModel,
-  TaskModel,
-  UserModel,
-} from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { CollectionName } from '../data/types.js';
+import type { AdminAuditDoc, ProjectDoc, TaskDoc, UserDoc } from '../data/documents.js';
+
+function userDocs() {
+  return collection<UserDoc>('users');
+}
+
+function taskDocs() {
+  return collection<TaskDoc>('tasks');
+}
+
+function projectDocs() {
+  return collection<ProjectDoc>('projects');
+}
+
+function conversationDocs() {
+  return collection('conversations');
+}
+
+function activityDocs() {
+  return collection('activities');
+}
+
+function feedbackDocs() {
+  return collection('feedback');
+}
+
+function adminAudits() {
+  return collection<AdminAuditDoc>('adminAudits');
+}
+
+function embeddingJobs() {
+  return collection('embeddingJobs');
+}
+
+function callMetrics() {
+  return collection('llmCallMetrics');
+}
+
+function dailyMetrics() {
+  return collection('llmDailyMetrics');
+}
 import { escapeRegex } from '../services/searchUtils.js';
 import { requireAdmin, requireCsrf } from './auth.js';
 import { fetchGpuStatus } from './gpuStats.js';
@@ -48,51 +79,175 @@ function dateRange(query: Record<string, unknown>): { $gte: Date; $lte: Date } {
   };
 }
 
+/**
+ * Approximate stored size of one document.
+ *
+ * This replaces Mongo's `$bsonSize`, which has no equivalent on another backend and
+ * no meaning on one that does not store BSON. JSON byte length is within a few
+ * percent of BSON for this data and moves the same way, which is all these numbers
+ * are used for — an operator judging whether one account is unusually large.
+ */
+function approximateBytes(doc: unknown): number {
+  return Buffer.byteLength(JSON.stringify(doc) ?? '', 'utf8');
+}
+
 async function groupedUsage(
-  model: { aggregate: (pipeline: any[]) => any },
+  name: CollectionName,
   userIds: string[]
 ): Promise<Map<string, { count: number; bytes: number }>> {
   if (userIds.length === 0) return new Map();
-  const rows = (await model.aggregate([
-    { $match: { userId: { $in: userIds } } },
-    {
-      $group: {
-        _id: '$userId',
-        count: { $sum: 1 },
-        bytes: { $sum: { $bsonSize: '$$ROOT' } },
-      },
-    },
-  ])) as Array<{ _id: string; count: number; bytes: number }>;
-  return new Map(rows.map((row) => [String(row._id), { count: row.count, bytes: row.bytes }]));
+  const docs = await collection(name).find({ userId: { $in: userIds } });
+  const out = new Map<string, { count: number; bytes: number }>();
+  for (const doc of docs) {
+    const key = String(doc.userId);
+    const entry = out.get(key) ?? { count: 0, bytes: 0 };
+    entry.count++;
+    entry.bytes += approximateBytes(doc);
+    out.set(key, entry);
+  }
+  return out;
 }
 
-async function modelBytes(model: { aggregate: (pipeline: any[]) => any }): Promise<number> {
-  const result = (await model.aggregate([
-    { $group: { _id: null, bytes: { $sum: { $bsonSize: '$$ROOT' } } } },
-  ])) as Array<{ bytes: number }>;
-  return result[0]?.bytes ?? 0;
+async function collectionBytes(name: CollectionName): Promise<number> {
+  const docs = await collection(name).find();
+  return docs.reduce((sum, doc) => sum + approximateBytes(doc), 0);
+}
+
+
+/**
+ * The admin analytics that used to be MongoDB aggregation pipelines.
+ *
+ * `$group`, `$percentile` and `$dateTrunc` have no equivalent in the data layer, and
+ * adding a pipeline dialect that two backends must implement identically is a far
+ * larger commitment than these three reports justify. They read a bounded, already
+ * time-filtered slice and reduce it here instead.
+ */
+async function countByStatus(): Promise<Array<[string, number]>> {
+  const jobs = await embeddingJobs().find({ status: { $in: ['pending', 'processing', 'failed'] } });
+  const counts = new Map<string, number>();
+  for (const job of jobs) {
+    const status = String(job.status);
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  return [...counts];
+}
+
+/** Exact percentile by nearest rank — Mongo's was approximate, so this is no worse. */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
+  return sorted[index]!;
+}
+
+async function summarizeCalls(range: Record<string, unknown>) {
+  const calls = await callMetrics().find({ startedAt: range });
+  const groups = new Map<string, Record<string, unknown> & { durations: number[] }>();
+
+  for (const call of calls) {
+    const key = `${String(call.callType)}\u0000${String(call.model)}`;
+    const group = groups.get(key) ?? {
+      _id: { callType: call.callType, model: call.model },
+      calls: 0,
+      successes: 0,
+      failures: 0,
+      degradedFallbacks: 0,
+      promptTokens: 0,
+      evalTokens: 0,
+      durations: [] as number[],
+    };
+    group.calls = (group.calls as number) + 1;
+    if (call.success) group.successes = (group.successes as number) + 1;
+    else group.failures = (group.failures as number) + 1;
+    if (call.degradedFallback) group.degradedFallbacks = (group.degradedFallbacks as number) + 1;
+    group.promptTokens = (group.promptTokens as number) + Number(call.promptEvalCount ?? 0);
+    group.evalTokens = (group.evalTokens as number) + Number(call.evalCount ?? 0);
+    group.durations.push(Number(call.durationMs ?? 0));
+    groups.set(key, group);
+  }
+
+  return [...groups.values()]
+    .map((entry) => {
+      const { durations, ...group } = entry;
+      const sorted = [...durations].sort((a, b) => a - b);
+      const total = sorted.reduce((sum, value) => sum + value, 0);
+      return {
+        ...group,
+        _id: group._id as { callType: string; model: string },
+        averageDurationMs: sorted.length > 0 ? total / sorted.length : 0,
+        percentiles: [percentile(sorted, 0.5), percentile(sorted, 0.95), percentile(sorted, 0.99)],
+      };
+    })
+    .sort(
+      (a, b) =>
+        a._id.callType.localeCompare(b._id.callType) || a._id.model.localeCompare(b._id.model)
+    );
+}
+
+/** Truncates an instant to the start of its minute, hour or day — `$dateTrunc`. */
+function truncateTo(date: Date, unit: string): Date {
+  const out = new Date(date.getTime());
+  out.setUTCMilliseconds(0);
+  out.setUTCSeconds(0);
+  if (unit === 'minute') return out;
+  out.setUTCMinutes(0);
+  if (unit === 'hour') return out;
+  out.setUTCHours(0);
+  return out;
+}
+
+async function bucketCalls(range: Record<string, unknown>, unit: string) {
+  const calls = await callMetrics().find({ startedAt: range });
+  const buckets = new Map<number, { _id: Date; calls: number; failures: number; durations: number[]; promptTokens: number; evalTokens: number }>();
+
+  for (const call of calls) {
+    const startedAt = new Date(call.startedAt as string | Date);
+    const bucketStart = truncateTo(startedAt, unit);
+    const key = bucketStart.getTime();
+    const bucket = buckets.get(key) ?? {
+      _id: bucketStart,
+      calls: 0,
+      failures: 0,
+      durations: [],
+      promptTokens: 0,
+      evalTokens: 0,
+    };
+    bucket.calls++;
+    if (!call.success) bucket.failures++;
+    bucket.durations.push(Number(call.durationMs ?? 0));
+    bucket.promptTokens += Number(call.promptEvalCount ?? 0);
+    bucket.evalTokens += Number(call.evalCount ?? 0);
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a._id.getTime() - b._id.getTime())
+    .map(({ durations, ...bucket }) => ({
+      ...bucket,
+      durationMs:
+        durations.length > 0 ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0,
+    }));
 }
 
 router.get('/stats', async (_req, res, next) => {
   try {
     const [users, tasks, projects, conversations, activities, feedback, bytes] = await Promise.all([
-      UserModel.countDocuments(),
-      TaskModel.countDocuments(),
-      ProjectModel.countDocuments(),
-      ConversationModel.countDocuments(),
-      ActivityModel.countDocuments(),
-      FeedbackModel.countDocuments(),
+      userDocs().countDocuments(),
+      taskDocs().countDocuments(),
+      projectDocs().countDocuments(),
+      conversationDocs().countDocuments(),
+      activityDocs().countDocuments(),
+      feedbackDocs().countDocuments(),
       Promise.all([
-        modelBytes(UserModel),
-        modelBytes(TaskModel),
-        modelBytes(ProjectModel),
-        modelBytes(ConversationModel),
-        modelBytes(ActivityModel),
-        modelBytes(EmbeddingJobModel),
-        modelBytes(LlmCallMetricModel),
-        modelBytes(LlmDailyMetricModel),
-        modelBytes(AdminAuditModel),
-        modelBytes(FeedbackModel),
+        collectionBytes('users'),
+        collectionBytes('tasks'),
+        collectionBytes('projects'),
+        collectionBytes('conversations'),
+        collectionBytes('activities'),
+        collectionBytes('embeddingJobs'),
+        collectionBytes('llmCallMetrics'),
+        collectionBytes('llmDailyMetrics'),
+        collectionBytes('adminAudits'),
+        collectionBytes('feedback'),
       ]),
     ]);
     res.json({
@@ -119,21 +274,21 @@ router.get('/users', async (req, res, next) => {
       ? { $or: [{ email: { $regex: searchPattern, $options: 'i' } }, { displayName: { $regex: searchPattern, $options: 'i' } }] }
       : {};
     const [total, users] = await Promise.all([
-      UserModel.countDocuments(match),
-      UserModel.find(match)
-        // _id breaks ties so skip/limit paging cannot drop or repeat rows
-        // when several users share a createdAt millisecond.
-        .sort({ createdAt: -1, _id: 1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
+      userDocs().countDocuments(match),
+      // _id breaks ties so skip/limit paging cannot drop or repeat rows when several
+      // users share a createdAt millisecond.
+      userDocs().find(match, {
+        sort: { createdAt: -1, _id: 1 },
+        skip: (page - 1) * limit,
+        limit,
+      }),
     ]);
     const userIds = users.map((user) => String(user._id));
     const [tasks, projects, conversations, activities] = await Promise.all([
-      groupedUsage(TaskModel, userIds),
-      groupedUsage(ProjectModel, userIds),
-      groupedUsage(ConversationModel, userIds),
-      groupedUsage(ActivityModel, userIds),
+      groupedUsage('tasks', userIds),
+      groupedUsage('projects', userIds),
+      groupedUsage('conversations', userIds),
+      groupedUsage('activities', userIds),
     ]);
     res.json({
       page,
@@ -168,21 +323,21 @@ router.get('/users', async (req, res, next) => {
 
 router.get('/users/:id', async (req, res, next) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
+    if (!isValidObjectId(String(req.params.id))) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    const user = await UserModel.findById(req.params.id).lean();
+    const user = await userDocs().findById(String(req.params.id));
     if (!user) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
     const id = String(user._id);
     const [tasks, projects, conversations, activities] = await Promise.all([
-      groupedUsage(TaskModel, [id]),
-      groupedUsage(ProjectModel, [id]),
-      groupedUsage(ConversationModel, [id]),
-      groupedUsage(ActivityModel, [id]),
+      groupedUsage('tasks', [id]),
+      groupedUsage('projects', [id]),
+      groupedUsage('conversations', [id]),
+      groupedUsage('activities', [id]),
     ]);
     const task = tasks.get(id) ?? { count: 0, bytes: 0 };
     const project = projects.get(id) ?? { count: 0, bytes: 0 };
@@ -219,11 +374,11 @@ router.post('/users/:id/reset-password', requireCsrf, async (req, res, next) => 
       res.status(400).json({ error: 'Temporary password must be 10-200 characters' });
       return;
     }
-    if (!isValidObjectId(req.params.id)) {
+    if (!isValidObjectId(String(req.params.id))) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    const user = await UserModel.findById(req.params.id);
+    const user = await userDocs().findById(String(req.params.id));
     if (!user) {
       res.status(404).json({ error: 'User not found' });
       return;
@@ -232,8 +387,8 @@ router.post('/users/:id/reset-password', requireCsrf, async (req, res, next) => 
     user.mustChangePassword = true;
     user.passwordResetTokenHash = undefined;
     user.passwordResetExpires = undefined;
-    await user.save();
-    await AdminAuditModel.create({
+    await userDocs().replaceOne({ _id: user._id }, user);
+    await adminAudits().create({
       adminIdentity: req.admin!.identity,
       action: 'reset_password',
       targetUserId: String(user._id),
@@ -247,11 +402,11 @@ router.post('/users/:id/reset-password', requireCsrf, async (req, res, next) => 
 
 router.delete('/users/:id', requireCsrf, async (req, res, next) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
+    if (!isValidObjectId(String(req.params.id))) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    const user = await UserModel.findById(req.params.id).lean();
+    const user = await userDocs().findById(String(req.params.id));
     if (!user) {
       res.status(404).json({ error: 'User not found' });
       return;
@@ -261,7 +416,7 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
       return;
     }
     const userId = String(user._id);
-    const ownedProjectIds = (await ProjectModel.find({ userId }).distinct('_id')).map(String);
+    const ownedProjectIds = (await projectDocs().distinct('_id', { userId })).map(String);
     // Delete everything in owned projects, plus orphan tasks with no project.
     // Tasks created in someone else's shared project are kept (after unlinking owned projects).
     const orphanFilter = {
@@ -288,46 +443,44 @@ router.delete('/users/:id', requireCsrf, async (req, res, next) => {
         }
       : null;
     const taskIdsToDelete = [
-      ...(ownedMembershipFilter
-        ? await TaskModel.find(ownedMembershipFilter).distinct('_id')
-        : []),
-      ...(await TaskModel.find(orphanFilter).distinct('_id')),
+      ...(ownedMembershipFilter ? await taskDocs().distinct('_id', ownedMembershipFilter) : []),
+      ...(await taskDocs().distinct('_id', orphanFilter)),
     ].map(String);
 
-    const [tasksInOwned, orphanTasks, projects, conversations, activities, embeddingJobs, metrics, dailyMetrics, feedbackDeleted] =
+    const [tasksInOwned, orphanTasks, projectsDeleted, conversationsDeleted, activitiesDeleted, embeddingJobsDeleted, metrics, dailyDeleted, feedbackDeleted] =
       await Promise.all([
         ownedMembershipFilter
-          ? TaskModel.deleteMany(ownedMembershipFilter)
-          : Promise.resolve({ deletedCount: 0 }),
-        TaskModel.deleteMany(orphanFilter),
-        ProjectModel.deleteMany({ userId }),
-        ConversationModel.deleteMany({ userId }),
-        ActivityModel.deleteMany({ userId }),
-        EmbeddingJobModel.deleteMany({ taskId: { $in: taskIdsToDelete } }),
-        LlmCallMetricModel.deleteMany({ userId }),
-        LlmDailyMetricModel.deleteMany({ userId }),
+          ? taskDocs().deleteMany(ownedMembershipFilter)
+          : Promise.resolve({ deleted: 0 }),
+        taskDocs().deleteMany(orphanFilter),
+        projectDocs().deleteMany({ userId }),
+        conversationDocs().deleteMany({ userId }),
+        activityDocs().deleteMany({ userId }),
+        embeddingJobs().deleteMany({ taskId: { $in: taskIdsToDelete } }),
+        callMetrics().deleteMany({ userId }),
+        dailyMetrics().deleteMany({ userId }),
         deleteFeedbackForUser(userId),
       ]);
-    await ProjectModel.updateMany(
+    await projectDocs().updateMany(
       { 'collaborators.userId': userId },
       { $pull: { collaborators: { userId } } }
     );
-    await UserModel.deleteOne({ _id: user._id });
+    await userDocs().deleteOne({ _id: user._id });
     const tasks = {
-      deletedCount: (tasksInOwned.deletedCount ?? 0) + (orphanTasks.deletedCount ?? 0),
+      deleted: (tasksInOwned.deleted ?? 0) + (orphanTasks.deleted ?? 0),
     };
-    await AdminAuditModel.create({
+    await adminAudits().create({
       adminIdentity: req.admin!.identity,
       action: 'delete_user',
       targetUserId: userId,
       details: {
-        tasks: tasks.deletedCount,
-        projects: projects.deletedCount,
-        conversations: conversations.deletedCount,
-        activities: activities.deletedCount,
-        embeddingJobs: embeddingJobs.deletedCount,
-        metrics: metrics.deletedCount,
-        dailyMetrics: dailyMetrics.deletedCount,
+        tasks: tasks.deleted,
+        projects: projectsDeleted.deleted,
+        conversations: conversationsDeleted.deleted,
+        activities: activitiesDeleted.deleted,
+        embeddingJobs: embeddingJobsDeleted.deleted,
+        metrics: metrics.deleted,
+        dailyMetrics: dailyDeleted.deleted,
         feedback: feedbackDeleted,
       },
     });
@@ -389,10 +542,7 @@ router.get('/ollama/status', async (_req, res) => {
     fetchJson(`${base}/api/version`).catch((error) => ({ error: String(error) })),
     fetchJson(`${base}/api/tags`).catch((error) => ({ error: String(error) })),
     fetchJson(`${base}/api/ps`).catch((error) => ({ error: String(error) })),
-    EmbeddingJobModel.aggregate<{ _id: string; count: number }>([
-      { $match: { status: { $in: ['pending', 'processing', 'failed'] } } },
-      { $group: { _id: '$status', count: { $sum: 1 } } },
-    ]),
+    countByStatus(),
     resourceStatus(),
   ]);
   res.json({
@@ -404,7 +554,7 @@ router.get('/ollama/status', async (_req, res) => {
     version,
     tags,
     running,
-    embeddingQueue: Object.fromEntries(queue.map((row) => [row._id, row.count])),
+    embeddingQueue: Object.fromEntries(queue),
     resources,
   });
 });
@@ -421,25 +571,7 @@ router.get('/ollama/gpu', async (_req, res) => {
 router.get('/ollama/summary', async (req, res, next) => {
   try {
     const range = dateRange(req.query as Record<string, unknown>);
-    const rows = await LlmCallMetricModel.aggregate([
-      { $match: { startedAt: range } },
-      {
-        $group: {
-          _id: { callType: '$callType', model: '$model' },
-          calls: { $sum: 1 },
-          successes: { $sum: { $cond: ['$success', 1, 0] } },
-          failures: { $sum: { $cond: ['$success', 0, 1] } },
-          degradedFallbacks: { $sum: { $cond: ['$degradedFallback', 1, 0] } },
-          promptTokens: { $sum: { $ifNull: ['$promptEvalCount', 0] } },
-          evalTokens: { $sum: { $ifNull: ['$evalCount', 0] } },
-          averageDurationMs: { $avg: '$durationMs' },
-          percentiles: {
-            $percentile: { input: '$durationMs', p: [0.5, 0.95, 0.99], method: 'approximate' },
-          },
-        },
-      },
-      { $sort: { '_id.callType': 1, '_id.model': 1 } },
-    ] as any[]);
+    const rows = await summarizeCalls(range);
     res.json({ from: range.$gte, to: range.$lte, groups: rows });
   } catch (error) {
     next(error);
@@ -452,20 +584,7 @@ router.get('/ollama/timeseries', async (req, res, next) => {
     const unit = ['minute', 'hour', 'day'].includes(String(req.query.interval))
       ? String(req.query.interval)
       : 'hour';
-    const points = await LlmCallMetricModel.aggregate([
-      { $match: { startedAt: range } },
-      {
-        $group: {
-          _id: { $dateTrunc: { date: '$startedAt', unit } },
-          calls: { $sum: 1 },
-          failures: { $sum: { $cond: ['$success', 0, 1] } },
-          durationMs: { $avg: '$durationMs' },
-          promptTokens: { $sum: { $ifNull: ['$promptEvalCount', 0] } },
-          evalTokens: { $sum: { $ifNull: ['$evalCount', 0] } },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+    const points = await bucketCalls(range, unit);
     res.json({ from: range.$gte, to: range.$lte, interval: unit, points });
   } catch (error) {
     next(error);
@@ -484,17 +603,17 @@ router.get('/ollama/calls', async (req, res, next) => {
     if (req.query.success === 'true') filter.success = true;
     if (req.query.success === 'false') filter.success = false;
     const [total, calls] = await Promise.all([
-      LlmCallMetricModel.countDocuments(filter),
-      LlmCallMetricModel.find(filter)
-        // See the users listing: a unique tiebreaker keeps paging total.
-        // LLM metrics are written in bursts, so startedAt ties are common.
-        .sort({ startedAt: -1, _id: 1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
+      callMetrics().countDocuments(filter),
+      // See the users listing: a unique tiebreaker keeps paging total. LLM metrics
+      // are written in bursts, so startedAt ties are common.
+      callMetrics().find(filter, {
+        sort: { startedAt: -1, _id: 1 },
+        skip: (page - 1) * limit,
+        limit,
+      }),
     ]);
     const userIds = [...new Set(calls.map((call) => call.userId).filter(Boolean))] as string[];
-    const users = await UserModel.find({ _id: { $in: userIds } }, { email: 1 }).lean();
+    const users = await userDocs().find({ _id: { $in: userIds } }, { select: 'email' });
     const emails = new Map(users.map((user) => [String(user._id), user.email]));
     res.json({
       page,
@@ -502,7 +621,7 @@ router.get('/ollama/calls', async (req, res, next) => {
       total,
       calls: calls.map((call) => ({
         ...call,
-        userEmail: call.userId ? emails.get(call.userId) : undefined,
+        userEmail: call.userId ? emails.get(String(call.userId)) : undefined,
       })),
     });
   } catch (error) {

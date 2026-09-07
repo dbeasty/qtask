@@ -2,7 +2,12 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import dns from 'node:dns';
 import net from 'node:net';
 import { Types } from 'mongoose';
-import { McpOAuthClientModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { McpOAuthClientDoc } from '../data/documents.js';
+
+function oauthClients() {
+  return collection<McpOAuthClientDoc>('mcpOAuthClients');
+}
 import type { McpOAuthClientSource, McpOAuthClientSummary } from '../types/mcp.js';
 import { HttpError } from '../utils/httpError.js';
 import { createLogger } from '../utils/logger.js';
@@ -35,19 +40,12 @@ function hashSecret(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function toSummary(doc: {
-  _id: unknown;
-  clientId: string;
-  name: string;
-  source: McpOAuthClientSource;
-  createdAt?: Date | null;
-  revokedAt?: Date | null;
-}): McpOAuthClientSummary {
+function toSummary(doc: McpOAuthClientDoc): McpOAuthClientSummary {
   return {
     id: String(doc._id),
     clientId: doc.clientId,
     name: doc.name,
-    source: doc.source,
+    source: doc.source as McpOAuthClientSource,
     createdAt: doc.createdAt?.toISOString() ?? new Date().toISOString(),
     revokedAt: doc.revokedAt?.toISOString(),
   };
@@ -215,7 +213,7 @@ export class McpOAuthClientService {
     const clientId = `${CLIENT_ID_PREFIX}${randomBytes(16).toString('base64url')}`;
     const clientSecret = `${CLIENT_SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
 
-    const doc = await McpOAuthClientModel.create({
+    const doc = await oauthClients().create({
       clientId,
       clientSecretHash: hashSecret(clientSecret),
       name: trimmed,
@@ -233,9 +231,7 @@ export class McpOAuthClientService {
   }
 
   async listRegisteredClients(userId: string): Promise<McpOAuthClientSummary[]> {
-    const docs = await McpOAuthClientModel.find({ userId, source: 'registered' })
-      .sort({ createdAt: -1 })
-      .lean();
+    const docs = await oauthClients().find({ userId, source: 'registered' }, { sort: { createdAt: -1 } });
     return docs.map((doc) => toSummary(doc));
   }
 
@@ -245,11 +241,11 @@ export class McpOAuthClientService {
     // handles for an id that simply doesn't exist.
     if (!Types.ObjectId.isValid(id)) return null;
 
-    const doc = await McpOAuthClientModel.findOneAndUpdate(
+    const doc = await oauthClients().findOneAndUpdate(
       { _id: id, userId, source: 'registered', revokedAt: { $exists: false } },
       { $set: { revokedAt: new Date() } },
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
     return doc ? toSummary(doc) : null;
   }
 
@@ -274,7 +270,7 @@ export class McpOAuthClientService {
     const clientSecret = `${CLIENT_SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
     const clientName = body.client_name?.trim() || 'MCP Client';
 
-    await McpOAuthClientModel.create({
+    await oauthClients().create({
       clientId,
       clientSecretHash: hashSecret(clientSecret),
       name: clientName,
@@ -296,7 +292,7 @@ export class McpOAuthClientService {
       return this.resolveCimdClient(clientId);
     }
 
-    const doc = await McpOAuthClientModel.findOne({ clientId, revokedAt: { $exists: false } }).lean();
+    const doc = await oauthClients().findOne({ clientId, revokedAt: { $exists: false } });
     if (!doc) return null;
 
     return {
@@ -311,11 +307,11 @@ export class McpOAuthClientService {
   }
 
   private async resolveCimdClient(clientIdUrl: string): Promise<ResolvedOAuthClient | null> {
-    let doc = await McpOAuthClientModel.findOne({ clientId: clientIdUrl, source: 'cimd' }).lean();
+    let doc = await oauthClients().findOne({ clientId: clientIdUrl, source: 'cimd' });
     const metadata = await fetchClientMetadataDocument(clientIdUrl);
 
     if (!doc) {
-      doc = await McpOAuthClientModel.create({
+      doc = await oauthClients().create({
         clientId: clientIdUrl,
         name: metadata.client_name!,
         clientName: metadata.client_name!,
@@ -323,7 +319,7 @@ export class McpOAuthClientService {
         source: 'cimd',
       });
     } else if (!doc.revokedAt) {
-      await McpOAuthClientModel.updateOne(
+      await oauthClients().updateOne(
         { _id: doc._id },
         {
           $set: {

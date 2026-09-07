@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/index.js';
 import { decodeTokenUnsafe, verifyToken, type JwtPayload } from '../auth/jwt.js';
-import { UserModel } from '../models/index.js';
+import { collection } from '../data/index.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('auth');
@@ -21,7 +21,7 @@ function recordActivity(userId: string): void {
     if (activityWrites.get(userId) === now) activityWrites.delete(userId);
   }, ACTIVITY_WRITE_INTERVAL_MS);
   cleanup.unref();
-  void UserModel.updateOne({ _id: userId }, { $set: { lastActiveAt: new Date(now) } }).catch(() => {
+  void collection('users').updateOne({ _id: userId }, { $set: { lastActiveAt: new Date(now) } }).catch(() => {
     activityWrites.delete(userId);
   });
 }

@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
-import { FeedbackModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { FeedbackDoc, UserDoc } from '../data/documents.js';
+
+function feedbackDocs() {
+  return collection<FeedbackDoc>('feedback');
+}
+
+function userDocs() {
+  return collection<UserDoc>('users');
+}
 import { enqueueFeedbackVisionJob } from './feedbackVisionQueue.js';
 import { SCREENSHOT_REJECTION_MESSAGE } from './feedbackVisionService.js';
 import { notificationService } from './notificationService.js';
@@ -124,7 +133,7 @@ export async function createFeedback(input: {
   const storage = input.storage ?? getObjectStorage();
 
   if (!imagesEnabled) {
-    const doc = await FeedbackModel.create({
+    const doc = await feedbackDocs().create({
       userId: input.userId,
       message,
       category: input.category ?? 'other',
@@ -132,7 +141,7 @@ export async function createFeedback(input: {
       attachments: [],
       validationStatus: 'validated',
     });
-    return doc.toObject();
+    return doc;
   }
 
   const storedAttachments = [];
@@ -149,7 +158,7 @@ export async function createFeedback(input: {
     throw error;
   }
 
-  const doc = await FeedbackModel.create({
+  const doc = await feedbackDocs().create({
     userId: input.userId,
     message,
     category: input.category ?? 'other',
@@ -160,11 +169,11 @@ export async function createFeedback(input: {
 
   await enqueueFeedbackVisionJob(String(doc._id));
 
-  return doc.toObject();
+  return doc;
 }
 
 export async function getFeedbackForUser(userId: string, feedbackId: string) {
-  const doc = await FeedbackModel.findOne({ _id: feedbackId, userId }).lean();
+  const doc = await feedbackDocs().findOne({ _id: feedbackId, userId });
   if (!doc) return null;
   return doc;
 }
@@ -172,28 +181,24 @@ export async function getFeedbackForUser(userId: string, feedbackId: string) {
 export async function listUserFeedback(userId: string, page: number, limit: number) {
   const skip = (page - 1) * limit;
   const [total, items] = await Promise.all([
-    FeedbackModel.countDocuments({ userId }),
-    FeedbackModel.find({ userId })
-      // Unique tiebreaker: skip/limit over a non-unique sort key can
-      // silently omit rows between pages.
-      .sort({ createdAt: -1, _id: 1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
+    feedbackDocs().countDocuments({ userId }),
+    // Unique tiebreaker: skip/limit over a non-unique sort key can silently omit
+    // rows between pages.
+    feedbackDocs().find({ userId }, { sort: { createdAt: -1, _id: 1 }, skip, limit }),
   ]);
   return { page, limit, total, items };
 }
 
 export async function deleteFeedbackForUser(userId: string, storage?: ObjectStorage): Promise<number> {
   const store = storage ?? getObjectStorage();
-  const docs = await FeedbackModel.find({ userId }).lean();
+  const docs = await feedbackDocs().find({ userId });
   await Promise.all(
     docs.flatMap((doc) =>
       (doc.attachments ?? []).map((attachment) => store.delete(attachment.storageKey).catch(() => undefined))
     )
   );
-  const result = await FeedbackModel.deleteMany({ userId });
-  return result.deletedCount ?? 0;
+  const result = await feedbackDocs().deleteMany({ userId });
+  return result.deleted ?? 0;
 }
 
 export async function listAdminFeedback(params: {
@@ -215,29 +220,29 @@ export async function listAdminFeedback(params: {
 
   if (params.search) {
     const searchPattern = escapeRegex(params.search);
-    const { UserModel } = await import('../models/index.js');
-    const users = await UserModel.find(
+    const users = await userDocs().find(
       {
         $or: [
           { email: { $regex: searchPattern, $options: 'i' } },
           { displayName: { $regex: searchPattern, $options: 'i' } },
         ],
       },
-      { _id: 1 }
-    ).lean();
+      { select: '_id' }
+    );
     const userIds = users.map((user) => String(user._id));
     filter.$or = [{ message: { $regex: searchPattern, $options: 'i' } }, { userId: { $in: userIds } }];
   }
 
   const skip = (params.page - 1) * params.limit;
   const [total, items] = await Promise.all([
-    FeedbackModel.countDocuments(filter),
-    FeedbackModel.find(filter).sort({ createdAt: -1, _id: 1 }).skip(skip).limit(params.limit).lean(),
+    feedbackDocs().countDocuments(filter),
+    feedbackDocs().find(filter, { sort: { createdAt: -1, _id: 1 }, limit: params.limit, skip: skip }),
   ]);
-
-  const { UserModel } = await import('../models/index.js');
   const userIds = [...new Set(items.map((item) => item.userId))];
-  const users = await UserModel.find({ _id: { $in: userIds } }, { email: 1, displayName: 1 }).lean();
+  const users = await userDocs().find(
+    { _id: { $in: userIds } },
+    { select: 'email displayName' }
+  );
   const userMap = new Map(users.map((user) => [String(user._id), user]));
 
   return {
@@ -253,10 +258,9 @@ export async function listAdminFeedback(params: {
 }
 
 export async function getAdminFeedbackById(id: string) {
-  const doc = await FeedbackModel.findById(id).lean();
+  const doc = await feedbackDocs().findById(id);
   if (!doc) return null;
-  const { UserModel } = await import('../models/index.js');
-  const user = await UserModel.findById(doc.userId, { email: 1, displayName: 1 }).lean();
+  const user = await userDocs().findById(doc.userId, { select: 'email displayName' });
   return {
     ...doc,
     userEmail: user?.email,
@@ -265,7 +269,7 @@ export async function getAdminFeedbackById(id: string) {
 }
 
 export async function updateFeedbackStatus(id: string, status: 'open' | 'read' | 'resolved') {
-  const doc = await FeedbackModel.findByIdAndUpdate(id, { $set: { status } }, { new: true }).lean();
+  const doc = await feedbackDocs().findByIdAndUpdate(id, { $set: { status } }, { returnDocument: 'after' });
   return doc;
 }
 
@@ -283,7 +287,7 @@ export async function replyToFeedback(id: string, replyMessage: string) {
   // read, so two concurrent replies to the same feedback can't both pass a
   // stale check and race to overwrite each other — only one findOneAndUpdate
   // can match a document that still has no adminReply.
-  const doc = await FeedbackModel.findOneAndUpdate(
+  const doc = await feedbackDocs().findOneAndUpdate(
     { _id: id, adminReply: { $exists: false } },
     {
       $set: {
@@ -291,11 +295,11 @@ export async function replyToFeedback(id: string, replyMessage: string) {
         adminReply: { message, repliedAt },
       },
     },
-    { new: true }
-  ).lean();
+    { returnDocument: 'after' }
+  );
 
   if (!doc) {
-    const existing = await FeedbackModel.findById(id).lean();
+    const existing = await feedbackDocs().findById(id);
     if (!existing) return null;
     throw new FeedbackValidationError('Feedback already has a reply', 409);
   }
@@ -323,7 +327,7 @@ export async function updateAdminFeedback(
 }
 
 export async function getFeedbackAttachment(id: string, index: number, storage?: ObjectStorage) {
-  const doc = await FeedbackModel.findById(id).lean();
+  const doc = await feedbackDocs().findById(id);
   if (!doc) return null;
   const attachment = doc.attachments?.[index];
   if (!attachment) return null;

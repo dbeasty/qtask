@@ -1,12 +1,21 @@
 import { isValidObjectId } from 'mongoose';
-import {
-  ConversationModel,
-  McpSessionModel,
-  ProjectModel,
-  TaskModel,
-} from '../models/index.js';
+import { collection } from '../data/index.js';
+import type {
+  ConversationDoc,
+  McpSessionDoc,
+  ProjectDoc,
+  TaskDoc,
+} from '../data/documents.js';
 import type { PendingProposal } from '../types/conversation.js';
 import { createLogger } from '../utils/logger.js';
+
+function taskDocs() {
+  return collection<TaskDoc>('tasks');
+}
+
+function projectDocs() {
+  return collection<ProjectDoc>('projects');
+}
 import { logActivity } from './activityService.js';
 import { enqueueEmbeddingJob } from './embeddingQueue.js';
 
@@ -32,9 +41,13 @@ async function setProposalStatuses(
 ) {
   if (proposalIds.length === 0) return;
 
-  const doc = isValidObjectId(conversationId)
-    ? await ConversationModel.findOne({ _id: conversationId, userId })
-    : await McpSessionModel.findOne({ _id: conversationId, userId });
+  // A conversation id and an MCP session id are both accepted here, and they live in
+  // different collections — so the collection is chosen once and reused for the
+  // write-back below, rather than resolved twice and risking a mismatch.
+  const store = isValidObjectId(conversationId)
+    ? collection<ConversationDoc>('conversations')
+    : collection<McpSessionDoc>('mcpSessions');
+  const doc = await store.findOne({ _id: conversationId, userId });
   if (!doc) return;
 
   const ids = new Set(proposalIds);
@@ -47,8 +60,7 @@ async function setProposalStatuses(
     }
   }
   if (changed) {
-    doc.markModified('pendingProposals');
-    await doc.save();
+    await store.updateOne({ _id: doc._id }, { $set: { pendingProposals: proposals } });
   }
 }
 
@@ -62,7 +74,7 @@ export class StagingService {
     if (!entity) throw new Error('Proposal has no staged entity');
 
     if (entity.kind === 'project') {
-      const result = await ProjectModel.updateOne(
+      const result = await projectDocs().updateOne(
         {
           _id: entity.id,
           userId,
@@ -71,7 +83,7 @@ export class StagingService {
         },
         { $unset: { staging: 1 } }
       );
-      if (result.matchedCount === 0) {
+      if (result.matched === 0) {
         throw new Error('Staged project no longer exists');
       }
       const { projectService } = await import('./projectService.js');
@@ -79,12 +91,12 @@ export class StagingService {
       return `Project ${entity.id} committed`;
     }
 
-    const task = await TaskModel.findOne({
+    const task = await taskDocs().findOne({
       _id: entity.id,
       userId,
       'staging.conversationId': conversationId,
       'staging.proposalId': proposal.id,
-    }).lean();
+    });
     if (!task) throw new Error('Staged task no longer exists');
 
     if (task.projectId || (Array.isArray(task.projectIds) && task.projectIds.length > 0)) {
@@ -93,15 +105,13 @@ export class StagingService {
         ...(task.projectId ? [String(task.projectId)] : []),
       ];
       for (const parentId of [...new Set(parentIds)]) {
-        const parent = await ProjectModel.findOne({
+        const parent = await projectDocs().findOne({
           _id: parentId,
           userId,
           'staging.conversationId': conversationId,
-        })
-          .select('staging.proposalId')
-          .lean();
+        }, { select: 'staging.proposalId' });
         if (parent?.staging?.proposalId) {
-          await ProjectModel.updateOne({ _id: parent._id }, { $unset: { staging: 1 } });
+          await projectDocs().updateOne({ _id: parent._id }, { $unset: { staging: 1 } });
           await setProposalStatuses(
             userId,
             conversationId,
@@ -113,7 +123,7 @@ export class StagingService {
       }
     }
 
-    const result = await TaskModel.updateOne(
+    const result = await taskDocs().updateOne(
       {
         _id: entity.id,
         userId,
@@ -122,7 +132,7 @@ export class StagingService {
       },
       { $unset: { staging: 1 } }
     );
-    if (result.matchedCount === 0) throw new Error('Staged task no longer exists');
+    if (result.matched === 0) throw new Error('Staged task no longer exists');
 
     await enqueueEmbeddingJob(entity.id);
     await logActivity({
@@ -152,7 +162,7 @@ export class StagingService {
     if (!entity) throw new Error('Proposal has no staged entity');
 
     if (entity.kind === 'task') {
-      await TaskModel.deleteOne({
+      await taskDocs().deleteOne({
         _id: entity.id,
         userId,
         'staging.conversationId': conversationId,
@@ -161,23 +171,21 @@ export class StagingService {
       return `Staged task ${entity.id} discarded`;
     }
 
-    const children = await TaskModel.find({
+    const children = await taskDocs().find({
       userId,
       $or: [{ projectIds: entity.id }, { projectId: entity.id }],
       'staging.conversationId': conversationId,
-    })
-      .select('staging.proposalId')
-      .lean();
+    }, { select: 'staging.proposalId' });
     const childProposalIds = children
       .map((task) => task.staging?.proposalId)
       .filter((id): id is string => Boolean(id));
 
-    await TaskModel.deleteMany({
+    await taskDocs().deleteMany({
       userId,
       $or: [{ projectIds: entity.id }, { projectId: entity.id }],
       'staging.conversationId': conversationId,
     });
-    await ProjectModel.deleteOne({
+    await projectDocs().deleteOne({
       _id: entity.id,
       userId,
       'staging.conversationId': conversationId,
@@ -189,19 +197,15 @@ export class StagingService {
 
   async rollbackStaleForConversation(userId: string, conversationId: string): Promise<number> {
     const [tasks, projects] = await Promise.all([
-      TaskModel.find({ userId, 'staging.conversationId': conversationId })
-        .select('staging.proposalId')
-        .lean(),
-      ProjectModel.find({ userId, 'staging.conversationId': conversationId })
-        .select('staging.proposalId')
-        .lean(),
+      taskDocs().find({ userId, 'staging.conversationId': conversationId }, { select: 'staging.proposalId' }),
+      projectDocs().find({ userId, 'staging.conversationId': conversationId }, { select: 'staging.proposalId' }),
     ]);
     const proposalIds = [...tasks, ...projects]
       .map((doc) => doc.staging?.proposalId)
       .filter((id): id is string => Boolean(id));
 
-    await TaskModel.deleteMany({ userId, 'staging.conversationId': conversationId });
-    await ProjectModel.deleteMany({ userId, 'staging.conversationId': conversationId });
+    await taskDocs().deleteMany({ userId, 'staging.conversationId': conversationId });
+    await projectDocs().deleteMany({ userId, 'staging.conversationId': conversationId });
     await setProposalStatuses(userId, conversationId, proposalIds, 'expired');
     return tasks.length + projects.length;
   }
@@ -209,8 +213,8 @@ export class StagingService {
   async sweepExpired(): Promise<number> {
     const cutoff = new Date(Date.now() - STAGING_TTL_MS);
     const [tasks, projects] = await Promise.all([
-      TaskModel.find({ 'staging.stagedAt': { $lt: cutoff } }).select('userId staging').lean(),
-      ProjectModel.find({ 'staging.stagedAt': { $lt: cutoff } }).select('userId staging').lean(),
+      taskDocs().find({ 'staging.stagedAt': { $lt: cutoff } }, { select: 'userId staging' }),
+      projectDocs().find({ 'staging.stagedAt': { $lt: cutoff } }, { select: 'userId staging' }),
     ]);
 
     const conversations = new Map<string, { userId: string; conversationId: string }>();

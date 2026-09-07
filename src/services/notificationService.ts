@@ -1,4 +1,5 @@
-import { NotificationModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { NotificationDoc } from '../data/documents.js';
 import { HttpError } from '../utils/httpError.js';
 
 export type NotificationType =
@@ -40,47 +41,52 @@ export type SerializedNotification = {
   createdAt: string;
 };
 
+function notifications() {
+  return collection<NotificationDoc>('notifications');
+}
+
+function toIso(value: Date | undefined): string {
+  return value ? new Date(value).toISOString() : new Date().toISOString();
+}
+
 export class NotificationService {
   async createNotification(
     userId: string,
     type: NotificationType,
     payload: NotificationPayload
   ): Promise<SerializedNotification> {
-    const doc = await NotificationModel.create({ userId, type, payload, read: false });
+    const doc = await notifications().create({ userId, type, payload, read: false });
     return {
       _id: String(doc._id),
       type,
       payload,
       read: false,
-      createdAt: doc.createdAt.toISOString(),
+      createdAt: toIso(doc.createdAt),
     };
   }
 
   async listNotifications(userId: string, limit = 50): Promise<SerializedNotification[]> {
-    const docs = await NotificationModel.find({ userId })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean();
+    const docs = await notifications().find({ userId }, { sort: { createdAt: -1 }, limit });
 
     return docs.map((doc) => ({
       _id: String(doc._id),
       type: doc.type as NotificationType,
       payload: (doc.payload ?? {}) as NotificationPayload,
       read: Boolean(doc.read),
-      createdAt: doc.createdAt.toISOString(),
+      createdAt: toIso(doc.createdAt),
     }));
   }
 
   async unreadCount(userId: string): Promise<number> {
-    return NotificationModel.countDocuments({ userId, read: false });
+    return notifications().countDocuments({ userId, read: false });
   }
 
   async markRead(userId: string, notificationId: string): Promise<SerializedNotification> {
-    const doc = await NotificationModel.findOneAndUpdate(
+    const doc = await notifications().findOneAndUpdate(
       { _id: notificationId, userId },
       { $set: { read: true } },
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
 
     if (!doc) {
       throw new HttpError(404, 'Notification not found');
@@ -91,16 +97,16 @@ export class NotificationService {
       type: doc.type as NotificationType,
       payload: (doc.payload ?? {}) as NotificationPayload,
       read: true,
-      createdAt: doc.createdAt.toISOString(),
+      createdAt: toIso(doc.createdAt),
     };
   }
 
   async markAllRead(userId: string): Promise<number> {
-    const result = await NotificationModel.updateMany(
+    const result = await notifications().updateMany(
       { userId, read: false },
       { $set: { read: true } }
     );
-    return result.modifiedCount;
+    return result.modified;
   }
 }
 

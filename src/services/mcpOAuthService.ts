@@ -1,13 +1,26 @@
 import { createHash, randomBytes } from 'node:crypto';
-import {
-  McpOAuthAuthorizationCodeModel,
-  McpOAuthPendingConsentModel,
-  McpOAuthRefreshTokenModel,
-} from '../models/index.js';
+import { collection } from '../data/index.js';
+import type {
+  McpOAuthCodeDoc,
+  McpOAuthPendingConsentDoc,
+  McpOAuthRefreshTokenDoc,
+} from '../data/documents.js';
 import { config } from '../config/index.js';
 import { getMcpCloudResourceUri, getMcpResourceUri } from '../config/urls.js';
 import type { McpOAuthConsentDetails } from '../types/mcp.js';
 import { HttpError } from '../utils/httpError.js';
+
+function authCodes() {
+  return collection<McpOAuthCodeDoc>('mcpOAuthAuthorizationCodes');
+}
+
+function refreshTokens() {
+  return collection<McpOAuthRefreshTokenDoc>('mcpOAuthRefreshTokens');
+}
+
+function pendingConsents() {
+  return collection<McpOAuthPendingConsentDoc>('mcpOAuthPendingConsents');
+}
 import { signMcpOAuthAccessToken } from '../oauth/jwt.js';
 import { verifyPkce } from '../oauth/pkce.js';
 import {
@@ -81,7 +94,7 @@ export class McpOAuthService {
     const state = randomBytes(24).toString('base64url');
     const expiresAt = new Date(Date.now() + MCP_OAUTH_PENDING_TTL_MS);
 
-    await McpOAuthPendingConsentModel.create({
+    await pendingConsents().create({
       state,
       clientId: client.clientId,
       clientName: client.name,
@@ -100,10 +113,10 @@ export class McpOAuthService {
   }
 
   async getConsentDetails(state: string): Promise<McpOAuthConsentDetails | null> {
-    const pending = await McpOAuthPendingConsentModel.findOne({
+    const pending = await pendingConsents().findOne({
       state,
       expiresAt: { $gt: new Date() },
-    }).lean();
+    });
     if (!pending) return null;
     return {
       state: pending.state,
@@ -114,10 +127,10 @@ export class McpOAuthService {
   }
 
   async approveConsent(userId: string, state: string): Promise<string> {
-    const pending = await McpOAuthPendingConsentModel.findOneAndDelete({
+    const pending = await pendingConsents().findOneAndDelete({
       state,
       expiresAt: { $gt: new Date() },
-    }).lean();
+    });
     if (!pending) {
       throw new HttpError(400, 'Consent request expired or not found');
     }
@@ -125,7 +138,7 @@ export class McpOAuthService {
     const code = randomBytes(32).toString('base64url');
     const expiresAt = new Date(Date.now() + MCP_OAUTH_AUTH_CODE_TTL_MS);
 
-    await McpOAuthAuthorizationCodeModel.create({
+    await authCodes().create({
       codeHash: hashValue(code),
       clientId: pending.clientId,
       userId,
@@ -144,10 +157,10 @@ export class McpOAuthService {
   }
 
   async denyConsent(state: string): Promise<string> {
-    const pending = await McpOAuthPendingConsentModel.findOneAndDelete({
+    const pending = await pendingConsents().findOneAndDelete({
       state,
       expiresAt: { $gt: new Date() },
-    }).lean();
+    });
     if (!pending) {
       throw new HttpError(400, 'Consent request expired or not found');
     }
@@ -207,13 +220,13 @@ export class McpOAuthService {
       throw new HttpError(401, 'Invalid client credentials');
     }
 
-    const codeDoc = await McpOAuthAuthorizationCodeModel.findOneAndDelete({
+    const codeDoc = await authCodes().findOneAndDelete({
       codeHash: hashValue(params.code),
       clientId: params.clientId,
       redirectUri: params.redirectUri,
       resource: params.resource,
       expiresAt: { $gt: new Date() },
-    }).lean();
+    });
 
     if (!codeDoc) {
       throw new HttpError(400, 'Invalid authorization code');
@@ -254,7 +267,7 @@ export class McpOAuthService {
       throw new HttpError(401, 'Invalid client credentials');
     }
 
-    const refreshDoc = await McpOAuthRefreshTokenModel.findOneAndUpdate(
+    const refreshDoc = await refreshTokens().findOneAndUpdate(
       {
         tokenHash: hashValue(params.refreshToken),
         clientId: params.clientId,
@@ -263,8 +276,8 @@ export class McpOAuthService {
         expiresAt: { $gt: new Date() },
       },
       { $set: { revokedAt: new Date() } },
-      { new: false }
-    ).lean();
+      { returnDocument: 'before' }
+    );
 
     if (!refreshDoc) {
       throw new HttpError(400, 'Invalid refresh token');
@@ -293,7 +306,7 @@ export class McpOAuthService {
     let refreshToken: string | undefined;
     if (options?.skipRefreshRotation !== true) {
       refreshToken = randomBytes(32).toString('base64url');
-      await McpOAuthRefreshTokenModel.create({
+      await refreshTokens().create({
         tokenHash: hashValue(refreshToken),
         clientId: client.clientId,
         userId,

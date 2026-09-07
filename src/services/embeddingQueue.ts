@@ -1,9 +1,20 @@
-import { CommentModel, EmbeddingJobModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type {
+  CommentDoc,
+  EmbeddingJobDoc,
+  ProjectDoc,
+  TaskDoc,
+  UserDoc,
+} from '../data/documents.js';
 import {
   buildProjectEmbeddingText,
   buildTaskEmbeddingText,
   generateEmbedding,
 } from './embeddingService.js';
+
+function jobs() {
+  return collection<EmbeddingJobDoc>('embeddingJobs');
+}
 
 const MAX_ATTEMPTS = 3;
 
@@ -25,31 +36,34 @@ async function enqueueEntityEmbeddingJob(
   // gets requeued the moment it finishes, instead of dropping this edit's
   // re-embed and leaving a stale embedding until some unrelated later edit
   // happens to trigger one. Otherwise, behave as before — mark it pending.
-  // Note: setDefaultsOnInsert does not apply schema defaults for
-  // pipeline-style ($set-array) updates, so defaults for a brand-new
-  // document (attempts, dirty) must be spelled out explicitly here —
-  // otherwise a freshly-upserted job is missing `attempts` entirely and
-  // never matches processNextJob's `attempts: { $lt: MAX_ATTEMPTS }` pickup
-  // query, leaving it stuck at 'pending' forever.
-  await EmbeddingJobModel.findOneAndUpdate(
-    { entityType, entityId },
-    [
+  // Two mutually exclusive conditional updates rather than one aggregation
+  // pipeline: the condition lives in the filter, so each branch is still a single
+  // atomic statement. The first claims a job that is mid-flight and marks it dirty
+  // so the worker requeues it on finish; the second covers every other state.
+  const markedDirty = await jobs().updateOne(
+    { entityType, entityId, status: 'processing' },
+    { $set: { dirty: true }, $unset: { lastError: '' } }
+  );
+
+  if (markedDirty.matched === 0) {
+    // `attempts` and `dirty` are spelled out on insert because a job missing
+    // `attempts` never matches processNextJob's `attempts: { $lt: MAX_ATTEMPTS }`
+    // pickup query, and would sit at 'pending' forever.
+    await jobs().updateOne(
+      { entityType, entityId },
       {
         $set: {
           entityType,
           entityId,
           ...(entityType === 'task' ? { taskId: entityId } : {}),
-          status: { $cond: [{ $eq: ['$status', 'processing'] }, 'processing', 'pending'] },
-          dirty: {
-            $cond: [{ $eq: ['$status', 'processing'] }, true, { $ifNull: ['$dirty', false] }],
-          },
-          attempts: { $ifNull: ['$attempts', 0] },
-          lastError: undefined,
+          status: 'pending',
         },
+        $setOnInsert: { attempts: 0, dirty: false },
+        $unset: { lastError: '' },
       },
-    ] as unknown as Record<string, unknown>,
-    { upsert: true }
-  );
+      { upsert: true }
+    );
+  }
 
   scheduleDrain();
 }
@@ -63,12 +77,13 @@ export async function enqueueProjectEmbeddingJob(projectId: string): Promise<voi
 }
 
 export async function enqueueTaskEmbeddingsForProject(projectId: string): Promise<void> {
-  const tasks = await TaskModel.find({
-    staging: { $exists: false },
-    $or: [{ projectIds: projectId }, { projectId }],
-  })
-    .select('_id')
-    .lean();
+  const tasks = await collection<TaskDoc>('tasks').find(
+    {
+      staging: { $exists: false },
+      $or: [{ projectIds: projectId }, { projectId }],
+    },
+    { select: '_id' }
+  );
 
   await Promise.all(tasks.map((task) => enqueueEmbeddingJob(String(task._id))));
 }
@@ -93,9 +108,10 @@ async function resolveProjectNames(task: {
 
   if (ids.length === 0) return [];
 
-  const projects = await ProjectModel.find({ _id: { $in: [...new Set(ids)] } })
-    .select('name')
-    .lean();
+  const projects = await collection<ProjectDoc>('projects').find(
+    { _id: { $in: [...new Set(ids)] } },
+    { select: 'name' }
+  );
   return projects.map((project) => project.name);
 }
 
@@ -111,15 +127,22 @@ async function finishEmbeddingJob(
   status: 'completed' | 'failed' | 'pending',
   lastError?: string
 ): Promise<void> {
-  await EmbeddingJobModel.findByIdAndUpdate(jobId, [
-    {
-      $set: {
-        status: { $cond: [{ $eq: ['$dirty', true] }, 'pending', status] },
-        lastError: { $cond: [{ $eq: ['$dirty', true] }, undefined, lastError] },
-        dirty: false,
-      },
-    },
-  ] as unknown as Record<string, unknown>);
+  // Dirty means the entity was edited again while this job was processing, so the
+  // finished result is already stale and the job goes back on the queue instead of
+  // being marked done. The check is in the filter, so it stays atomic with the write.
+  const requeued = await jobs().updateOne(
+    { _id: String(jobId), dirty: true },
+    { $set: { status: 'pending', dirty: false }, $unset: { lastError: '' } }
+  );
+
+  if (requeued.matched === 0) {
+    await jobs().updateOne(
+      { _id: String(jobId), dirty: { $ne: true } },
+      lastError === undefined
+        ? { $set: { status, dirty: false }, $unset: { lastError: '' } }
+        : { $set: { status, dirty: false, lastError } }
+    );
+  }
 }
 
 async function processNextJob(): Promise<void> {
@@ -128,10 +151,10 @@ async function processNextJob(): Promise<void> {
   let foundJob = false;
 
   try {
-    const job = await EmbeddingJobModel.findOneAndUpdate(
+    const job = await jobs().findOneAndUpdate(
       { status: 'pending', attempts: { $lt: MAX_ATTEMPTS } },
       { $set: { status: 'processing' }, $inc: { attempts: 1 } },
-      { sort: { createdAt: 1 }, new: true }
+      { sort: { createdAt: 1 }, returnDocument: 'after' }
     );
 
     if (!job) return;
@@ -146,7 +169,7 @@ async function processNextJob(): Promise<void> {
 
     try {
       if (entityType === 'project') {
-        const project = await ProjectModel.findById(entityId);
+        const project = await collection<ProjectDoc>('projects').findById(String(entityId));
         if (!project || project.staging) {
           await finishEmbeddingJob(job._id, 'failed', 'Project not found');
           return;
@@ -162,25 +185,28 @@ async function processNextJob(): Promise<void> {
           source: 'embedding_job',
         });
 
-        await ProjectModel.findByIdAndUpdate(project._id, { embedding });
+        await collection<ProjectDoc>('projects').updateOne({ _id: project._id }, { $set: { embedding } });
         await finishEmbeddingJob(job._id, 'completed');
         return;
       }
 
-      const task = await TaskModel.findById(entityId);
+      const task = await collection<TaskDoc>('tasks').findById(String(entityId));
       if (!task) {
         await finishEmbeddingJob(job._id, 'failed', 'Task not found');
         return;
       }
 
       const projectNames = await resolveProjectNames(task);
-      const commentDocs = await CommentModel.find({ taskId: String(task._id) })
-        .sort({ createdAt: 1 })
-        .select('body subtaskPath userId')
-        .lean();
+      const commentDocs = await collection<CommentDoc>('comments').find(
+        { taskId: String(task._id) },
+        { sort: { createdAt: 1 }, select: 'body subtaskPath userId' }
+      );
       const commentAuthorIds = [...new Set(commentDocs.map((c) => c.userId))];
       const commentAuthors = commentAuthorIds.length
-        ? await UserModel.find({ _id: { $in: commentAuthorIds } }).select('email displayName').lean()
+        ? await collection<UserDoc>('users').find(
+            { _id: { $in: commentAuthorIds } },
+            { select: 'email displayName' }
+          )
         : [];
       const authorById = new Map(
         commentAuthors.map((u) => [
@@ -193,7 +219,7 @@ async function processNextJob(): Promise<void> {
         description: task.description ?? undefined,
         tags: task.tags,
         projectNames,
-        steps: task.steps?.map((step) => ({ text: step.text })),
+        steps: task.steps?.map((step) => ({ text: String(step.text ?? '') })),
         comments: commentDocs.map((comment) => ({
           authorLabel: authorById.get(comment.userId) ?? 'Unknown',
           body: comment.body,
@@ -206,11 +232,11 @@ async function processNextJob(): Promise<void> {
         source: 'embedding_job',
       });
 
-      await TaskModel.findByIdAndUpdate(task._id, { embedding });
+      await collection<TaskDoc>('tasks').updateOne({ _id: task._id }, { $set: { embedding } });
       await finishEmbeddingJob(job._id, 'completed');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const status = job.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending';
+      const status = (job.attempts ?? 0) >= MAX_ATTEMPTS ? 'failed' : 'pending';
       await finishEmbeddingJob(job._id, status, message);
     }
   } finally {

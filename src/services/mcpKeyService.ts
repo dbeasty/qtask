@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Types } from 'mongoose';
-import { McpApiKeyModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { McpApiKeyDoc } from '../data/documents.js';
 import type { McpApiKeySummary, McpKeyScope } from '../types/mcp.js';
 import { HttpError } from '../utils/httpError.js';
 
@@ -10,20 +11,12 @@ function hashKey(rawKey: string): string {
   return createHash('sha256').update(rawKey).digest('hex');
 }
 
-function toSummary(doc: {
-  _id: unknown;
-  name: string;
-  prefix: string;
-  scope: McpKeyScope;
-  createdAt?: Date | null;
-  lastUsedAt?: Date | null;
-  revokedAt?: Date | null;
-}): McpApiKeySummary {
+function toSummary(doc: McpApiKeyDoc): McpApiKeySummary {
   return {
     id: String(doc._id),
     name: doc.name,
     prefix: doc.prefix,
-    scope: doc.scope,
+    scope: doc.scope as McpKeyScope,
     createdAt: doc.createdAt?.toISOString() ?? new Date().toISOString(),
     lastUsedAt: doc.lastUsedAt?.toISOString() ?? undefined,
     revokedAt: doc.revokedAt?.toISOString() ?? undefined,
@@ -42,7 +35,7 @@ export class McpKeyService {
     }
 
     const secret = `${KEY_PREFIX}${randomBytes(32).toString('base64url')}`;
-    const doc = await McpApiKeyModel.create({
+    const doc = await collection<McpApiKeyDoc>('mcpApiKeys').create({
       userId,
       name: trimmed,
       prefix: secret.slice(0, 12),
@@ -54,7 +47,7 @@ export class McpKeyService {
   }
 
   async listKeys(userId: string): Promise<McpApiKeySummary[]> {
-    const docs = await McpApiKeyModel.find({ userId }).sort({ createdAt: -1 }).lean();
+    const docs = await collection<McpApiKeyDoc>('mcpApiKeys').find({ userId }, { sort: { createdAt: -1 } });
     return docs.map((doc) => toSummary(doc));
   }
 
@@ -63,11 +56,11 @@ export class McpKeyService {
     // not as a CastError bubbling up to a 500.
     if (!Types.ObjectId.isValid(keyId)) return null;
 
-    const doc = await McpApiKeyModel.findOneAndUpdate(
+    const doc = await collection<McpApiKeyDoc>('mcpApiKeys').findOneAndUpdate(
       { _id: keyId, userId, revokedAt: { $exists: false } },
       { $set: { revokedAt: new Date() } },
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
     return doc ? toSummary(doc) : null;
   }
 
@@ -77,18 +70,18 @@ export class McpKeyService {
     }
 
     const keyHash = hashKey(rawKey);
-    const doc = await McpApiKeyModel.findOneAndUpdate(
+    const doc = await collection<McpApiKeyDoc>('mcpApiKeys').findOneAndUpdate(
       { keyHash, revokedAt: { $exists: false } },
       { $set: { lastUsedAt: new Date() } },
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
 
     if (!doc) {
       return null;
     }
 
     return {
-      userId: doc.userId,
+      userId: String(doc.userId),
       keyId: String(doc._id),
       scope: doc.scope as McpKeyScope,
     };

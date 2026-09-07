@@ -1,10 +1,77 @@
-import { ProjectModel, TaskModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { ProjectDoc, TaskDoc } from '../data/documents.js';
 import type { SearchHit, SearchResults } from '../types/search.js';
 import type { TaskSearchFilters } from '../types/task.js';
 import { applyPercentComplete } from '../utils/percentComplete.js';
 import { serializeTask } from '../utils/serialization.js';
 import { cosineSimilarity, generateEmbedding } from './embeddingService.js';
-import { escapeRegex, mergeHybridSearchScores } from './searchUtils.js';
+import { escapeRegex, lexicalScore, mergeHybridSearchScores, tokenizeForSearch } from './searchUtils.js';
+import type { CollectionName } from '../data/types.js';
+
+/** Weighted text fields per collection — the equivalent of the text indexes the
+ *  schemas used to declare for `$text`. */
+const TASK_TEXT_FIELDS: Array<{ path: string; weight: number }> = [
+  { path: 'title', weight: 3 },
+  { path: 'description', weight: 1 },
+  { path: 'tags', weight: 2 },
+  { path: 'steps.text', weight: 1 },
+];
+
+const PROJECT_TEXT_FIELDS: Array<{ path: string; weight: number }> = [
+  { path: 'name', weight: 3 },
+  { path: 'description', weight: 1 },
+  { path: 'notes', weight: 1 },
+];
+
+/**
+ * The lexical arm of hybrid search, replacing Mongo's `$text` for both backends.
+ * Loads the same bounded candidate set the semantic arm uses, scores it in process,
+ * and returns the hits ranked. See lexicalScore for what this trades away.
+ */
+async function textSearch<T>(
+  name: CollectionName,
+  baseQuery: Record<string, unknown>,
+  queryText: string,
+  fields: Array<{ path: string; weight: number }>
+): Promise<T[]> {
+  const terms = tokenizeForSearch(queryText);
+  if (terms.length === 0) return [];
+
+  const candidates = await collection(name).find(baseQuery, {
+    sort: { updatedAt: -1 },
+    limit: MAX_CANDIDATES,
+  });
+
+  return candidates
+    .map((doc) => ({ doc, score: lexicalScore(textValuesOf(doc, fields), terms) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.doc as T);
+}
+
+/** Flattens the weighted fields of one document into scorable text. */
+function textValuesOf(
+  doc: Record<string, unknown>,
+  fields: Array<{ path: string; weight: number }>
+): Array<{ text: string; weight: number }> {
+  const out: Array<{ text: string; weight: number }> = [];
+  for (const { path, weight } of fields) {
+    for (const value of valuesAtPath(doc, path)) {
+      if (typeof value === 'string' && value.length > 0) out.push({ text: value, weight });
+    }
+  }
+  return out;
+}
+
+function valuesAtPath(source: unknown, path: string): unknown[] {
+  const [head, ...rest] = path.split('.');
+  if (head === undefined) return [source];
+  if (Array.isArray(source)) return source.flatMap((item) => valuesAtPath(item, path));
+  if (typeof source !== 'object' || source === null) return [];
+  const next = (source as Record<string, unknown>)[head];
+  if (rest.length === 0) return Array.isArray(next) ? next : [next];
+  return valuesAtPath(next, rest.join('.'));
+}
 
 const SEMANTIC_THRESHOLD = 0.6;
 /** Caps how many documents a single search loads into memory for
@@ -129,9 +196,10 @@ async function resolveProjectNameMap(tasks: LeanTask[]): Promise<Map<string, str
 
   if (projectIds.size === 0) return new Map();
 
-  const projectDocs = await ProjectModel.find({ _id: { $in: [...projectIds] } })
-    .select('_id name')
-    .lean();
+  const projectDocs = await collection<ProjectDoc>('projects').find(
+    { _id: { $in: [...projectIds] } },
+    { select: '_id name' }
+  );
 
   return new Map(projectDocs.map((project) => [String(project._id), project.name]));
 }
@@ -198,14 +266,12 @@ async function searchProjectsInternal(
 
   const merged = await hybridSearch<LeanProject>(userId, queryText, baseQuery, {
     findText: async (query, search) =>
-      ProjectModel.find({ ...query, $text: { $search: search } }, { score: { $meta: 'textScore' } })
-        .sort({ score: { $meta: 'textScore' } })
-        .lean() as Promise<LeanProject[]>,
+      textSearch<LeanProject>('projects', query, search, PROJECT_TEXT_FIELDS),
     findCandidates: async (query, limit) =>
-      ProjectModel.find(query)
-        .sort({ updatedAt: -1 })
-        .limit(limit)
-        .lean() as Promise<LeanProject[]>,
+      collection<ProjectDoc>('projects').find(query, {
+        sort: { updatedAt: -1 },
+        limit,
+      }) as unknown as Promise<LeanProject[]>,
     matchesRegex: projectMatchesRegex,
   });
 
@@ -237,12 +303,12 @@ async function searchTasksInternal(
   };
 
   const merged = await hybridSearch<LeanTask>(userId, queryText, baseQuery, {
-    findText: async (query, search) =>
-      TaskModel.find({ ...query, $text: { $search: search } }, { score: { $meta: 'textScore' } })
-        .sort({ score: { $meta: 'textScore' } })
-        .lean() as Promise<LeanTask[]>,
+    findText: async (query, search) => textSearch<LeanTask>('tasks', query, search, TASK_TEXT_FIELDS),
     findCandidates: async (query, limit) =>
-      TaskModel.find(query).sort({ updatedAt: -1 }).limit(limit).lean() as Promise<LeanTask[]>,
+      collection<TaskDoc>('tasks').find(query, {
+        sort: { updatedAt: -1 },
+        limit,
+      }) as unknown as Promise<LeanTask[]>,
     matchesRegex: taskMatchesRegex,
   }, options);
 
@@ -302,14 +368,16 @@ class SearchService {
     );
     if (hits.length === 0) return [];
 
-    const tasks = await TaskModel.find({ _id: { $in: hits.map((hit) => hit.id) } }).lean();
+    const tasks = await collection<TaskDoc>('tasks').find({
+      _id: { $in: hits.map((hit) => hit.id) },
+    });
     const taskMap = new Map(tasks.map((task) => [String(task._id), task]));
     const ordered = hits
       .map((hit) => taskMap.get(hit.id))
       .filter(Boolean)
       .map((task) =>
         serializeTask(
-          applyPercentComplete(task as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<
+          applyPercentComplete(task as unknown as Parameters<typeof applyPercentComplete>[0]) as unknown as Record<
             string,
             unknown
           >
