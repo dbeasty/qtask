@@ -10,7 +10,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveDataBackend } from '../src/data/index.ts';
+import { resolveDataBackend, shadowWritesEnabled } from '../src/data/index.ts';
 
 describe('data backend selection', () => {
   it('defaults to mongo when neither flag is set', () => {
@@ -36,6 +36,14 @@ describe('data backend selection', () => {
       () => resolveDataBackend({ DATA_MONGO: 'true', DATA_KDB: 'true' }),
       /mutually exclusive/
     );
+  });
+
+  it('has shadow writes off unless explicitly enabled', () => {
+    assert.equal(shadowWritesEnabled({}), false);
+    assert.equal(shadowWritesEnabled({ DATA_SHADOW_WRITES: 'false' }), false);
+    assert.equal(shadowWritesEnabled({ DATA_SHADOW_WRITES: '1' }), false);
+    assert.equal(shadowWritesEnabled({ DATA_SHADOW_WRITES: 'yes' }), false);
+    assert.equal(shadowWritesEnabled({ DATA_SHADOW_WRITES: 'true' }), true);
   });
 
   it('reads process.env when no environment is passed', () => {
