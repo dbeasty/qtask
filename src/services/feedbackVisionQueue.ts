@@ -1,4 +1,13 @@
-import { FeedbackModel, FeedbackVisionJobModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { FeedbackDoc, FeedbackVisionJobDoc } from '../data/documents.js';
+
+function visionJobs() {
+  return collection<FeedbackVisionJobDoc>('feedbackVisionJobs');
+}
+
+function feedbackDocs() {
+  return collection<FeedbackDoc>('feedback');
+}
 import {
   classifyScreenshotForFeedback,
   SCREENSHOT_REJECTION_MESSAGE,
@@ -17,19 +26,19 @@ function scheduleDrain(): void {
 }
 
 export async function enqueueFeedbackVisionJob(feedbackId: string): Promise<void> {
-  const existing = await FeedbackVisionJobModel.findOne({ feedbackId }).lean();
+  const existing = await visionJobs().findOne({ feedbackId });
   if (existing?.status === 'processing') {
     return;
   }
 
-  await FeedbackVisionJobModel.findOneAndUpdate(
+  await visionJobs().updateOne(
     { feedbackId },
     {
       $set: {
         status: 'pending',
-        lastError: undefined,
         feedbackId,
       },
+      $unset: { lastError: '' },
       $setOnInsert: { attempts: 0 },
     },
     { upsert: true }
@@ -52,20 +61,20 @@ async function processNextJob(): Promise<void> {
   processing = true;
 
   try {
-    const job = await FeedbackVisionJobModel.findOneAndUpdate(
+    const job = await visionJobs().findOneAndUpdate(
       { status: 'pending' },
       { $set: { status: 'processing' }, $inc: { attempts: 1 } },
-      { sort: { updatedAt: 1 }, new: true }
+      { sort: { updatedAt: 1 }, returnDocument: 'after' }
     );
 
     if (!job) return;
 
-    const feedback = await FeedbackModel.findById(job.feedbackId);
+    const feedback = await feedbackDocs().findById(job.feedbackId);
     if (!feedback) {
-      await FeedbackVisionJobModel.findByIdAndUpdate(job._id, {
+      await visionJobs().updateOne({ _id: job._id }, { $set: {
         status: 'failed',
         lastError: 'Feedback not found',
-      });
+      } });
       return;
     }
 
@@ -91,19 +100,18 @@ async function processNextJob(): Promise<void> {
           await Promise.all(
             attachments.map((item) => storage.delete(item.storageKey).catch(() => undefined))
           );
-          await FeedbackModel.findByIdAndUpdate(feedback._id, {
+          await feedbackDocs().updateOne({ _id: feedback._id }, { $set: {
             validationStatus: 'rejected',
             attachments: [],
-          });
+          } });
           await notificationService.createNotification(feedback.userId, 'feedback_rejected', {
             feedbackId: String(feedback._id),
             message: feedback.message.slice(0, 200),
             reason: SCREENSHOT_REJECTION_MESSAGE,
           });
-          await FeedbackVisionJobModel.findByIdAndUpdate(job._id, {
+          await visionJobs().updateOne({ _id: job._id }, { $set: {
             status: 'completed',
-            lastError: undefined,
-          });
+          }, $unset: { lastError: '' } });
           return;
         }
 
@@ -115,28 +123,27 @@ async function processNextJob(): Promise<void> {
         });
       }
 
-      await FeedbackModel.findByIdAndUpdate(feedback._id, {
+      await feedbackDocs().updateOne({ _id: feedback._id }, { $set: {
         validationStatus: 'validated',
         attachments: validatedAttachments,
-      });
-      await FeedbackVisionJobModel.findByIdAndUpdate(job._id, {
+      } });
+      await visionJobs().updateOne({ _id: job._id }, { $set: {
         status: 'completed',
-        lastError: undefined,
-      });
+      }, $unset: { lastError: '' } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const status = job.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending';
+      const status = (job.attempts ?? 0) >= MAX_ATTEMPTS ? 'failed' : 'pending';
 
       if (status === 'failed') {
-        await FeedbackModel.findByIdAndUpdate(feedback._id, {
+        await feedbackDocs().updateOne({ _id: feedback._id }, { $set: {
           validationStatus: 'failed',
-        });
+        } });
       }
 
-      await FeedbackVisionJobModel.findByIdAndUpdate(job._id, {
+      await visionJobs().updateOne({ _id: job._id }, { $set: {
         status,
         lastError: message,
-      });
+      } });
     }
   } finally {
     processing = false;

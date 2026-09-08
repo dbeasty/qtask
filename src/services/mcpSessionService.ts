@@ -1,4 +1,9 @@
-import { McpSessionModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { McpSessionDoc } from '../data/documents.js';
+
+function mcpSessions() {
+  return collection<McpSessionDoc>('mcpSessions');
+}
 import type { PendingProposal } from '../types/conversation.js';
 import { HttpError } from '../utils/httpError.js';
 import { stagingService } from './stagingService.js';
@@ -26,7 +31,7 @@ interface ResolvedPendingProposal {
 
 export class McpSessionService {
   async createSession(userId: string, keyId: string, sessionId?: string): Promise<string> {
-    const doc = await McpSessionModel.create({
+    const doc = await mcpSessions().create({
       ...(sessionId ? { _id: sessionId } : {}),
       userId,
       keyId,
@@ -36,25 +41,25 @@ export class McpSessionService {
   }
 
   async getSession(userId: string, sessionId: string) {
-    return McpSessionModel.findOne({ _id: sessionId, userId }).lean();
+    return mcpSessions().findOne({ _id: sessionId, userId });
   }
 
   async getSessionByKey(userId: string, keyId: string, sessionId: string) {
-    return McpSessionModel.findOne({ _id: sessionId, userId, keyId }).lean();
+    return mcpSessions().findOne({ _id: sessionId, userId, keyId });
   }
 
   async touchSession(userId: string, sessionId: string): Promise<void> {
-    await McpSessionModel.updateOne({ _id: sessionId, userId }, { $set: { updatedAt: new Date() } });
+    await mcpSessions().updateOne({ _id: sessionId, userId }, { $set: { updatedAt: new Date() } });
   }
 
   async setActiveProject(userId: string, sessionId: string, projectId: string): Promise<void> {
     const { projectService } = await import('./projectService.js');
     await projectService.assertProjectAccess(userId, projectId, 'viewer');
-    const updated = await McpSessionModel.findOneAndUpdate(
+    const updated = await mcpSessions().findOneAndUpdate(
       { _id: sessionId, userId },
       { $set: { activeProjectId: projectId } },
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
     if (!updated) {
       throw new HttpError(404, 'MCP session not found');
     }
@@ -66,13 +71,11 @@ export class McpSessionService {
     reuseWindowMs: number = SESSION_REUSE_WINDOW_MS
   ): Promise<string | undefined> {
     const cutoff = new Date(Date.now() - reuseWindowMs);
-    const sessions = await McpSessionModel.find({
+    const sessions = await mcpSessions().find({
       userId,
       keyId,
       updatedAt: { $gte: cutoff },
-    })
-      .sort({ updatedAt: -1 })
-      .lean();
+    }, { sort: { updatedAt: -1 } });
 
     if (sessions.length === 0) return undefined;
 
@@ -84,9 +87,7 @@ export class McpSessionService {
   }
 
   async getPendingProposals(userId: string, keyId: string): Promise<PendingProposalWithSession[]> {
-    const sessions = await McpSessionModel.find({ userId, keyId })
-      .select('pendingProposals')
-      .lean();
+    const sessions = await mcpSessions().find({ userId, keyId }, { select: 'pendingProposals' });
 
     const pending: PendingProposalWithSession[] = [];
     for (const session of sessions) {
@@ -105,11 +106,11 @@ export class McpSessionService {
     keyId: string,
     proposalId: string
   ): Promise<ResolvedPendingProposal> {
-    const session = await McpSessionModel.findOne({
+    const session = await mcpSessions().findOne({
       userId,
       keyId,
       'pendingProposals.id': proposalId,
-    }).lean();
+    });
 
     if (!session) {
       throw new HttpError(404, 'Proposal not found or already resolved');
@@ -133,10 +134,10 @@ export class McpSessionService {
     sessionId: string,
     proposals: PendingProposal[]
   ): Promise<void> {
-    const updated = await McpSessionModel.findOneAndUpdate(
+    const updated = await mcpSessions().findOneAndUpdate(
       { _id: sessionId, userId },
       { $set: { pendingProposals: proposals } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!updated) {
       throw new HttpError(404, 'MCP session not found');
@@ -287,12 +288,12 @@ export class McpSessionService {
 
   async closeSession(userId: string, sessionId: string): Promise<void> {
     await stagingService.rollbackStaleForConversation(userId, sessionId);
-    await McpSessionModel.deleteOne({ _id: sessionId, userId });
+    await mcpSessions().deleteOne({ _id: sessionId, userId });
   }
 
   async sweepExpiredSessions(): Promise<number> {
     const cutoff = new Date(Date.now() - SESSION_TTL_MS);
-    const stale = await McpSessionModel.find({ updatedAt: { $lt: cutoff } }).select('_id userId').lean();
+    const stale = await mcpSessions().find({ updatedAt: { $lt: cutoff } }, { select: '_id userId' });
     for (const session of stale) {
       await this.closeSession(session.userId, String(session._id));
     }

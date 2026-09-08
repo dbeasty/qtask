@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
-import { LlmCallMetricModel, LlmDailyMetricModel } from '../models/index.js';
+import { collection } from '../data/index.js';
 
 export type LlmCallType = 'agent' | 'generate' | 'embed' | 'feedback_vision';
 export type LlmCallSource =
@@ -72,7 +72,7 @@ export function createLlmCallTracker(context: LlmCallContext) {
 
     try {
       await Promise.all([
-        LlmCallMetricModel.create({
+        collection('llmCallMetrics').create({
           requestId,
           ...context,
           startedAt,
@@ -91,7 +91,7 @@ export function createLlmCallTracker(context: LlmCallContext) {
           evalDurationNs: timing.eval_duration,
           expiresAt,
         }),
-        LlmDailyMetricModel.updateOne(
+        collection('llmDailyMetrics').updateOne(
           {
             day,
             userId: context.userId ?? null,

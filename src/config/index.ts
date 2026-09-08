@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { SITE_URL } from '../constants/brand.js';
 import { loadSecrets, resolveSecretsBackend } from './secrets.js';
+import { resolveDataBackend } from '../data/index.js';
 
 export {
   loadSecrets,
@@ -57,6 +58,7 @@ export function resolveMailFrom(
 const mailProvider = resolveMailProvider();
 const adminAuthMode: AdminAuthMode = process.env.ADMIN_AUTH_MODE === 'mtls' ? 'mtls' : 'password';
 const secretsBackend = resolveSecretsBackend();
+const dataBackend = resolveDataBackend();
 
 /** Ollama keep_alive: -1 (forever), 0 (unload), duration string, or integer seconds. */
 function parseOllamaKeepAlive(value: string | undefined, fallback: string): string | number {
@@ -71,6 +73,15 @@ export const config = {
   port: parseInt(process.env.PORT ?? '3000', 10),
   nodeEnv: process.env.NODE_ENV ?? 'development',
   mongodbUri: process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/qtask',
+  /** Which data backend serves this deployment. See src/data/index.ts. */
+  dataBackend,
+  kdb: {
+    /** Wire address of the KDB server, e.g. tcp://127.0.0.1:7700. */
+    addr: process.env.KDB_ADDR ?? 'tcp://127.0.0.1:7700',
+    /** Namespace prefix; each collection becomes `<prefix>/<collection>`. */
+    namespacePrefix: process.env.KDB_NAMESPACE_PREFIX ?? 'qtask',
+    token: process.env.KDB_TOKEN ?? '',
+  },
   jwtSecret: requireSecret('JWT_SECRET', process.env.JWT_SECRET, 'dev-jwt-secret-change-me'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',

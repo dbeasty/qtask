@@ -1,4 +1,8 @@
-import { ActivityModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+
+function activities() {
+  return collection('activities');
+}
 
 export async function logActivity(params: {
   taskId: string;
@@ -7,7 +11,7 @@ export async function logActivity(params: {
   details?: Record<string, unknown>;
   source?: 'user' | 'ai' | 'system';
 }) {
-  await ActivityModel.create({
+  await activities().create({
     taskId: params.taskId,
     userId: params.userId,
     action: params.action,
@@ -17,14 +21,11 @@ export async function logActivity(params: {
 }
 
 export async function getActivityForTask(taskId: string, limit = 50) {
-  const entries = await ActivityModel.find({ taskId })
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .lean();
+  const entries = await activities().find({ taskId }, { sort: { createdAt: -1 }, limit });
 
   return entries.map((entry) => ({
     ...entry,
     _id: String(entry._id),
-    createdAt: entry.createdAt.toISOString(),
+    createdAt: new Date(entry.createdAt as string | Date).toISOString(),
   }));
 }

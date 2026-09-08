@@ -1,5 +1,23 @@
 import { Types } from 'mongoose';
-import { CommentModel, ProjectModel, UserModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { CommentDoc, ProjectDoc, TaskDoc, UserDoc } from '../data/documents.js';
+
+function commentDocs() {
+  return collection<CommentDoc>('comments');
+}
+
+function taskDocs() {
+  return collection<TaskDoc>('tasks');
+}
+
+function projectDocs() {
+  return collection<ProjectDoc>('projects');
+}
+
+function userDocs() {
+  return collection<UserDoc>('users');
+}
+
 import type { Comment, CreateCommentInput, ListCommentsOptions, UpdateCommentInput } from '../types/comment.js';
 import { canEditProject } from '../types/project.js';
 import { HttpError } from '../utils/httpError.js';
@@ -34,7 +52,7 @@ async function loadAuthors(userIds: string[]): Promise<Map<string, { userId: str
   const unique = [...new Set(userIds)];
   if (unique.length === 0) return new Map();
 
-  const users = await UserModel.find({ _id: { $in: unique } }).select('email displayName').lean();
+  const users = await userDocs().find({ _id: { $in: unique } }, { select: 'email displayName' });
   const map = new Map<string, { userId: string; email: string; displayName?: string }>();
   for (const user of users) {
     const userId = String(user._id);
@@ -76,9 +94,7 @@ async function getCommentDepth(parentId: string): Promise<number> {
   let currentId: string | undefined = parentId;
 
   while (currentId) {
-    const parent: { parentId?: string | null } | null = await CommentModel.findById(currentId)
-      .select('parentId')
-      .lean();
+    const parent: { parentId?: string | null } | null = await commentDocs().findById(currentId, { select: 'parentId' });
     if (!parent) break;
     depth += 1;
     if (depth >= MAX_COMMENT_DEPTH) return depth;
@@ -100,7 +116,7 @@ async function resolveProjectContext(task: {
   const projectId = projectIds[0];
   if (!projectId) return {};
 
-  const project = await ProjectModel.findById(projectId).select('name').lean();
+  const project = await projectDocs().findById(projectId, { select: 'name' });
   return { projectId, projectName: project?.name };
 }
 
@@ -146,9 +162,7 @@ async function notifyCommentRecipients(input: {
     projectName,
   };
 
-  const users = await UserModel.find({ _id: { $in: [...recipientIds] } })
-    .select('email displayName')
-    .lean();
+  const users = await userDocs().find({ _id: { $in: [...recipientIds] } }, { select: 'email displayName' });
 
   for (const user of users) {
     const userId = String(user._id);
@@ -170,11 +184,11 @@ async function notifyCommentRecipients(input: {
 }
 
 async function cascadeDeleteComment(commentId: string): Promise<void> {
-  const childIds = await CommentModel.find({ parentId: commentId }).select('_id').lean();
+  const childIds = await commentDocs().find({ parentId: commentId }, { select: '_id' });
   for (const child of childIds) {
     await cascadeDeleteComment(String(child._id));
   }
-  await CommentModel.deleteOne({ _id: commentId });
+  await commentDocs().deleteOne({ _id: commentId });
 }
 
 export class CommentService {
@@ -182,9 +196,7 @@ export class CommentService {
     await taskService.assertTaskAccess(userId, taskId, 'viewer');
 
     const subtaskPath = normalizeSubtaskPath(options.subtaskPath);
-    const docs = await CommentModel.find({ taskId, ...subtaskPathQuery(subtaskPath) })
-      .sort({ createdAt: 1 })
-      .lean();
+    const docs = await commentDocs().find({ taskId, ...subtaskPathQuery(subtaskPath) }, { sort: { createdAt: 1 } });
 
     return serializeComments(docs);
   }
@@ -192,7 +204,7 @@ export class CommentService {
   async listCommentsForTask(userId: string, taskId: string, stagingConversationId?: string): Promise<Comment[]> {
     await taskService.assertTaskAccess(userId, taskId, 'viewer', stagingConversationId);
 
-    const docs = await CommentModel.find({ taskId }).sort({ createdAt: 1 }).lean();
+    const docs = await commentDocs().find({ taskId }, { sort: { createdAt: 1 } });
     return serializeComments(docs);
   }
 
@@ -203,7 +215,7 @@ export class CommentService {
     stagingConversationId?: string
   ): Promise<Comment> {
     const { task: taskDoc } = await taskService.assertTaskAccess(userId, taskId, 'executor', stagingConversationId);
-    const task = taskDoc as {
+    const task = taskDoc as unknown as {
       _id: unknown;
       userId: string;
       title: string;
@@ -230,7 +242,7 @@ export class CommentService {
         throw new HttpError(400, 'Invalid parent comment id');
       }
 
-      const parent = await CommentModel.findOne({ _id: input.parentId, taskId }).lean();
+      const parent = await commentDocs().findOne({ _id: input.parentId, taskId });
       if (!parent) {
         throw new HttpError(404, 'Parent comment not found');
       }
@@ -248,7 +260,7 @@ export class CommentService {
       parentAuthorUserId = parent.userId;
     }
 
-    const doc = await CommentModel.create({
+    const doc = await commentDocs().create({
       taskId,
       subtaskPath,
       userId,
@@ -268,7 +280,7 @@ export class CommentService {
       },
     });
 
-    const author = await UserModel.findById(userId).select('email displayName').lean();
+    const author = await userDocs().findById(userId, { select: 'email displayName' });
     const authorEmail = author?.email ?? 'unknown';
     const authorDisplayName = author?.displayName ?? undefined;
 
@@ -327,7 +339,7 @@ export class CommentService {
       throw new HttpError(400, 'body is required');
     }
 
-    const doc = await CommentModel.findOne({ _id: commentId, taskId });
+    const doc = await commentDocs().findOne({ _id: commentId, taskId });
     if (!doc) {
       throw new HttpError(404, 'Comment not found');
     }
@@ -337,7 +349,7 @@ export class CommentService {
 
     doc.body = body;
     doc.editedAt = new Date();
-    await doc.save();
+    await commentDocs().replaceOne({ _id: doc._id }, doc);
 
     await logActivity({
       taskId,
@@ -352,7 +364,7 @@ export class CommentService {
 
     await enqueueEmbeddingJob(taskId);
 
-    const author = await UserModel.findById(userId).select('email displayName').lean();
+    const author = await userDocs().findById(userId, { select: 'email displayName' });
     return serializeComment(
       {
         _id: doc._id,
@@ -376,7 +388,7 @@ export class CommentService {
   async deleteComment(userId: string, taskId: string, commentId: string): Promise<void> {
     const { role } = await taskService.assertTaskAccess(userId, taskId, 'executor');
 
-    const doc = await CommentModel.findOne({ _id: commentId, taskId }).lean();
+    const doc = await commentDocs().findOne({ _id: commentId, taskId });
     if (!doc) {
       throw new HttpError(404, 'Comment not found');
     }

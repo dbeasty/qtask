@@ -1,5 +1,19 @@
 import crypto from 'node:crypto';
-import { InviteModel, ProjectModel, UserModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { InviteDoc, ProjectDoc, UserDoc } from '../data/documents.js';
+
+function inviteDocs() {
+  return collection<InviteDoc>('invites');
+}
+
+function projectDocs() {
+  return collection<ProjectDoc>('projects');
+}
+
+function userDocs() {
+  return collection<UserDoc>('users');
+}
+
 import { HttpError } from '../utils/httpError.js';
 import {
   isCollaboratorRole,
@@ -55,10 +69,10 @@ type LeanInvite = {
 
 async function serializeInvite(invite: LeanInvite): Promise<SerializedInvite> {
   const [project, inviter, invitee] = await Promise.all([
-    ProjectModel.findById(invite.projectId).select('name').lean(),
-    UserModel.findById(invite.inviterUserId).select('email displayName').lean(),
+    projectDocs().findById(invite.projectId, { select: 'name' }),
+    userDocs().findById(invite.inviterUserId, { select: 'email displayName' }),
     invite.inviteeUserId
-      ? UserModel.findById(invite.inviteeUserId).select('email displayName').lean()
+      ? userDocs().findById(invite.inviteeUserId, { select: 'email displayName' })
       : Promise.resolve(null),
   ]);
 
@@ -82,7 +96,7 @@ async function serializeInvite(invite: LeanInvite): Promise<SerializedInvite> {
 }
 
 async function expireStaleInvites(): Promise<void> {
-  await InviteModel.updateMany(
+  await inviteDocs().updateMany(
     { status: 'pending', expiresAt: { $lt: new Date() } },
     { $set: { status: 'expired', respondedAt: new Date() } }
   );
@@ -101,7 +115,7 @@ export class InviteService {
       throw new HttpError(400, 'Invalid collaborator role');
     }
 
-    const inviter = await UserModel.findById(userId).select('email displayName').lean();
+    const inviter = await userDocs().findById(userId, { select: 'email displayName' });
     if (!inviter) {
       throw new HttpError(404, 'User not found');
     }
@@ -110,16 +124,14 @@ export class InviteService {
     let inviteeEmail: string;
 
     if (input.userId) {
-      targetUser = await UserModel.findById(input.userId).select('email displayName').lean();
+      targetUser = await userDocs().findById(input.userId, { select: 'email displayName' });
       if (!targetUser) {
         throw new HttpError(404, 'User not found');
       }
       inviteeEmail = normalizeEmail(targetUser.email);
     } else if (input.email) {
       inviteeEmail = normalizeEmail(input.email);
-      targetUser = await UserModel.findOne({ email: inviteeEmail })
-        .select('email displayName')
-        .lean();
+      targetUser = await userDocs().findOne({ email: inviteeEmail }, { select: 'email displayName' });
     } else {
       throw new HttpError(400, 'email or userId is required');
     }
@@ -128,7 +140,7 @@ export class InviteService {
       throw new HttpError(400, 'You cannot invite yourself');
     }
 
-    const project = await ProjectModel.findById(projectId).lean();
+    const project = await projectDocs().findById(projectId);
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
@@ -146,12 +158,12 @@ export class InviteService {
     }
 
     await expireStaleInvites();
-    const pending = await InviteModel.findOne({
+    const pending = await inviteDocs().findOne({
       projectId,
       inviteeEmail,
       status: 'pending',
       expiresAt: { $gt: new Date() },
-    }).lean();
+    });
     if (pending) {
       throw new HttpError(409, 'A pending invite already exists for this user');
     }
@@ -160,7 +172,7 @@ export class InviteService {
     const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
     const targetId = targetUser ? String(targetUser._id) : undefined;
 
-    const invite = await InviteModel.create({
+    const invite = await inviteDocs().create({
       projectId,
       inviterUserId: userId,
       inviteeEmail,
@@ -191,12 +203,12 @@ export class InviteService {
       });
     }
 
-    return serializeInvite(invite.toObject() as LeanInvite);
+    return serializeInvite(invite as unknown as LeanInvite);
   }
 
   async listInvitesForUser(userId: string, status: 'pending' | 'all' = 'pending') {
     await expireStaleInvites();
-    const user = await UserModel.findById(userId).select('email').lean();
+    const user = await userDocs().findById(userId, { select: 'email' });
     if (!user) {
       throw new HttpError(404, 'User not found');
     }
@@ -209,22 +221,20 @@ export class InviteService {
       query.expiresAt = { $gt: new Date() };
     }
 
-    const invites = await InviteModel.find(query).sort({ createdAt: -1 }).lean();
+    const invites = await inviteDocs().find(query, { sort: { createdAt: -1 } });
     return Promise.all(invites.map((invite) => serializeInvite(invite as LeanInvite)));
   }
 
   async listInvitesForProject(userId: string, projectId: string) {
     await projectService.assertProjectAccess(userId, projectId, 'owner');
     await expireStaleInvites();
-    const invites = await InviteModel.find({ projectId, status: 'pending', expiresAt: { $gt: new Date() } })
-      .sort({ createdAt: -1 })
-      .lean();
+    const invites = await inviteDocs().find({ projectId, status: 'pending', expiresAt: { $gt: new Date() } }, { sort: { createdAt: -1 } });
     return Promise.all(invites.map((invite) => serializeInvite(invite as LeanInvite)));
   }
 
   async getInvitePreview(token: string) {
     await expireStaleInvites();
-    const invite = await InviteModel.findOne({ token }).lean();
+    const invite = await inviteDocs().findOne({ token });
     if (!invite || invite.status !== 'pending' || invite.expiresAt <= new Date()) {
       throw new HttpError(404, 'Invite not found or expired');
     }
@@ -239,12 +249,12 @@ export class InviteService {
 
   async acceptInvite(userId: string, inviteId: string) {
     await expireStaleInvites();
-    const invite = await InviteModel.findById(inviteId);
+    const invite = await inviteDocs().findById(inviteId);
     if (!invite || invite.status !== 'pending' || invite.expiresAt <= new Date()) {
       throw new HttpError(404, 'Invite not found or expired');
     }
 
-    const user = await UserModel.findById(userId).select('email displayName').lean();
+    const user = await userDocs().findById(userId, { select: 'email displayName' });
     if (!user) {
       throw new HttpError(404, 'User not found');
     }
@@ -257,15 +267,19 @@ export class InviteService {
       throw new HttpError(403, 'This invite is for a different email address');
     }
 
-    await projectService.grantCollaboratorAccess(String(invite.projectId), userId, invite.role);
+    await projectService.grantCollaboratorAccess(
+      String(invite.projectId),
+      userId,
+      invite.role as CollaboratorRole
+    );
 
     invite.status = 'accepted';
     invite.inviteeUserId = userId;
     invite.respondedAt = new Date();
-    await invite.save();
+    await inviteDocs().replaceOne({ _id: invite._id }, invite);
 
-    const project = await ProjectModel.findById(invite.projectId).select('name userId').lean();
-    const inviter = await UserModel.findById(invite.inviterUserId).select('email').lean();
+    const project = await projectDocs().findById(invite.projectId, { select: 'name userId' });
+    const inviter = await userDocs().findById(invite.inviterUserId, { select: 'email' });
 
     if (project && inviter?.email) {
       await sendProjectShareAcceptedEmail({
@@ -287,13 +301,13 @@ export class InviteService {
 
     const accessProject = await projectService.getProject(userId, String(invite.projectId));
     return {
-      invite: await serializeInvite(invite.toObject() as LeanInvite),
+      invite: await serializeInvite(invite as unknown as LeanInvite),
       project: accessProject,
     };
   }
 
   async acceptInviteByToken(userId: string, token: string) {
-    const invite = await InviteModel.findOne({ token }).lean();
+    const invite = await inviteDocs().findOne({ token });
     if (!invite) {
       throw new HttpError(404, 'Invite not found');
     }
@@ -302,12 +316,12 @@ export class InviteService {
 
   async declineInvite(userId: string, inviteId: string) {
     await expireStaleInvites();
-    const invite = await InviteModel.findById(inviteId);
+    const invite = await inviteDocs().findById(inviteId);
     if (!invite || invite.status !== 'pending' || invite.expiresAt <= new Date()) {
       throw new HttpError(404, 'Invite not found or expired');
     }
 
-    const user = await UserModel.findById(userId).select('email displayName').lean();
+    const user = await userDocs().findById(userId, { select: 'email displayName' });
     if (!user) {
       throw new HttpError(404, 'User not found');
     }
@@ -322,10 +336,10 @@ export class InviteService {
     invite.status = 'declined';
     invite.inviteeUserId = userId;
     invite.respondedAt = new Date();
-    await invite.save();
+    await inviteDocs().replaceOne({ _id: invite._id }, invite);
 
-    const project = await ProjectModel.findById(invite.projectId).select('name').lean();
-    const inviter = await UserModel.findById(invite.inviterUserId).select('email').lean();
+    const project = await projectDocs().findById(invite.projectId, { select: 'name' });
+    const inviter = await userDocs().findById(invite.inviterUserId, { select: 'email' });
 
     if (project && inviter?.email) {
       await sendProjectShareDeclinedEmail({
@@ -345,19 +359,19 @@ export class InviteService {
       inviteId: String(invite._id),
     });
 
-    return serializeInvite(invite.toObject() as LeanInvite);
+    return serializeInvite(invite as unknown as LeanInvite);
   }
 
   async cancelInvite(userId: string, projectId: string, inviteId: string) {
     await projectService.assertProjectAccess(userId, projectId, 'owner');
-    const invite = await InviteModel.findOne({ _id: inviteId, projectId, status: 'pending' });
+    const invite = await inviteDocs().findOne({ _id: inviteId, projectId, status: 'pending' });
     if (!invite) {
       throw new HttpError(404, 'Pending invite not found');
     }
     invite.status = 'expired';
     invite.respondedAt = new Date();
-    await invite.save();
-    return serializeInvite(invite.toObject() as LeanInvite);
+    await inviteDocs().replaceOne({ _id: invite._id }, invite);
+    return serializeInvite(invite as unknown as LeanInvite);
   }
 }
 

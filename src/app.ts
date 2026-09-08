@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import mongoose from 'mongoose';
 import { connectDb } from './db/connection.js';
+import { getDataHealth } from './data/index.js';
 import { projectsRouter } from './routes/projects.js';
 import { tasksRouter } from './routes/tasks.js';
 import { agentRouter } from './routes/agent.js';
@@ -127,6 +128,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
       gitSha: GIT_SHA,
       aiVersion,
       checks,
+      data: getDataHealth(),
       features: getHealthFeaturesPayload(),
       ...(deployment.readOnly || deployment.phase !== 'normal' ? { deployment } : {}),
     });

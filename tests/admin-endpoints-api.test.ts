@@ -21,12 +21,15 @@ before(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
   const { createAdminApp } = await import('../src/admin/app.js');
-  await mongoose.connect(process.env.MONGODB_URI);
-  adminApp = await createAdminApp({ connect: false, serveClient: false });
+  // Boot through the app's own lifecycle rather than opening a driver connection
+  // by hand: the data layer, not Mongoose, is what the services talk to now, and
+  // connecting the driver alone leaves the store uninitialized.
+  adminApp = await createAdminApp({ connect: true, serveClient: false });
 });
 
 after(async () => {
-  await mongoose.disconnect();
+  const { disconnectDb } = await import('../src/db/connection.ts');
+  await disconnectDb();
   await mongo.stop();
 });
 

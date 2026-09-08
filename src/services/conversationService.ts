@@ -1,4 +1,9 @@
-import { ConversationModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { ConversationDoc } from '../data/documents.js';
+
+function conversations() {
+  return collection<ConversationDoc>('conversations');
+}
 import type {
   Conversation,
   ConversationSummary,
@@ -99,7 +104,7 @@ export class ConversationService {
       projectId = await projectService.ensureDefaultProject(userId);
     }
 
-    const doc = await ConversationModel.create({
+    const doc = await conversations().create({
       userId,
       projectId,
       title,
@@ -107,11 +112,11 @@ export class ConversationService {
       pendingProposals: [],
       pausedBatch: null,
     });
-    return toConversation(doc.toObject() as Parameters<typeof toConversation>[0]);
+    return toConversation(doc as Parameters<typeof toConversation>[0]);
   }
 
   async getConversation(userId: string, conversationId: string): Promise<Conversation | null> {
-    const doc = await ConversationModel.findOne({ _id: conversationId, userId }).lean();
+    const doc = await conversations().findOne({ _id: conversationId, userId });
     if (!doc) return null;
     return toConversation(doc as Parameters<typeof toConversation>[0]);
   }
@@ -123,20 +128,17 @@ export class ConversationService {
     // listing a user's conversations doesn't pull every conversation's
     // full message history (and pendingProposals/pausedBatch) into memory
     // just to build a lightweight summary list.
-    const docs = await ConversationModel.find(filter)
-      .select('userId projectId title createdAt updatedAt')
-      .sort({ updatedAt: -1 })
-      .lean();
+    const docs = await conversations().find(filter, { sort: { updatedAt: -1 }, select: 'userId projectId title createdAt updatedAt' });
     return docs.map((doc) => toSummary(doc as Parameters<typeof toSummary>[0]));
   }
 
   async deleteConversation(userId: string, conversationId: string): Promise<boolean> {
-    const result = await ConversationModel.deleteOne({ _id: conversationId, userId });
-    return result.deletedCount === 1;
+    const result = await conversations().deleteOne({ _id: conversationId, userId });
+    return result.deleted === 1;
   }
 
   async resetConversation(userId: string, conversationId: string): Promise<Conversation | null> {
-    const existing = await ConversationModel.findOne({ _id: conversationId, userId }).lean();
+    const existing = await conversations().findOne({ _id: conversationId, userId });
     if (!existing) return null;
 
     const firstUserMessage = (existing.messages ?? []).find(
@@ -151,7 +153,7 @@ export class ConversationService {
         ]
       : [];
 
-    const doc = await ConversationModel.findOneAndUpdate(
+    const doc = await conversations().findOneAndUpdate(
       { _id: conversationId, userId },
       {
         $set: {
@@ -160,8 +162,8 @@ export class ConversationService {
           pausedBatch: null,
         },
       },
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
 
     if (!doc) return null;
     return toConversation(doc as Parameters<typeof toConversation>[0]);
@@ -171,7 +173,7 @@ export class ConversationService {
     userId: string,
     conversationId: string
   ): Promise<Conversation | null> {
-    const existing = await ConversationModel.findOne({ _id: conversationId, userId }).lean();
+    const existing = await conversations().findOne({ _id: conversationId, userId });
     if (!existing) return null;
 
     const baseTitle = existing.title?.trim() || 'New conversation';
@@ -184,7 +186,7 @@ export class ConversationService {
       toolName: message.toolName ?? undefined,
     }));
 
-    const doc = await ConversationModel.create({
+    const doc = await conversations().create({
       userId,
       projectId: existing.projectId,
       title,
@@ -193,7 +195,7 @@ export class ConversationService {
       pausedBatch: null,
     });
 
-    return toConversation(doc.toObject() as Parameters<typeof toConversation>[0]);
+    return toConversation(doc as Parameters<typeof toConversation>[0]);
   }
 
   async appendMessages(
@@ -209,11 +211,11 @@ export class ConversationService {
       update.$set = { title };
     }
 
-    const doc = await ConversationModel.findOneAndUpdate(
+    const doc = await conversations().findOneAndUpdate(
       { _id: conversationId, userId },
       update,
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
 
     if (!doc) return null;
     return toConversation(doc as Parameters<typeof toConversation>[0]);
@@ -230,11 +232,11 @@ export class ConversationService {
       update.title = title;
     }
 
-    const doc = await ConversationModel.findOneAndUpdate(
+    const doc = await conversations().findOneAndUpdate(
       { _id: conversationId, userId },
       { $set: update },
-      { new: true }
-    ).lean();
+      { returnDocument: 'after' }
+    );
 
     if (!doc) return null;
     return toConversation(doc as Parameters<typeof toConversation>[0]);
@@ -260,11 +262,11 @@ export class ConversationService {
         update.title = data.title;
       }
 
-      const doc = await ConversationModel.findOneAndUpdate(
+      const doc = await conversations().findOneAndUpdate(
         { _id: conversationId, userId },
         { $set: update },
-        { new: true }
-      ).lean();
+        { returnDocument: 'after' }
+      );
 
       if (!doc) return null;
       return toConversation(doc as Parameters<typeof toConversation>[0]);
@@ -284,14 +286,14 @@ export class ConversationService {
       // calls approving/rejecting *different* proposals on the same
       // conversation used to race on the full pendingProposals array,
       // with whichever saved last silently reverting the other's change.
-      const doc = await ConversationModel.findOneAndUpdate(
+      const doc = await conversations().findOneAndUpdate(
         { _id: conversationId, userId, 'pendingProposals.id': proposalId },
         {
           $set: { 'pendingProposals.$.status': status },
           $push: { messages: { $each: extraMessages } },
         },
-        { new: true }
-      ).lean();
+        { returnDocument: 'after' }
+      );
 
       if (!doc) return null;
       return toConversation(doc as Parameters<typeof toConversation>[0]);
@@ -304,7 +306,7 @@ export class ConversationService {
     messages: StoredMessage[]
   ): Promise<Conversation | null> {
     return withConversationSaveLock(conversationId, async () => {
-      const doc = await ConversationModel.findOneAndUpdate(
+      const doc = await conversations().findOneAndUpdate(
         { _id: conversationId, userId },
         {
           $set: {
@@ -313,8 +315,8 @@ export class ConversationService {
             pausedBatch: null,
           },
         },
-        { new: true }
-      ).lean();
+        { returnDocument: 'after' }
+      );
 
       if (!doc) return null;
       return toConversation(doc as Parameters<typeof toConversation>[0]);

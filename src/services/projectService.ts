@@ -1,5 +1,37 @@
 import { isValidObjectId } from 'mongoose';
-import { CommentModel, InviteModel, ProjectModel, TaskModel, UserModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type {
+  CommentDoc,
+  ConversationDoc,
+  InviteDoc,
+  ProjectDoc,
+  TaskDoc,
+  UserDoc,
+} from '../data/documents.js';
+
+function projectDocs() {
+  return collection<ProjectDoc>('projects');
+}
+
+function taskDocs() {
+  return collection<TaskDoc>('tasks');
+}
+
+function userDocs() {
+  return collection<UserDoc>('users');
+}
+
+function commentDocs() {
+  return collection<CommentDoc>('comments');
+}
+
+function inviteDocs() {
+  return collection<InviteDoc>('invites');
+}
+
+function conversationDocs() {
+  return collection<ConversationDoc>('conversations');
+}
 import { config } from '../config/index.js';
 import {
   enqueueProjectEmbeddingJob,
@@ -108,9 +140,7 @@ async function loadUserLookup(userIds: string[]): Promise<Map<string, UserLookup
   const unique = [...new Set(userIds)];
   if (unique.length === 0) return new Map();
 
-  const users = await UserModel.find({ _id: { $in: unique } })
-    .select('email displayName')
-    .lean();
+  const users = await userDocs().find({ _id: { $in: unique } }, { select: 'email displayName' });
   return new Map(
     users.map((u) => [String(u._id), { email: u.email, displayName: u.displayName ?? undefined }])
   );
@@ -200,25 +230,30 @@ async function serializeProjectsBatch(
 export class ProjectService {
   /** One-shot rename of legacy `commenter` collaborator role to `executor`. */
   async migrateLegacyCollaboratorRoles(): Promise<number> {
-    const result = await ProjectModel.updateMany(
-      { 'collaborators.role': 'commenter' },
-      { $set: { 'collaborators.$[c].role': 'executor' } },
-      { arrayFilters: [{ 'c.role': 'commenter' }], runValidators: false }
-    );
-    return result.modifiedCount;
+    // A positional array update (`collaborators.$[c].role`) has no equivalent in the
+    // data layer, and a legacy one-off migration does not justify one. Rewriting the
+    // affected documents is the same work at this scale.
+    const stale = await projectDocs().find({ 'collaborators.role': 'commenter' });
+    let migrated = 0;
+    for (const project of stale) {
+      const collaborators = (project.collaborators ?? []).map((collaborator) =>
+        collaborator.role === 'commenter' ? { ...collaborator, role: 'executor' } : collaborator
+      );
+      await projectDocs().updateOne({ _id: project._id }, { $set: { collaborators } });
+      migrated++;
+    }
+    return migrated;
   }
 
   async ensureDefaultProject(userId: string): Promise<string> {
     return withDefaultProjectLock(userId, async () => {
-      const count = await ProjectModel.countDocuments({ userId, staging: { $exists: false } });
+      const count = await projectDocs().countDocuments({ userId, staging: { $exists: false } });
       if (count > 0) {
-        const existing = await ProjectModel.findOne({ userId, staging: { $exists: false } })
-          .sort({ createdAt: 1 })
-          .lean();
+        const existing = await projectDocs().findOne({ userId, staging: { $exists: false } }, { sort: { createdAt: 1 } });
         return String(existing!._id);
       }
 
-      const project = await ProjectModel.create({
+      const project = await projectDocs().create({
         userId,
         name: DEFAULT_PROJECT_NAME,
         collaborators: [],
@@ -240,9 +275,7 @@ export class ProjectService {
   }
 
   async listAccessibleProjectIds(userId: string): Promise<string[]> {
-    const projects = await ProjectModel.find(this.accessibleProjectFilter(userId))
-      .select('_id')
-      .lean();
+    const projects = await projectDocs().find(this.accessibleProjectFilter(userId), { select: '_id' });
     return projects.map((p) => String(p._id));
   }
 
@@ -255,10 +288,10 @@ export class ProjectService {
     // so callers get a clean "not found" instead of a Mongoose CastError (HTTP 500).
     if (!isValidObjectId(projectId)) return null;
 
-    const project = await ProjectModel.findOne({
+    const project = await projectDocs().findOne({
       _id: projectId,
       ...this.accessibleProjectFilter(userId),
-    }).lean();
+    });
     if (project) {
       const role = resolveRole(project as LeanProject, userId);
       if (!role) return null;
@@ -270,11 +303,11 @@ export class ProjectService {
     // which the agent's own tool instructions promise can reference it in
     // later calls within the same turn (see stagedToolContent()).
     if (stagingConversationId) {
-      const staged = await ProjectModel.findOne({
+      const staged = await projectDocs().findOne({
         _id: projectId,
         userId,
         'staging.conversationId': stagingConversationId,
-      }).lean();
+      });
       if (staged) {
         return { project: staged as LeanProject, role: 'owner' };
       }
@@ -307,11 +340,11 @@ export class ProjectService {
     projectId: string,
     staging: StagingContext
   ): Promise<void> {
-    const project = await ProjectModel.findOne({
+    const project = await projectDocs().findOne({
       _id: projectId,
       userId,
       'staging.conversationId': staging.conversationId,
-    }).lean();
+    });
     if (project) return;
     await this.assertProjectAccess(userId, projectId, 'editor');
   }
@@ -358,7 +391,7 @@ export class ProjectService {
       await this.assertProjectAccess(userId, projectId, 'editor', stagingConversationId);
     }
 
-    const project = await ProjectModel.findById(projectId);
+    const project = await projectDocs().findById(projectId);
     if (!project) return null;
 
     const previousName = project.name;
@@ -390,16 +423,14 @@ export class ProjectService {
     }
     if (input.progressShare !== undefined) {
       if (input.progressShare === null) {
-        project.set('progressShare', undefined);
-        project.markModified('progressShare');
+        delete project.progressShare;
       } else {
         project.progressShare = Math.max(0, Math.min(100, Math.round(input.progressShare)));
       }
     }
     if (input.hourlyRate !== undefined) {
       if (input.hourlyRate === null) {
-        project.set('hourlyRate', undefined);
-        project.markModified('hourlyRate');
+        delete project.hourlyRate;
       } else {
         project.hourlyRate = Math.max(0, input.hourlyRate);
       }
@@ -412,13 +443,13 @@ export class ProjectService {
       }
     }
 
-    await project.save();
+    await projectDocs().replaceOne({ _id: project._id }, project);
 
     if (input.progressShare === null) {
-      await ProjectModel.updateOne({ _id: projectId }, { $unset: { progressShare: 1 } });
+      await projectDocs().updateOne({ _id: projectId }, { $unset: { progressShare: 1 } });
     }
     if (input.hourlyRate === null) {
-      await ProjectModel.updateOne({ _id: projectId }, { $unset: { hourlyRate: 1 } });
+      await projectDocs().updateOne({ _id: projectId }, { $unset: { hourlyRate: 1 } });
     }
 
     const affected = new Set<string>([projectId]);
@@ -442,7 +473,7 @@ export class ProjectService {
       await enqueueTaskEmbeddingsForProject(projectId);
     }
 
-    const refreshed = await ProjectModel.findById(projectId).lean();
+    const refreshed = await projectDocs().findById(projectId);
     if (!refreshed) return null;
     return serializeProject(refreshed as LeanProject, userId);
   }
@@ -463,23 +494,23 @@ export class ProjectService {
       } else {
         await this.assertProjectAccess(userId, parentId, 'manager');
       }
-      const parentDoc = await ProjectModel.findById(parentId).lean();
+      const parentDoc = await projectDocs().findById(parentId);
       if (!parentDoc) {
         throw new HttpError(404, 'Project not found');
       }
       ownerUserId = String(parentDoc.userId);
       inheritedCollaborators = (parentDoc.collaborators ?? []).map((c) => ({
         userId: c.userId,
-        role: c.role,
+        role: c.role as CollaboratorRole,
       }));
     }
 
     if (staging) {
-      const existing = await ProjectModel.findOne({
+      const existing = await projectDocs().findOne({
         userId: ownerUserId,
         name,
         'staging.conversationId': staging.conversationId,
-      }).lean();
+      });
       if (existing) {
         return serializeProject(existing as LeanProject, userId);
       }
@@ -490,13 +521,10 @@ export class ProjectService {
       parentId: parentId ?? null,
       staging: { $exists: false },
     };
-    const maxSibling = await ProjectModel.findOne(siblingFilter)
-      .sort({ sortOrder: -1 })
-      .select('sortOrder')
-      .lean();
+    const maxSibling = await projectDocs().findOne(siblingFilter, { sort: { sortOrder: -1 }, select: 'sortOrder' });
     const sortOrder = maxSibling ? (maxSibling.sortOrder ?? 0) + 1 : 0;
 
-    const project = await ProjectModel.create({
+    const project = await projectDocs().create({
       userId: ownerUserId,
       name,
       description,
@@ -516,8 +544,8 @@ export class ProjectService {
       await enqueueProjectEmbeddingJob(String(project._id));
     }
 
-    const refreshed = await ProjectModel.findById(project._id).lean();
-    return serializeProject((refreshed ?? project.toObject()) as LeanProject, userId);
+    const refreshed = await projectDocs().findById(project._id);
+    return serializeProject((refreshed ?? project) as LeanProject, userId);
   }
 
   async moveProject(
@@ -528,7 +556,7 @@ export class ProjectService {
     await this.assertProjectAccess(userId, projectId, 'manager');
     await this.assertValidParent(userId, projectId, input.parentId);
 
-    const project = await ProjectModel.findById(projectId);
+    const project = await projectDocs().findById(projectId);
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
@@ -538,14 +566,11 @@ export class ProjectService {
     const newParentId = input.parentId;
     await this.assertMoveKeepsActorAccess(userId, project.userId, previousParentId, newParentId);
 
-    const siblings = await ProjectModel.find({
+    const siblings = await projectDocs().find({
       ...this.accessibleProjectFilter(userId),
       parentId: newParentId,
       _id: { $ne: projectId },
-    })
-      .sort({ sortOrder: 1, createdAt: 1 })
-      .select('_id')
-      .lean();
+    }, { sort: { sortOrder: 1, createdAt: 1 }, select: '_id' });
 
     const orderedIds = siblings.map((s) => String(s._id));
     const insertIndex =
@@ -556,13 +581,13 @@ export class ProjectService {
 
     project.parentId = newParentId;
     project.sortOrder = insertIndex;
-    await project.save();
+    await projectDocs().replaceOne({ _id: project._id }, project);
 
     await this.reconcileCollaboratorsAfterMove(projectId, previousParentId, newParentId);
 
     await Promise.all(
       orderedIds.map((id, sortOrder) =>
-        ProjectModel.updateOne({ _id: id }, { $set: { sortOrder } })
+        projectDocs().updateOne({ _id: id }, { $set: { sortOrder } })
       )
     );
 
@@ -571,7 +596,7 @@ export class ProjectService {
     if (newParentId) affected.add(newParentId);
     await this.recalculateProjects([...affected]);
 
-    const refreshed = await ProjectModel.findById(projectId).lean();
+    const refreshed = await projectDocs().findById(projectId);
     if (!refreshed) {
       throw new HttpError(404, 'Project not found');
     }
@@ -598,9 +623,7 @@ export class ProjectService {
       }
       if (seen.has(cursor)) break;
       seen.add(cursor);
-      const ancestorDoc: { parentId?: string | null } | null = await ProjectModel.findById(cursor)
-        .select('parentId')
-        .lean();
+      const ancestorDoc: { parentId?: string | null } | null = await projectDocs().findById(cursor, { select: 'parentId' });
       cursor = ancestorDoc?.parentId ? String(ancestorDoc.parentId) : null;
     }
   }
@@ -613,9 +636,7 @@ export class ProjectService {
 
   async listProjects(userId: string) {
     await this.ensureDefaultProject(userId);
-    const projects = await ProjectModel.find(this.accessibleProjectFilter(userId))
-      .sort({ sortOrder: 1, createdAt: 1 })
-      .lean();
+    const projects = await projectDocs().find(this.accessibleProjectFilter(userId), { sort: { sortOrder: 1, createdAt: 1 } });
     return serializeProjectsBatch(projects as LeanProject[], userId);
   }
 
@@ -624,19 +645,17 @@ export class ProjectService {
     const excludeUserIds = new Set<string>([userId]);
 
     if (excludeProjectId) {
-      const project = await ProjectModel.findById(excludeProjectId).lean();
+      const project = await projectDocs().findById(excludeProjectId);
       if (project) {
         excludeUserIds.add(project.userId);
         for (const c of project.collaborators ?? []) {
           excludeUserIds.add(c.userId);
         }
       }
-      const pending = await InviteModel.find({
+      const pending = await inviteDocs().find({
         projectId: excludeProjectId,
         status: 'pending',
-      })
-        .select('inviteeUserId inviteeEmail')
-        .lean();
+      }, { select: 'inviteeUserId inviteeEmail' });
       for (const invite of pending) {
         if (invite.inviteeUserId) excludeUserIds.add(invite.inviteeUserId);
       }
@@ -644,13 +663,11 @@ export class ProjectService {
 
     const lastSharedAt = new Map<string, Date>();
 
-    const acceptedInvites = await InviteModel.find({
+    const acceptedInvites = await inviteDocs().find({
       inviterUserId: userId,
       status: 'accepted',
       inviteeUserId: { $exists: true, $ne: null },
-    })
-      .select('inviteeUserId respondedAt createdAt')
-      .lean();
+    }, { select: 'inviteeUserId respondedAt createdAt' });
 
     for (const invite of acceptedInvites) {
       const id = invite.inviteeUserId as string;
@@ -659,9 +676,7 @@ export class ProjectService {
       if (!prev || at > prev) lastSharedAt.set(id, at);
     }
 
-    const ownedProjects = await ProjectModel.find({ userId, staging: { $exists: false } })
-      .select('collaborators updatedAt')
-      .lean();
+    const ownedProjects = await projectDocs().find({ userId, staging: { $exists: false } }, { select: 'collaborators updatedAt' });
 
     for (const project of ownedProjects) {
       const at = project.updatedAt ?? new Date();
@@ -674,9 +689,7 @@ export class ProjectService {
     const contactIds = [...lastSharedAt.keys()].filter((id) => !excludeUserIds.has(id));
     if (contactIds.length === 0) return [];
 
-    const users = await UserModel.find({ _id: { $in: contactIds } })
-      .select('email displayName')
-      .lean();
+    const users = await userDocs().find({ _id: { $in: contactIds } }, { select: 'email displayName' });
     const byId = new Map(users.map((u) => [String(u._id), u]));
 
     const contacts: ShareContact[] = contactIds.flatMap((id) => {
@@ -701,7 +714,7 @@ export class ProjectService {
   async deleteProject(userId: string, projectId: string) {
     await this.assertProjectAccess(userId, projectId, 'owner');
 
-    const project = await ProjectModel.findById(projectId).lean();
+    const project = await projectDocs().findById(projectId);
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
@@ -709,11 +722,11 @@ export class ProjectService {
     const parentId = project.parentId ?? null;
 
     const childIds = (
-      await ProjectModel.find({ parentId: projectId }).select('_id').lean()
+      await projectDocs().find({ parentId: projectId }, { select: '_id' })
     ).map((child) => String(child._id));
 
     // Reparent children to the deleted project's parent.
-    await ProjectModel.updateMany(
+    await projectDocs().updateMany(
       { parentId: projectId },
       { $set: { parentId } }
     );
@@ -729,11 +742,9 @@ export class ProjectService {
     }
 
     // Unlink shared tasks; delete tasks that only belonged to this project.
-    const linkedTasks = await TaskModel.find({
+    const linkedTasks = await taskDocs().find({
       $or: [{ projectIds: projectId }, { projectId }],
-    })
-      .select('_id projectIds projectId')
-      .lean();
+    }, { select: '_id projectIds projectId' });
 
     const otherProjectIds = new Set<string>();
     const taskIdsToDelete: string[] = [];
@@ -760,11 +771,11 @@ export class ProjectService {
     // calls. Deleting tasks this way also used to skip their comments
     // entirely, leaving them orphaned once the owning task was gone.
     if (taskIdsToDelete.length > 0) {
-      await TaskModel.deleteMany({ _id: { $in: taskIdsToDelete } });
-      await CommentModel.deleteMany({ taskId: { $in: taskIdsToDelete } });
+      await taskDocs().deleteMany({ _id: { $in: taskIdsToDelete } });
+      await commentDocs().deleteMany({ taskId: { $in: taskIdsToDelete } });
     }
     if (taskUpdates.length > 0) {
-      await TaskModel.bulkWrite(
+      await taskDocs().bulkWrite(
         taskUpdates.map(({ id, remaining }) => ({
           updateOne: {
             filter: { _id: id },
@@ -774,35 +785,29 @@ export class ProjectService {
       );
     }
     const deletedTaskCount = taskIdsToDelete.length;
+    await conversationDocs().deleteMany({ projectId });
 
-    const { ConversationModel } = await import('../models/index.js');
-    await ConversationModel.deleteMany({ projectId });
-
-    await ProjectModel.deleteOne({ _id: projectId, userId });
+    await projectDocs().deleteOne({ _id: projectId, userId });
 
     const affected = new Set<string>([...childIds, ...otherProjectIds]);
     if (parentId) affected.add(String(parentId));
     await this.recalculateProjects([...affected]);
 
-    const remainingOwned = await ProjectModel.countDocuments({
+    const remainingOwned = await projectDocs().countDocuments({
       userId,
       staging: { $exists: false },
     });
     let nextProjectId: string | null = null;
     if (remainingOwned === 0) {
-      const stillAccessible = await ProjectModel.countDocuments(this.accessibleProjectFilter(userId));
+      const stillAccessible = await projectDocs().countDocuments(this.accessibleProjectFilter(userId));
       if (stillAccessible === 0) {
         nextProjectId = await this.ensureDefaultProject(userId);
       } else {
-        const next = await ProjectModel.findOne(this.accessibleProjectFilter(userId))
-          .sort({ sortOrder: 1, createdAt: 1 })
-          .lean();
+        const next = await projectDocs().findOne(this.accessibleProjectFilter(userId), { sort: { sortOrder: 1, createdAt: 1 } });
         nextProjectId = next ? String(next._id) : null;
       }
     } else {
-      const next = await ProjectModel.findOne({ userId, staging: { $exists: false } })
-        .sort({ sortOrder: 1, createdAt: 1 })
-        .lean();
+      const next = await projectDocs().findOne({ userId, staging: { $exists: false } }, { sort: { sortOrder: 1, createdAt: 1 } });
       nextProjectId = next ? String(next._id) : null;
     }
 
@@ -824,7 +829,7 @@ export class ProjectService {
       seen.add(cursor);
 
       const project: { _id: unknown; parentId?: string | null } | null =
-        await ProjectModel.findById(cursor).select('_id parentId').lean();
+        await projectDocs().findById(cursor, { select: '_id parentId' });
       if (!project) break;
 
       await this.recalculateSingleProject(String(project._id));
@@ -846,7 +851,7 @@ export class ProjectService {
         visited.add(cursor);
 
         const project: { _id: unknown; parentId?: string | null } | null =
-          await ProjectModel.findById(cursor).select('_id parentId').lean();
+          await projectDocs().findById(cursor, { select: '_id parentId' });
         if (!project) break;
 
         await this.recalculateSingleProject(String(project._id));
@@ -857,9 +862,7 @@ export class ProjectService {
 
   /** One-shot backfill of progress fields for all non-staged projects (deepest first). */
   async recalculateAllProjects(): Promise<number> {
-    const projects = await ProjectModel.find({ staging: { $exists: false } })
-      .select('_id parentId')
-      .lean();
+    const projects = await projectDocs().find({ staging: { $exists: false } }, { select: '_id parentId' });
 
     const depthCache = new Map<string, number>();
     const byId = new Map(projects.map((p) => [String(p._id), p]));
@@ -886,12 +889,10 @@ export class ProjectService {
   }
 
   private async recalculateSingleProject(projectId: string): Promise<void> {
-    const children = await ProjectModel.find({
+    const children = await projectDocs().find({
       parentId: projectId,
       staging: { $exists: false },
-    })
-      .select('status percentComplete progressShare')
-      .lean();
+    }, { select: 'status percentComplete progressShare' });
 
     let percentComplete: number;
     let status: ProjectStatus;
@@ -901,18 +902,16 @@ export class ProjectService {
         children.map((child) => ({
           status: (child.status as ProjectStatus) ?? 'todo',
           percentComplete: child.percentComplete ?? 0,
-          progressShare: child.progressShare,
+          progressShare: child.progressShare as number | undefined,
         }))
       );
       percentComplete = result.percentComplete;
       status = result.status;
     } else {
-      const tasks = await TaskModel.find({
+      const tasks = await taskDocs().find({
         staging: { $exists: false },
         $or: [{ projectIds: projectId }, { projectId }],
-      })
-        .select('status percentComplete')
-        .lean();
+      }, { select: 'status percentComplete' });
 
       const result = computeLeafProjectProgress(
         tasks.map((task) => ({
@@ -924,13 +923,13 @@ export class ProjectService {
       status = result.status;
     }
 
-    const projectDoc = await ProjectModel.findById(projectId).select('doneOverride').lean();
+    const projectDoc = await projectDocs().findById(projectId, { select: 'doneOverride' });
     if (projectDoc?.doneOverride) {
       status = 'done';
       percentComplete = 100;
     }
 
-    await ProjectModel.updateOne(
+    await projectDocs().updateOne(
       { _id: projectId },
       { $set: { status, percentComplete } }
     );
@@ -945,25 +944,21 @@ export class ProjectService {
   }
 
   async recalculateSingleProjectTracking(projectId: string): Promise<void> {
-    const project = await ProjectModel.findById(projectId)
-      .select('hourlyRate parentId')
-      .lean();
+    const project = await projectDocs().findById(projectId, { select: 'hourlyRate parentId' });
     if (!project) return;
 
     const projectRates = this.projectRatesFromDoc(project);
 
-    const children = await ProjectModel.find({
+    const children = await projectDocs().find({
       parentId: projectId,
       staging: { $exists: false },
-    })
-      .select('progressShare trackingRollup')
-      .lean();
+    }, { select: 'progressShare trackingRollup' });
 
     let tracking;
     if (children.length > 0) {
       tracking = computeParentProjectTracking(
         children.map((child) => ({
-          progressShare: child.progressShare,
+          progressShare: child.progressShare as number | undefined,
           trackingRollup: child.trackingRollup
             ? {
                 hoursSpent: child.trackingRollup.hoursSpent ?? 0,
@@ -980,12 +975,10 @@ export class ProjectService {
         projectRates
       );
     } else {
-      const tasks = await TaskModel.find({
+      const tasks = await taskDocs().find({
         staging: { $exists: false },
         $or: [{ projectIds: projectId }, { projectId }],
-      })
-        .select('title hoursSpent hoursRemaining materials hourlyRate progressShare subtasks')
-        .lean();
+      }, { select: 'title hoursSpent hoursRemaining materials hourlyRate progressShare subtasks' });
 
       tracking = computeLeafProjectTracking(
         tasks.map((task) => task as unknown as Record<string, unknown>),
@@ -993,7 +986,7 @@ export class ProjectService {
       );
     }
 
-    await ProjectModel.updateOne(
+    await projectDocs().updateOne(
       { _id: projectId },
       { $set: { trackingRollup: toStoredTrackingRollup(tracking.totals) } }
     );
@@ -1011,9 +1004,7 @@ export class ProjectService {
 
       await this.recalculateSingleProjectTracking(cursor);
 
-      const project: { parentId?: string | null } | null = await ProjectModel.findById(cursor)
-        .select('parentId')
-        .lean();
+      const project: { parentId?: string | null } | null = await projectDocs().findById(cursor, { select: 'parentId' });
       if (!project) break;
       cursor = project.parentId ? String(project.parentId) : null;
     }
@@ -1022,24 +1013,22 @@ export class ProjectService {
   async getProjectTracking(userId: string, projectId: string) {
     await this.assertProjectAccess(userId, projectId, 'viewer');
 
-    const project = await ProjectModel.findById(projectId).lean();
+    const project = await projectDocs().findById(projectId);
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
 
     const projectRates = this.projectRatesFromDoc(project);
-    const children = await ProjectModel.find({
+    const children = await projectDocs().find({
       parentId: projectId,
       staging: { $exists: false },
-    })
-      .select('progressShare trackingRollup')
-      .lean();
+    }, { select: 'progressShare trackingRollup' });
 
     let tracking;
     if (children.length > 0) {
       tracking = computeParentProjectTracking(
         children.map((child) => ({
-          progressShare: child.progressShare,
+          progressShare: child.progressShare as number | undefined,
           trackingRollup: child.trackingRollup
             ? {
                 hoursSpent: child.trackingRollup.hoursSpent ?? 0,
@@ -1056,12 +1045,10 @@ export class ProjectService {
         projectRates
       );
     } else {
-      const tasks = await TaskModel.find({
+      const tasks = await taskDocs().find({
         staging: { $exists: false },
         $or: [{ projectIds: projectId }, { projectId }],
-      })
-        .select('title hoursSpent hoursRemaining materials hourlyRate progressShare subtasks')
-        .lean();
+      }, { select: 'title hoursSpent hoursRemaining materials hourlyRate progressShare subtasks' });
 
       tracking = computeLeafProjectTracking(
         tasks.map((task) => task as unknown as Record<string, unknown>),
@@ -1094,12 +1081,10 @@ export class ProjectService {
     let frontier = [projectId];
 
     while (frontier.length > 0) {
-      const children = await ProjectModel.find({
+      const children = await projectDocs().find({
         parentId: { $in: frontier },
         staging: { $exists: false },
-      })
-        .select('_id')
-        .lean();
+      }, { select: '_id' });
 
       const childIds = children.map((child) => String(child._id));
       descendants.push(...childIds);
@@ -1117,7 +1102,7 @@ export class ProjectService {
     const projectIds = [rootProjectId, ...(await this.getDescendantProjectIds(rootProjectId))];
 
     for (const pid of projectIds) {
-      const project = await ProjectModel.findById(pid);
+      const project = await projectDocs().findById(pid);
       if (!project) continue;
       if (project.userId === targetUserId) continue;
 
@@ -1131,8 +1116,8 @@ export class ProjectService {
       } else {
         collaborators.push({ userId: targetUserId, role });
       }
-      project.set('collaborators', collaborators);
-      await project.save();
+      project.collaborators = collaborators;
+      await projectDocs().replaceOne({ _id: project._id }, project);
     }
   }
 
@@ -1155,7 +1140,7 @@ export class ProjectService {
 
     const isCollaboratorOn = async (parentId: string | null) => {
       if (!parentId) return false;
-      const parent = await ProjectModel.findById(parentId).select('collaborators').lean();
+      const parent = await projectDocs().findById(parentId, { select: 'collaborators' });
       return (parent?.collaborators ?? []).some((c) => c.userId === userId);
     };
 
@@ -1193,7 +1178,7 @@ export class ProjectService {
 
     const parentCollaborators = async (parentId: string | null) => {
       if (!parentId) return [] as Array<{ userId: string; role: CollaboratorRole }>;
-      const parent = await ProjectModel.findById(parentId).select('collaborators').lean();
+      const parent = await projectDocs().findById(parentId, { select: 'collaborators' });
       return (parent?.collaborators ?? []).map((c) => ({ userId: c.userId, role: c.role }));
     };
 
@@ -1211,7 +1196,7 @@ export class ProjectService {
     const projectIds = [movedProjectId, ...(await this.getDescendantProjectIds(movedProjectId))];
 
     for (const pid of projectIds) {
-      const project = await ProjectModel.findById(pid);
+      const project = await projectDocs().findById(pid);
       if (!project) continue;
 
       const existing = (project.collaborators ?? []).map((c) => ({
@@ -1230,15 +1215,15 @@ export class ProjectService {
         }
       }
 
-      const key = (list: Array<{ userId: string; role: CollaboratorRole }>) =>
+      const key = (list: Array<{ userId: string; role: string }>) =>
         list
           .map((c) => `${c.userId}:${c.role}`)
           .sort()
           .join(',');
       if (key(existing) === key(collaborators)) continue;
 
-      project.set('collaborators', collaborators);
-      await project.save();
+      project.collaborators = collaborators;
+      await projectDocs().replaceOne({ _id: project._id }, project);
     }
   }
 
@@ -1249,7 +1234,7 @@ export class ProjectService {
     const projectIds = [rootProjectId, ...(await this.getDescendantProjectIds(rootProjectId))];
 
     for (const pid of projectIds) {
-      const project = await ProjectModel.findById(pid);
+      const project = await projectDocs().findById(pid);
       if (!project) continue;
 
       const before = project.collaborators.length;
@@ -1258,8 +1243,8 @@ export class ProjectService {
         .map((c) => ({ userId: c.userId, role: c.role }));
       if (remaining.length === before) continue;
 
-      project.set('collaborators', remaining);
-      await project.save();
+      project.collaborators = remaining;
+      await projectDocs().replaceOne({ _id: project._id }, project);
     }
   }
 
@@ -1267,14 +1252,14 @@ export class ProjectService {
     await this.assertProjectAccess(userId, projectId, 'owner');
 
     const descendantIds = await this.getDescendantProjectIds(projectId);
-    const directTaskCount = await TaskModel.countDocuments({
+    const directTaskCount = await taskDocs().countDocuments({
       staging: { $exists: false },
       $or: [{ projectIds: projectId }, { projectId }],
     });
 
     let descendantTaskCount = 0;
     for (const childId of descendantIds) {
-      descendantTaskCount += await TaskModel.countDocuments({
+      descendantTaskCount += await taskDocs().countDocuments({
         staging: { $exists: false },
         $or: [{ projectIds: childId }, { projectId: childId }],
       });
@@ -1302,11 +1287,9 @@ export class ProjectService {
 
     let targetUser: { _id: unknown; email: string; displayName?: string | null } | null = null;
     if (input.userId) {
-      targetUser = await UserModel.findById(input.userId).select('email displayName').lean();
+      targetUser = await userDocs().findById(input.userId, { select: 'email displayName' });
     } else if (input.email) {
-      targetUser = await UserModel.findOne({ email: normalizeEmail(input.email) })
-        .select('email displayName')
-        .lean();
+      targetUser = await userDocs().findOne({ email: normalizeEmail(input.email) }, { select: 'email displayName' });
     } else {
       throw new HttpError(400, 'email or userId is required');
     }
@@ -1316,7 +1299,7 @@ export class ProjectService {
     }
 
     const targetId = String(targetUser._id);
-    const project = await ProjectModel.findById(projectId);
+    const project = await projectDocs().findById(projectId);
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
@@ -1331,11 +1314,11 @@ export class ProjectService {
     }
 
     await this.grantCollaboratorAccess(projectId, targetId, role);
-    const refreshed = await ProjectModel.findById(projectId);
+    const refreshed = await projectDocs().findById(projectId);
     if (!refreshed) {
       throw new HttpError(404, 'Project not found');
     }
-    return serializeProject(refreshed.toObject() as LeanProject, userId);
+    return serializeProject(refreshed as LeanProject, userId);
   }
 
   async updateCollaboratorRole(
@@ -1350,7 +1333,7 @@ export class ProjectService {
       throw new HttpError(400, 'Invalid collaborator role');
     }
 
-    const project = await ProjectModel.findById(projectId);
+    const project = await projectDocs().findById(projectId);
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
@@ -1365,11 +1348,11 @@ export class ProjectService {
     // old role on every sub-project.
     await this.grantCollaboratorAccess(projectId, collaboratorUserId, role);
 
-    const refreshed = await ProjectModel.findById(projectId);
+    const refreshed = await projectDocs().findById(projectId);
     if (!refreshed) {
       throw new HttpError(404, 'Project not found');
     }
-    return serializeProject(refreshed.toObject() as LeanProject, userId);
+    return serializeProject(refreshed as LeanProject, userId);
   }
 
   async removeCollaborator(userId: string, projectId: string, collaboratorUserId: string) {
@@ -1387,7 +1370,7 @@ export class ProjectService {
       throw new HttpError(400, 'Cannot remove the project owner');
     }
 
-    const project = await ProjectModel.findById(projectId);
+    const project = await projectDocs().findById(projectId);
     if (!project) {
       throw new HttpError(404, 'Project not found');
     }
@@ -1399,7 +1382,7 @@ export class ProjectService {
 
     await this.removeCollaboratorFromTree(projectId, collaboratorUserId);
 
-    const refreshed = await ProjectModel.findById(projectId);
+    const refreshed = await projectDocs().findById(projectId);
     if (!refreshed) {
       throw new HttpError(404, 'Project not found');
     }
@@ -1410,7 +1393,7 @@ export class ProjectService {
 
     return {
       left: false as const,
-      project: await serializeProject(refreshed.toObject() as LeanProject, userId),
+      project: await serializeProject(refreshed as LeanProject, userId),
     };
   }
 

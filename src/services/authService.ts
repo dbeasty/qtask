@@ -1,5 +1,14 @@
 import bcrypt from 'bcryptjs';
-import { ProjectModel, UserModel } from '../models/index.js';
+import { collection } from '../data/index.js';
+import type { ProjectDoc, UserDoc } from '../data/documents.js';
+
+function userDocs() {
+  return collection<UserDoc>('users');
+}
+
+function projectDocs() {
+  return collection<ProjectDoc>('projects');
+}
 import { signToken } from '../auth/jwt.js';
 import { createOneTimeToken, hashToken } from '../auth/oneTimeToken.js';
 import type { OAuthProfile } from '../auth/userOAuth/types.js';
@@ -121,7 +130,7 @@ function hasLinkedProvider(
 }
 
 async function findUserByProvider(provider: IdentityProviderId, providerUserId: string) {
-  return UserModel.findOne({
+  return userDocs().findOne({
     identityProviders: { $elemMatch: { provider, providerUserId } },
   });
 }
@@ -138,7 +147,7 @@ export class AuthService {
     }
 
     const email = normalizeEmail(input.email);
-    const existing = await UserModel.findOne({ email }).lean();
+    const existing = await userDocs().findOne({ email });
     if (existing) {
       throw new HttpError(409, 'An account with this email already exists');
     }
@@ -148,7 +157,7 @@ export class AuthService {
 
     let user;
     try {
-      user = await UserModel.create({
+      user = await userDocs().create({
         email,
         passwordHash,
         displayName: input.displayName?.trim() || undefined,
@@ -175,8 +184,8 @@ export class AuthService {
     try {
       await emailService.sendVerificationEmail(email, verification.token);
     } catch {
-      await ProjectModel.deleteMany({ userId });
-      await UserModel.deleteOne({ _id: user._id });
+      await projectDocs().deleteMany({ userId });
+      await userDocs().deleteOne({ _id: user._id });
       throw new HttpError(503, 'Unable to send verification email. Please try again later.');
     }
 
@@ -185,7 +194,7 @@ export class AuthService {
 
   async login(input: { email: string; password: string }) {
     const email = normalizeEmail(input.email);
-    const user = await UserModel.findOne({ email });
+    const user = await userDocs().findOne({ email });
     if (!user) {
       throw new HttpError(401, 'Invalid email or password');
     }
@@ -205,7 +214,7 @@ export class AuthService {
 
     const userId = String(user._id);
     user.lastLoginAt = new Date();
-    await user.save();
+    await userDocs().replaceOne({ _id: user._id }, user);
     const mustChangePassword = user.mustChangePassword === true;
     const token = signToken({
       sub: userId,
@@ -218,7 +227,7 @@ export class AuthService {
 
   async verifyEmail(token: string) {
     const tokenHash = hashToken(token);
-    const user = await UserModel.findOne({
+    const user = await userDocs().findOne({
       emailVerificationTokenHash: tokenHash,
       emailVerificationExpires: { $gt: new Date() },
     });
@@ -230,20 +239,20 @@ export class AuthService {
     user.emailVerified = true;
     user.emailVerificationTokenHash = undefined;
     user.emailVerificationExpires = undefined;
-    await user.save();
+    await userDocs().replaceOne({ _id: user._id }, user);
 
     return { message: 'Email verified. You can now sign in.' };
   }
 
   async resendVerification(emailInput: string) {
     const email = normalizeEmail(emailInput);
-    const user = await UserModel.findOne({ email });
+    const user = await userDocs().findOne({ email });
 
     if (user && !isEmailVerified(user) && emailService.isRegistrationEnabled()) {
       const verification = createOneTimeToken(VERIFICATION_TTL_MS);
       user.emailVerificationTokenHash = verification.tokenHash;
       user.emailVerificationExpires = verification.expiresAt;
-      await user.save();
+      await userDocs().replaceOne({ _id: user._id }, user);
       try {
         await emailService.sendVerificationEmail(email, verification.token);
       } catch {
@@ -256,7 +265,7 @@ export class AuthService {
 
   async forgotPassword(emailInput: string) {
     const email = normalizeEmail(emailInput);
-    const user = await UserModel.findOne({ email });
+    const user = await userDocs().findOne({ email });
 
     if (user && !user.passwordHash) {
       return { message: 'If an account exists for that email, a password reset link has been sent.' };
@@ -266,7 +275,7 @@ export class AuthService {
       const reset = createOneTimeToken(RESET_TTL_MS);
       user.passwordResetTokenHash = reset.tokenHash;
       user.passwordResetExpires = reset.expiresAt;
-      await user.save();
+      await userDocs().replaceOne({ _id: user._id }, user);
       try {
         await emailService.sendPasswordResetEmail(email, reset.token);
       } catch {
@@ -279,7 +288,7 @@ export class AuthService {
 
   async resetPassword(token: string, password: string) {
     const tokenHash = hashToken(token);
-    const user = await UserModel.findOne({
+    const user = await userDocs().findOne({
       passwordResetTokenHash: tokenHash,
       passwordResetExpires: { $gt: new Date() },
     });
@@ -292,13 +301,13 @@ export class AuthService {
     user.passwordResetTokenHash = undefined;
     user.passwordResetExpires = undefined;
     user.mustChangePassword = false;
-    await user.save();
+    await userDocs().replaceOne({ _id: user._id }, user);
 
     return { message: 'Password updated. You can now sign in.' };
   }
 
   async changePassword(userId: string, currentPassword: string, newPassword: string) {
-    const user = await UserModel.findById(userId);
+    const user = await userDocs().findById(userId);
     if (!user) {
       throw new HttpError(404, 'User not found');
     }
@@ -314,14 +323,14 @@ export class AuthService {
 
     user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
     user.mustChangePassword = false;
-    await user.save();
+    await userDocs().replaceOne({ _id: user._id }, user);
 
     const token = signToken({ sub: String(user._id), email: user.email });
     return { message: 'Password updated.', token, user: serializeUser(user) };
   }
 
   async createSessionForUserId(userId: string) {
-    const user = await UserModel.findById(userId);
+    const user = await userDocs().findById(userId);
     if (!user) {
       throw new HttpError(404, 'User not found');
     }
@@ -372,12 +381,12 @@ export class AuthService {
         throw new HttpError(409, 'Could not sign in with this provider. Contact support.');
       }
       byProvider.lastLoginAt = new Date();
-      await byProvider.save();
+      await userDocs().replaceOne({ _id: byProvider._id }, byProvider);
       logger.info('OAuth sign-in', { userId: String(byProvider._id), provider: profile.provider });
       return { userId: String(byProvider._id), ...this.issueSession(byProvider) };
     }
 
-    let user = await UserModel.findOne({ email });
+    let user = await userDocs().findOne({ email });
 
     if (user) {
       const alreadyLinked = hasLinkedProvider(user, profile.provider, profile.providerUserId);
@@ -430,7 +439,7 @@ export class AuthService {
       }
 
       user.lastLoginAt = new Date();
-      await user.save();
+      await userDocs().replaceOne({ _id: user._id }, user);
       return { userId: String(user._id), ...this.issueSession(user) };
     }
 
@@ -442,7 +451,7 @@ export class AuthService {
       throw new HttpError(400, 'You must accept the Terms and Privacy Policy');
     }
 
-    user = await UserModel.create({
+    user = await userDocs().create({
       email,
       displayName: profile.displayName,
       emailVerified: true,
@@ -460,7 +469,7 @@ export class AuthService {
     const userId = String(user._id);
     await projectService.ensureDefaultProject(userId);
     user.lastLoginAt = new Date();
-    await user.save();
+    await userDocs().replaceOne({ _id: user._id }, user);
 
     logger.info('OAuth account created', { userId, provider: profile.provider });
     return { userId, ...this.issueSession(user) };
@@ -478,7 +487,7 @@ export class AuthService {
       throw new HttpError(400, 'Invalid or expired confirmation link');
     }
 
-    const user = await UserModel.findById(payload.userId);
+    const user = await userDocs().findById(payload.userId);
     if (!user || !user.passwordHash) {
       throw new HttpError(401, 'Invalid email or password');
     }
@@ -506,12 +515,12 @@ export class AuthService {
     }
 
     user.lastLoginAt = new Date();
-    await user.save();
+    await userDocs().replaceOne({ _id: user._id }, user);
     return { userId: String(user._id), ...this.issueSession(user) };
   }
 
   async refreshSession(userId: string) {
-    const user = await UserModel.findById(userId);
+    const user = await userDocs().findById(userId);
     if (!user) {
       logger.warn('Refresh failed', { userId, reason: 'user_deleted' });
       throw new HttpError(404, 'User not found');
@@ -543,7 +552,7 @@ export class AuthService {
       };
     }
   ) {
-    const user = await UserModel.findById(userId);
+    const user = await userDocs().findById(userId);
     if (!user) {
       throw new HttpError(404, 'User not found');
     }
@@ -592,15 +601,16 @@ export class AuthService {
       if (input.preferences.startupView !== undefined) {
         user.preferences.startupView = input.preferences.startupView;
       }
-      user.markModified('preferences');
+      // No markModified equivalent: the document is a plain object and the whole of
+      // it is written back below, so a nested mutation needs no announcing.
     }
 
-    await user.save();
+    await userDocs().replaceOne({ _id: user._id }, user);
     return { user: serializeUser(user) };
   }
 
   async getUserById(userId: string) {
-    const user = await UserModel.findById(userId).lean();
+    const user = await userDocs().findById(userId);
     if (!user) return null;
     return serializeUser(user);
   }
