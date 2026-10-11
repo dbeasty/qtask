@@ -27,7 +27,10 @@
     "release:app": "bash scripts/build-app-release.sh",
     "publish:app": "bash scripts/publish-app-release.sh",
     "publish:app:major": "QTASK_DEPLOY_MAJOR=1 bash scripts/publish-app-release.sh",
-    "tunnel:app": "bash scripts/tunnel-app-server.sh"
+    "tunnel:app": "bash scripts/tunnel-app-server.sh",
+    "build:macos": "bash scripts/build-macos.sh",
+    "e2e:macos": "node e2e/macos/run.mjs",
+    "perf:macos": "node e2e/macos/perf.mjs"
   },
   "engines": {
     "node": ">=20"

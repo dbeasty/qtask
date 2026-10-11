@@ -90,6 +90,18 @@ describe('local mode on KDB', { skip }, () => {
     assert.equal(me.body.user.id, a.body.user.id);
   });
 
+  it('creates exactly one local user when sessions are requested concurrently', async () => {
+    const { collection } = await import('../src/data/index.js');
+    await collection('users').deleteMany({});
+    await collection('projects').deleteMany({});
+    const sessions = await Promise.all(
+      Array.from({ length: 8 }, () => dev(request(app).post('/api/auth/local-session')).expect(200))
+    );
+    assert.equal(new Set(sessions.map((s) => s.body.user.id)).size, 1);
+    assert.equal(await collection('users').countDocuments({}), 1);
+    assert.equal(await collection('projects').countDocuments({}), 1);
+  });
+
   it('creates, updates, searches and deletes tasks without any network', async () => {
     const { body } = await dev(request(app).post('/api/auth/local-session')).expect(200);
     const auth = { Authorization: `Bearer ${body.token}` };
@@ -111,6 +123,19 @@ describe('local mode on KDB', { skip }, () => {
     await dev(request(app).delete(`/api/tasks/${id}`)).set(auth).expect(204);
     const after = await dev(request(app).get('/api/tasks')).set(auth).expect(200);
     assert.equal(after.body.tasks.some((t: { _id: string }) => t._id === id), false);
+  });
+
+  it('reads back dates nested in subdocuments (trackingRollup.updatedAt) as Dates', async () => {
+    // Regression: JSON round-tripped nested dates stayed strings, so listing projects
+    // after any task write failed with "toISOString is not a function".
+    const { body } = await dev(request(app).post('/api/auth/local-session')).expect(200);
+    const auth = { Authorization: `Bearer ${body.token}` };
+    const projects = await dev(request(app).get('/api/projects')).set(auth).expect(200);
+    const id = projects.body.projects[0]._id;
+    await dev(request(app).post('/api/tasks')).set(auth).send({ title: 'rollup', projectId: id }).expect(201);
+    const again = await dev(request(app).get('/api/projects')).set(auth).expect(200);
+    assert.equal(again.body.projects.length, 1);
+    await dev(request(app).patch(`/api/projects/${id}`)).set(auth).send({ name: 'Renamed' }).expect(200);
   });
 
   it('does not queue embedding jobs, since there is no model to run them', async () => {

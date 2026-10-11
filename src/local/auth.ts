@@ -46,8 +46,26 @@ export function requireDeviceToken(expected: string): RequestHandler {
   };
 }
 
-/** Finds or creates the one local user (and its default project). Idempotent. */
-export async function ensureLocalUser(): Promise<UserDoc> {
+let ensuring: Promise<UserDoc> | undefined;
+
+/**
+ * Finds or creates the one local user (and its default project). Idempotent, and safe
+ * under concurrency: the page and the app's own Dock-badge calls ask for a session at the
+ * same moment on first launch, and the store does not enforce the unique e-mail, so two
+ * unserialised calls each created a user (and the second one's data was orphaned on the
+ * next launch). Calls are serialised and the settled result is not cached, so a test that
+ * clears the store still gets a fresh user.
+ */
+export function ensureLocalUser(): Promise<UserDoc> {
+  const run = (ensuring ?? Promise.resolve(undefined as unknown as UserDoc)).catch(() => undefined).then(findOrCreateLocalUser);
+  ensuring = run;
+  void run.finally(() => {
+    if (ensuring === run) ensuring = undefined;
+  }).catch(() => undefined);
+  return run;
+}
+
+async function findOrCreateLocalUser(): Promise<UserDoc> {
   const users = collection<UserDoc>('users');
   let user = await users.findOne({ email: LOCAL_USER_EMAIL });
   if (!user) {

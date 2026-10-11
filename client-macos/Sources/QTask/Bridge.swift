@@ -27,6 +27,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     replyHandler: @escaping (Any?, String?) -> Void
   ) {
     guard let body = message.body as? [String: Any], let op = body["op"] as? String else {
+      refused += 1
       replyHandler(nil, "malformed message")
       return
     }
@@ -37,6 +38,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
       onChanged?()
       replyHandler(NSNull(), nil)
     default:
+      refused += 1
       replyHandler(nil, "unknown op")
     }
   }
