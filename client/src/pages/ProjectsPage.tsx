@@ -20,6 +20,7 @@ import { ProjectTasksList } from '../components/ProjectTasksList';
 import { CurrentProjectLabel } from '../components/CurrentProjectBar';
 import { HourlyRateDialog } from '../components/HourlyRateDialog';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
+import { isLocalMode } from '../runtime';
 import { ProjectHierarchyTree } from '../components/ProjectHierarchyTree';
 import { ProjectRoleIndicator } from '../components/ProjectRoleIndicator';
 import { TaskSplitInput } from '../components/TaskSplitInput';
@@ -862,7 +863,7 @@ export function ProjectsPage({
                     </span>
                   </p>
                   <div className="task-form-actions">
-                    <button
+                    {isLocalMode() ? null : <button
                       type="button"
                       className="secondary-button"
                       data-demo-step="project-members"
@@ -870,7 +871,7 @@ export function ProjectsPage({
                       onClick={() => setMembersOpen(true)}
                     >
                       Members
-                    </button>
+                    </button>}
                   </div>
                 </form>
               </article>

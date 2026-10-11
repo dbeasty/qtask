@@ -26,6 +26,7 @@ import { WelcomePage } from './pages/WelcomePage';
 import { NotificationBell } from './components/NotificationBell';
 import { InviteAcceptPage } from './pages/InviteAcceptPage';
 import { checkHealth, listInvites, listProjects } from './api/client';
+import { isLocalMode } from './runtime';
 import {
   captureInviteTokenFromUrl,
   clearPendingInviteToken,
@@ -134,6 +135,9 @@ export function App() {
   const [agentWorking, setAgentWorking] = useState(false);
 
   const preferences = getUserPreferences(user);
+  // The Mac app runs offline with no account: hide what needs a server, a network or
+  // other people (agent, invites and notifications, feedback, MCP, passwords, sign-out).
+  const local = isLocalMode();
 
   const setAppView = useCallback((next: View) => {
     setView(next);
@@ -147,12 +151,13 @@ export function App() {
   }, []);
 
   const refreshPendingInvites = useCallback(() => {
+    if (local) return;
     listInvites('pending')
       .then(({ invites }) => setPendingInviteCount(invites.length))
       .catch(() => {
         // optional shell chrome
       });
-  }, []);
+  }, [local]);
 
   const handleTourComplete = useCallback(async () => {
     setShowTourPrompt(false);
@@ -289,7 +294,8 @@ export function App() {
 
     const prefs = getUserPreferences(user);
     const session = getAppSessionState();
-    const startupView = resolveStartupView(prefs.startupView, session);
+    const resolvedView = resolveStartupView(prefs.startupView, session);
+    const startupView = local && resolvedView === 'agent' ? 'projects' : resolvedView;
 
     defaultViewSetRef.current = true;
     setView(startupView);
@@ -315,7 +321,8 @@ export function App() {
     }
     if (!defaultViewSetRef.current || tourPromptCheckedRef.current) return;
     tourPromptCheckedRef.current = true;
-    if (!getUserPreferences(user).completedDemoTour) {
+    // The tour is driven through the AI agent, which a local device does not have.
+    if (!local && !getUserPreferences(user).completedDemoTour) {
       setShowTourPrompt(true);
     }
   }, [user]);
@@ -540,13 +547,15 @@ export function App() {
             />
           </div>
           <div className="header-user">
-            <NotificationBell
-              onInvitesChanged={() => {
-                refreshPendingInvites();
-                handleProjectsChanged();
-              }}
-              onOpenTask={openTaskFromShell}
-            />
+            {local ? null : (
+              <NotificationBell
+                onInvitesChanged={() => {
+                  refreshPendingInvites();
+                  handleProjectsChanged();
+                }}
+                onOpenTask={openTaskFromShell}
+              />
+            )}
             <button
               ref={userMenuTriggerRef}
               type="button"
@@ -568,12 +577,12 @@ export function App() {
                 onChangePassword={() => setChangePasswordOpen(true)}
                 onOpenMcpSettings={() => setMcpSettingsOpen(true)}
                 onOpenHelp={() => setView('help')}
-                onStartTour={handleStartTour}
+                onStartTour={local ? undefined : handleStartTour}
                 onOpenFeedback={() => {
                   setFeedbackDialogOpen(true);
                   setUserMenuOpen(false);
                 }}
-                feedbackEnabled={feedbackEnabled}
+                feedbackEnabled={feedbackEnabled && !local}
                 onOpenAbout={() => setView('about')}
                 onUpdateDisplayName={(displayName) => updateProfile({ displayName })}
                 onUpdatePreferences={updatePreferences}
@@ -585,16 +594,20 @@ export function App() {
         </div>
 
         <div className="header-row header-row-bottom">
-          <p className="header-tagline muted">AI-native task management · MCP server</p>
+          <p className="header-tagline muted">
+            {local ? 'Offline on this Mac · your tasks stay on this device' : 'AI-native task management · MCP server'}
+          </p>
           <nav className="header-views-nav" aria-label="Views" data-demo-step="header-views">
             <span className="header-views-label">Views</span>
-            <button
-              type="button"
-              className={`${view === 'agent' ? 'nav-active' : ''}${agentWorking ? ' nav-working' : ''}`}
-              onClick={() => setAppView('agent')}
-            >
-              Agent{agentWorking ? '…' : ''}
-            </button>
+            {local ? null : (
+              <button
+                type="button"
+                className={`${view === 'agent' ? 'nav-active' : ''}${agentWorking ? ' nav-working' : ''}`}
+                onClick={() => setAppView('agent')}
+              >
+                Agent{agentWorking ? '…' : ''}
+              </button>
+            )}
             <button
               type="button"
               className={view === 'projects' ? 'nav-active' : ''}
@@ -627,6 +640,7 @@ export function App() {
       ) : null}
 
       <main>
+        {local ? null : (
         <div className={view === 'agent' ? 'view-panel' : 'view-panel view-panel--hidden'}>
           <AgentPage
             editsDisabled={deploymentReadOnly}
@@ -656,6 +670,7 @@ export function App() {
             onAgentWorkingChange={setAgentWorking}
           />
         </div>
+        )}
         {view === 'projects' ? (
           <ProjectsPage
             editsDisabled={deploymentReadOnly}
@@ -700,9 +715,9 @@ export function App() {
         ) : view === 'help' ? (
           <HelpPage
             onBack={() => setAppView('projects')}
-            onStartTour={handleStartTour}
-            onOpenFeedback={feedbackEnabled ? () => setFeedbackDialogOpen(true) : undefined}
-            feedbackEnabled={feedbackEnabled}
+            onStartTour={local ? undefined : handleStartTour}
+            onOpenFeedback={feedbackEnabled && !local ? () => setFeedbackDialogOpen(true) : undefined}
+            feedbackEnabled={feedbackEnabled && !local}
           />
         ) : view === 'about' ? (
           <AboutPage
