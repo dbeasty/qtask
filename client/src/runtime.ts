@@ -15,6 +15,8 @@ declare global {
   }
 }
 
+import { setStoredToken } from './auth/storage';
+
 let mode: RuntimeMode = 'online';
 
 export function isNativeShell(): boolean {
@@ -50,7 +52,6 @@ export async function ensureLocalSession(): Promise<void> {
   const response = await fetch('/api/auth/local-session', { method: 'POST' });
   if (!response.ok) throw new Error(`Could not start the local session (${response.status})`);
   const body = (await response.json()) as { token: string };
-  const { setStoredToken } = await import('./auth/storage');
   setStoredToken(body.token);
 }
 

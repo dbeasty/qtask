@@ -133,6 +133,7 @@ export function App() {
   const taskLinkCapturedRef = useRef(false);
   const [sessionRestore, setSessionRestore] = useState<SessionRestore | null>(null);
   const [agentWorking, setAgentWorking] = useState(false);
+  const [newProjectRequest, setNewProjectRequest] = useState(0);
 
   const preferences = getUserPreferences(user);
   // The Mac app runs offline with no account: hide what needs a server, a network or
@@ -387,6 +388,36 @@ export function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [user, searchQuery]);
+
+  // Menu commands from the Mac app (File > New Task, Find, ...). The bridge turns the
+  // native message into a `qtask:command` event; on the web nothing ever dispatches it.
+  useEffect(() => {
+    if (!user) return;
+    const onCommand = (event: Event) => {
+      const command = (event as CustomEvent<string>).detail;
+      if (command === 'new-task') {
+        const projectId = activeProjectIdRef.current;
+        if (projectId) {
+          setPendingCreateForProjectId(projectId);
+          setAppView('tasks');
+        } else {
+          setAppView('projects');
+        }
+      } else if (command === 'new-project') {
+        setAppView('projects');
+        setNewProjectRequest((n) => n + 1);
+      } else if (command === 'find') {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      } else if (command === 'view-projects') {
+        setAppView('projects');
+      } else if (command === 'view-tasks') {
+        setAppView('tasks');
+      }
+    };
+    window.addEventListener('qtask:command', onCommand);
+    return () => window.removeEventListener('qtask:command', onCommand);
+  }, [user, setAppView]);
 
   if (loading) {
     return (
@@ -696,6 +727,7 @@ export function App() {
             onTasksChanged={handleTasksChanged}
             onProjectsChanged={handleProjectsChanged}
             externalRefreshKey={projectsVersion}
+            newProjectRequest={newProjectRequest}
             restoredListExpanded={sessionRestore?.projects?.listExpanded}
             onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
           />
