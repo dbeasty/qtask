@@ -86,15 +86,33 @@ export function shadowReadSampleRate(env: NodeJS.ProcessEnv = process.env): numb
   return parsed;
 }
 
+/** Whether this process is the sync hub (cloud peer). Read lazily, like the other flags. */
+function hubSyncEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.QTASK_SYNC_HUB === 'true';
+}
+
 export async function connectData(): Promise<DataStore> {
   if (store) return store;
+  let connected = await connectBackends();
+  if (hubSyncEnabled()) {
+    // The cloud hub is a sync peer: wrap the store so every service write is tracked.
+    // Off unless QTASK_SYNC_HUB=true, so a deployment that has not opted in is unchanged.
+    const { installHubSync, initHubSync } = await import('../sync/runtime.js');
+    connected = await installHubSync(connected);
+    store = connected;
+    await initHubSync();
+  }
+  store = connected;
+  return store;
+}
+
+async function connectBackends(): Promise<DataStore> {
   const backend = resolveDataBackend();
   const primary = await createStore(backend);
 
   if (!shadowWritesEnabled()) {
     await primary.connect();
-    store = primary;
-    return store;
+    return primary;
   }
 
   const shadowBackend: DataBackend = backend === 'mongo' ? 'kdb' : 'mongo';
@@ -113,7 +131,7 @@ export async function connectData(): Promise<DataStore> {
       compareReads,
       readSampleRate: compareReads ? shadowReadSampleRate() : undefined,
     });
-    store = shadowed;
+    return shadowed;
   } catch (error) {
     if (!(error instanceof ShadowUnavailableError)) throw error;
     // The primary is already open at this point, and the whole premise is that the
@@ -123,13 +141,17 @@ export async function connectData(): Promise<DataStore> {
       primary: backend,
       shadow: shadowBackend,
     });
-    store = primary;
+    return primary;
   }
-  return store;
 }
 
 export async function disconnectData(): Promise<void> {
   if (!store) return;
+  if (hubSyncEnabled()) {
+    const { flushHubSync, setHubEngine } = await import('../sync/runtime.js');
+    await flushHubSync();
+    setHubEngine(undefined);
+  }
   await store.disconnect();
   store = undefined;
 }

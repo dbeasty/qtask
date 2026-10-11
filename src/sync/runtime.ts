@@ -9,12 +9,21 @@
 
 import type { DataStore } from '../data/types.js';
 import { createLogger } from '../utils/logger.js';
-import { createDefaultDerived } from './derived.js';
+import { createDefaultDerived, type TouchedDoc } from './derived.js';
 import { SyncEngine } from './engine.js';
 import { FileMetaPersistence, MemoryMetaStore } from './meta.js';
 import { SyncDataStore } from './tracker.js';
 
 const log = createLogger('sync');
+
+/** Embeddings never replicate, so every peer rebuilds its own for documents that arrived. */
+async function queueEmbeddings(touched: ReadonlyArray<TouchedDoc>): Promise<void> {
+  const { enqueueEmbeddingJob, enqueueProjectEmbeddingJob } = await import('../services/embeddingQueue.js');
+  for (const doc of touched) {
+    if (doc.coll === 'tasks') await enqueueEmbeddingJob(doc.id);
+    else if (doc.coll === 'projects') await enqueueProjectEmbeddingJob(doc.id);
+  }
+}
 
 let hubEngine: SyncEngine | undefined;
 let persistence: FileMetaPersistence | undefined;
@@ -48,7 +57,9 @@ export async function installHubSync(store: DataStore, env: NodeJS.ProcessEnv = 
     meta = new MemoryMetaStore();
   }
   const tracked = new SyncDataStore(store, meta);
-  const engine = new SyncEngine({ store: tracked, meta, role: 'hub', derived: createDefaultDerived() });
+  const engine = new SyncEngine({ store: tracked, meta, role: 'hub', derived: createDefaultDerived(),
+    afterApply: queueEmbeddings,
+  });
   hubEngine = engine;
   // Baseline after the caller has connected; connectData() calls init() below.
   return tracked;

@@ -71,7 +71,8 @@ export function createDefaultDerived(): DerivedRecompute {
 
 async function recomputeTask(store: SyncDataStore, task: Doc): Promise<void> {
   const node = task as unknown as PercentCompleteNode & Doc;
-  const computed = applyPercentComplete({ ...node }) as unknown as Doc;
+  // Stored tasks always carry a percentComplete (schema default); tolerate one that does not.
+  const computed = applyPercentComplete({ ...node, percentComplete: node.percentComplete ?? 0 }) as unknown as Doc;
   const set: Doc = {};
   if (computed.percentComplete !== task.percentComplete) set.percentComplete = computed.percentComplete;
   if (computed.status !== task.status) set.status = computed.status;

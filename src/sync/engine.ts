@@ -51,6 +51,8 @@ export interface SyncEngineOptions {
   meta: MetaStore;
   role: 'hub' | 'device';
   derived?: DerivedRecompute;
+  /** Called after remote documents were applied (e.g. to queue local embedding rebuilds). */
+  afterApply?: (touched: ReadonlyArray<TouchedDoc>) => Promise<void>;
   /** Injectable for tests. */
   now?: () => number;
   batchSize?: number;
@@ -77,6 +79,7 @@ export class SyncEngine {
   readonly role: 'hub' | 'device';
   readonly clock: HybridClock;
   private readonly derived?: DerivedRecompute;
+  private readonly afterApply?: SyncEngineOptions['afterApply'];
   private readonly now: () => number;
   private readonly batchSize: number;
   private readonly syncLog: SyncLogEntry[] = [];
@@ -88,6 +91,7 @@ export class SyncEngine {
     this.meta = options.meta;
     this.role = options.role;
     this.derived = options.derived;
+    this.afterApply = options.afterApply;
     this.now = options.now ?? Date.now;
     this.batchSize = options.batchSize ?? CHUNK;
     this.clock = new HybridClock(this.meta.nodeId, this.now, this.meta.clock || undefined);
@@ -169,6 +173,10 @@ export class SyncEngine {
   captureDoc(coll: ReplicatedCollection, id: string, doc: Doc | null, at?: number): boolean {
     const key = recKey(coll, id);
     const existing = this.meta.get(key);
+
+    // Staged proposals (an agent's uncommitted creations) are drafts of one process,
+    // not data: they replicate only once committed, when `staging` is unset.
+    if (doc && doc.staging) doc = null;
 
     if (!doc) {
       if (!existing || !isLive(existing)) return false;
@@ -409,6 +417,7 @@ export class SyncEngine {
     const touched = [...this.touched.values()];
     this.touched = new Map();
     if (this.derived) await this.derived.recompute(this.store, touched);
+    if (this.afterApply) await this.afterApply(touched);
     // Derived writes and conflict activities went through the tracked store; fold
     // them into the records now so they are part of this round.
     await this.capture();
