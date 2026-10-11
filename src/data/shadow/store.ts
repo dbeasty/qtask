@@ -60,6 +60,20 @@ import type {
 
 const log = createLogger('data:shadow');
 
+/**
+ * A private copy of anything the shadow will look at later.
+ *
+ * Mirrored writes and read comparisons run out of band, some time after the call returned, and
+ * callers own what they pass in and what they get back: the application routinely reads a
+ * document, mutates it (`user.emailVerified = true`) and passes it to `replaceOne`. A queued
+ * comparison holding the caller's object would compare the shadow with the caller's *edited*
+ * copy, and a queued write would replay a later edit than the one the primary applied - both
+ * reported as divergence that is really aliasing. Snapshot at the call, replay the snapshot.
+ */
+function snap<V>(value: V): V {
+  return value === undefined || value === null ? value : structuredClone(value);
+}
+
 class ShadowedCollection<T extends Doc> implements Collection<T> {
   constructor(
     readonly name: CollectionName,
@@ -73,47 +87,49 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
 
   async find(filter: Filter = {}, options: FindOptions = {}): Promise<T[]> {
     const result = await this.primary.find(filter, options);
-    this.compare('find', { filter, options }, async () =>
-      compareDocLists(
-        this.name,
-        'find',
-        { filter, options },
-        result,
-        await this.shadow.find(filter, options),
-        queryIsOrdered(options)
-      )
+    const seen = snap(result);
+    const query = snap({ filter, options });
+    this.compare('find', query, async () =>
+      compareDocLists(this.name, 'find', query, seen, await this.shadow.find(query.filter, query.options), queryIsOrdered(query.options))
     );
     return result;
   }
 
   async findOne(filter: Filter, options: FindOptions = {}): Promise<T | null> {
     const result = await this.primary.findOne(filter, options);
-    this.compare('findOne', { filter, options }, async () =>
-      compareDocs(this.name, 'findOne', { filter, options }, result, await this.shadow.findOne(filter, options))
+    const seen = snap(result);
+    const query = snap({ filter, options });
+    this.compare('findOne', query, async () =>
+      compareDocs(this.name, 'findOne', query, seen, await this.shadow.findOne(query.filter, query.options))
     );
     return result;
   }
 
   async findById(id: string, options: FindOptions = {}): Promise<T | null> {
     const result = await this.primary.findById(id, options);
-    this.compare('findById', { id, options }, async () =>
-      compareDocs(this.name, 'findById', { id, options }, result, await this.shadow.findById(id, options))
+    const seen = snap(result);
+    const query = snap({ id, options });
+    this.compare('findById', query, async () =>
+      compareDocs(this.name, 'findById', query, seen, await this.shadow.findById(query.id, query.options))
     );
     return result;
   }
 
   async countDocuments(filter: Filter = {}): Promise<number> {
     const result = await this.primary.countDocuments(filter);
-    this.compare('countDocuments', { filter }, async () =>
-      compareCounts(this.name, 'countDocuments', { filter }, result, await this.shadow.countDocuments(filter))
+    const query = snap({ filter });
+    this.compare('countDocuments', query, async () =>
+      compareCounts(this.name, 'countDocuments', query, result, await this.shadow.countDocuments(query.filter))
     );
     return result;
   }
 
   async distinct(field: string, filter: Filter = {}): Promise<unknown[]> {
     const result = await this.primary.distinct(field, filter);
-    this.compare('distinct', { field, filter }, async () =>
-      compareValueSets(this.name, 'distinct', { field, filter }, result, await this.shadow.distinct(field, filter))
+    const seen = snap(result);
+    const query = snap({ field, filter });
+    this.compare('distinct', query, async () =>
+      compareValueSets(this.name, 'distinct', query, seen, await this.shadow.distinct(query.field, query.filter))
     );
     return result;
   }
@@ -146,34 +162,39 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
     const created = await this.primary.create(doc);
     // The stored document, not the input: it carries the id and timestamps the
     // primary assigned, which is what keeps the two stores addressable alike.
-    this.mirror('create', () => this.shadow.create(created));
+    const replay = snap(created);
+    this.mirror('create', () => this.shadow.create(replay));
     return created;
   }
 
   async insertMany(docs: Doc[]): Promise<T[]> {
     const created = await this.primary.insertMany(docs);
-    this.mirror('insertMany', () => this.shadow.insertMany(created));
+    const replay = snap(created);
+    this.mirror('insertMany', () => this.shadow.insertMany(replay));
     return created;
   }
 
   async updateOne(filter: Filter, update: Update, options?: UpdateOptions): Promise<UpdateResult> {
+    const args = snap({ filter, update, options });
     const result = await this.primary.updateOne(filter, update, options);
-    this.mirror('updateOne', () => this.shadow.updateOne(filter, update, options));
+    this.mirror('updateOne', () => this.shadow.updateOne(args.filter, args.update, args.options));
     return result;
   }
 
   async updateMany(filter: Filter, update: Update): Promise<UpdateResult> {
+    const args = snap({ filter, update });
     const result = await this.primary.updateMany(filter, update);
-    this.mirror('updateMany', () => this.shadow.updateMany(filter, update));
+    this.mirror('updateMany', () => this.shadow.updateMany(args.filter, args.update));
     return result;
   }
 
   async findOneAndUpdate(filter: Filter, update: Update, options?: UpdateOptions): Promise<T | null> {
+    const args = snap({ filter, update, options });
     const result = await this.primary.findOneAndUpdate(filter, update, options);
     // An upsert that created a document has to carry the primary's id across, or the
     // two stores hold the same row under different identities from then on.
     if (result && options?.upsert) {
-      const upserted = result;
+      const upserted = snap(result);
       this.mirror('findOneAndUpdate:upsert', async () => {
         const existing = await this.shadow.findById(String(upserted._id));
         if (existing) {
@@ -184,43 +205,49 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
       });
       return result;
     }
-    this.mirror('findOneAndUpdate', () => this.shadow.findOneAndUpdate(filter, update, options));
+    this.mirror('findOneAndUpdate', () => this.shadow.findOneAndUpdate(args.filter, args.update, args.options));
     return result;
   }
 
   async findByIdAndUpdate(id: string, update: Update, options?: UpdateOptions): Promise<T | null> {
+    const args = snap({ update, options });
     const result = await this.primary.findByIdAndUpdate(id, update, options);
-    this.mirror('findByIdAndUpdate', () => this.shadow.findByIdAndUpdate(id, update, options));
+    this.mirror('findByIdAndUpdate', () => this.shadow.findByIdAndUpdate(id, args.update, args.options));
     return result;
   }
 
   async replaceOne(filter: Filter, doc: Doc): Promise<UpdateResult> {
+    const args = snap({ filter, doc });
     const result = await this.primary.replaceOne(filter, doc);
-    this.mirror('replaceOne', () => this.shadow.replaceOne(filter, doc));
+    this.mirror('replaceOne', () => this.shadow.replaceOne(args.filter, args.doc));
     return result;
   }
 
   async deleteOne(filter: Filter): Promise<DeleteResult> {
+    const replay = snap(filter);
     const result = await this.primary.deleteOne(filter);
-    this.mirror('deleteOne', () => this.shadow.deleteOne(filter));
+    this.mirror('deleteOne', () => this.shadow.deleteOne(replay));
     return result;
   }
 
   async deleteMany(filter: Filter): Promise<DeleteResult> {
+    const replay = snap(filter);
     const result = await this.primary.deleteMany(filter);
-    this.mirror('deleteMany', () => this.shadow.deleteMany(filter));
+    this.mirror('deleteMany', () => this.shadow.deleteMany(replay));
     return result;
   }
 
   async findOneAndDelete(filter: Filter): Promise<T | null> {
+    const replay = snap(filter);
     const result = await this.primary.findOneAndDelete(filter);
-    this.mirror('findOneAndDelete', () => this.shadow.findOneAndDelete(filter));
+    this.mirror('findOneAndDelete', () => this.shadow.findOneAndDelete(replay));
     return result;
   }
 
   async bulkWrite(operations: BulkOperation[]): Promise<UpdateResult> {
+    const replay = snap(operations);
     const result = await this.primary.bulkWrite(operations);
-    this.mirror('bulkWrite', () => this.shadow.bulkWrite(operations));
+    this.mirror('bulkWrite', () => this.shadow.bulkWrite(replay));
     return result;
   }
 

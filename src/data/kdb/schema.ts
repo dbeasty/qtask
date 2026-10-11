@@ -62,6 +62,11 @@ export function normalizeDocument(schema: Schema, input: Doc, options: Normalize
     collecting = outer;
   }
   if (problems.length > 0) throw new ValidationError(problems.join(', '));
+  // MongoDB (through Mongoose) drops a key whose value is undefined, so `doc.token = undefined;
+  // replaceOne(...)` removes the field. Left in place here the key looked present, so the
+  // store did not treat it as removed, JSON then dropped it on the way out, and the old value
+  // survived KDB's merge-write: a retired one-time token stayed valid.
+  stripUndefined(out);
 
   if (hasTimestamps(schema)) {
     const now = new Date();
@@ -78,6 +83,20 @@ export function normalizeDocument(schema: Schema, input: Doc, options: Normalize
 }
 
 let collecting: string[] | null = null;
+
+/** Removes own properties whose value is undefined, at every depth. */
+function stripUndefined(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) stripUndefined(item);
+    return;
+  }
+  if (value === null || typeof value !== 'object' || value instanceof Date) return;
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (record[key] === undefined) delete record[key];
+    else stripUndefined(record[key]);
+  }
+}
 
 /** Stamps `updatedAt` on a document being written back, when the schema has timestamps. */
 export function touchUpdatedAt(schema: Schema, doc: Doc): Doc {

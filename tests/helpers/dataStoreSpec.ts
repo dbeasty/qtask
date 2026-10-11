@@ -336,6 +336,28 @@ export function runDataStoreConformance(backend: BackendHarness): void {
         assert.equal(await tasks.findOneAndUpdate({ title: 'nothing' }, { $set: { status: 'done' } }), null);
       });
 
+      it('removes a field replaced with undefined, as Mongo does', async () => {
+        // `user.emailVerificationTokenHash = undefined; replaceOne(...)` is how the application
+        // retires a one-time token. If the old value survives, the token stays usable.
+        const user = await users.create({
+          email: 'undef@example.com',
+          displayName: 'U',
+          passwordHash: 'x',
+          emailVerificationTokenHash: 'secret-hash',
+          emailVerificationExpires: new Date(Date.now() + 60_000),
+        });
+        const loaded = (await users.findById(user._id as string))!;
+        loaded.emailVerificationTokenHash = undefined;
+        loaded.emailVerificationExpires = undefined;
+        await users.replaceOne({ _id: loaded._id }, loaded);
+
+        const again = (await users.findById(user._id as string))!;
+        assert.equal(again.emailVerificationTokenHash, undefined, 'the token hash must be gone');
+        assert.equal(again.emailVerificationExpires, undefined, 'the expiry must be gone');
+        assert.equal('emailVerificationTokenHash' in again, false);
+        assert.equal(await users.countDocuments({ emailVerificationTokenHash: 'secret-hash' }), 0);
+      });
+
       it('replaces a whole document', async () => {
         const [alpha] = await seed();
         const result = await tasks.replaceOne(

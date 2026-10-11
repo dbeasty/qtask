@@ -104,8 +104,30 @@ class Query<T> implements PromiseLike<T> {
   }
 }
 
-export function installMongooseOnDataLayer(): void {
+/** The statics routed to the data layer. */
+const ROUTED = [
+  'create', 'insertMany', 'find', 'findOne', 'findById', 'countDocuments', 'deleteMany', 'deleteOne',
+  'updateOne', 'updateMany', 'findOneAndUpdate', 'findByIdAndUpdate',
+] as const;
+
+/**
+ * Whether the call being made came from test code rather than from the application. In shadow
+ * mode MongoDB is the primary and the Mongo adapter *itself* calls `Model.find` and friends, so
+ * routing every call to the data layer would send the adapter back into itself. The first stack
+ * frame that is not this file, a dependency or Node decides.
+ */
+function callerIsTest(): boolean {
+  const frames = (new Error().stack ?? '').split('\n').slice(2);
+  for (const frame of frames) {
+    if (frame.includes('mongooseOnDataLayer') || frame.includes('node_modules') || frame.includes('node:internal')) continue;
+    return frame.includes('/tests/');
+  }
+  return false;
+}
+
+export function installMongooseOnDataLayer(options: { mongoConnected?: boolean } = {}): void {
   const M = mongoose.Model as unknown as Record<string, unknown>;
+  const originals = Object.fromEntries(ROUTED.map((name) => [name, M[name]])) as Record<string, (...args: unknown[]) => unknown>;
 
   M.create = async function (this: ModelLike, docs: unknown, ...rest: unknown[]) {
     const coll = await collectionOf(this);
@@ -204,6 +226,15 @@ export function installMongooseOnDataLayer(): void {
     );
   };
 
+  if (options.mongoConnected) {
+    for (const name of ROUTED) {
+      const routed = M[name] as (...args: unknown[]) => unknown;
+      M[name] = function (this: unknown, ...args: unknown[]) {
+        return (callerIsTest() ? routed : originals[name]).apply(this, args);
+      };
+    }
+  }
+
   // `await mongoose.connection.dropDatabase()` and `mongoose.connection.db?.dropDatabase()`
   // between tests. The second is optional-chained, so without a `db` it would silently clean
   // nothing and let one test's data leak into the next.
@@ -212,5 +243,14 @@ export function installMongooseOnDataLayer(): void {
     await getDataStore().clear();
   };
   (mongoose.connection as unknown as Record<string, unknown>).dropDatabase = dropDatabase;
-  Object.defineProperty(mongoose.connection, 'db', { value: { dropDatabase }, configurable: true });
+  if (options.mongoConnected) {
+    // Mongo really is connected (shadow mode): leave `db` to the driver, which assigns it on
+    // connect, and make its dropDatabase clear both stores so they do not drift apart.
+    mongoose.connection.once('open', () => {
+      const db = mongoose.connection.db as unknown as Record<string, unknown> | undefined;
+      if (db) db.dropDatabase = dropDatabase;
+    });
+  } else {
+    Object.defineProperty(mongoose.connection, 'db', { value: { dropDatabase }, configurable: true });
+  }
 }

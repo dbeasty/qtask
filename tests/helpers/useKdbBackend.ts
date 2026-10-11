@@ -17,7 +17,15 @@
  *    case to add to the conformance suite;
  *  - a performance cliff, since KDB scans where Mongo indexes.
  *
- * Does nothing unless QTASK_TEST_BACKEND=kdb, so the default `npm test` is unchanged.
+ * QTASK_TEST_BACKEND=shadow is the migration's Stage 3 as a test run: MongoDB stays primary
+ * and answers everything, while KDB mirrors every write and is asked every read, with
+ * disagreements reported (DATA_SHADOW_WRITES + DATA_SHADOW_READS). Each test file prints one
+ * `QTASK_SHADOW_REPORT {json}` line when it finishes; `npm run test:shadow` sums them. The
+ * suite passing says the app works; a zero `diverged` says KDB gave the same answers to every
+ * question the app asked along the way.
+ *
+ * Does nothing unless QTASK_TEST_BACKEND is `kdb` or `shadow`, so the default `npm test` is
+ * unchanged.
  */
 
 import { spawn } from 'node:child_process';
@@ -30,12 +38,13 @@ import { installMongooseOnDataLayer } from './mongooseOnDataLayer.ts';
 
 // The test runner's parent process receives the same --import flags as its children but runs
 // no tests; it must not start a server (nor wait on one).
-if (process.env.QTASK_TEST_BACKEND === 'kdb' && !process.execArgv.includes('--test')) {
+const MODE = process.env.QTASK_TEST_BACKEND;
+if ((MODE === 'kdb' || MODE === 'shadow') && !process.execArgv.includes('--test')) {
   const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../../kdb');
   const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
   const CLIENT_MODULE = process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-  if (!existsSync(SERVICE_BIN)) throw new Error(`QTASK_TEST_BACKEND=kdb: no kdb-service at ${SERVICE_BIN} (set KDB_ROOT or KDB_SERVICE_BIN)`);
-  if (!existsSync(CLIENT_MODULE)) throw new Error(`QTASK_TEST_BACKEND=kdb: no @kdb/client at ${CLIENT_MODULE} (set KDB_CLIENT_MODULE)`);
+  if (!existsSync(SERVICE_BIN)) throw new Error(`QTASK_TEST_BACKEND=${MODE}: no kdb-service at ${SERVICE_BIN} (set KDB_ROOT or KDB_SERVICE_BIN)`);
+  if (!existsSync(CLIENT_MODULE)) throw new Error(`QTASK_TEST_BACKEND=${MODE}: no @kdb/client at ${CLIENT_MODULE} (set KDB_CLIENT_MODULE)`);
 
   const port = await freePort();
   const namespace = `qtask/e2e${process.pid}`;
@@ -68,23 +77,45 @@ if (process.env.QTASK_TEST_BACKEND === 'kdb' && !process.execArgv.includes('--te
   });
   await waitForPort(port);
 
-  // A test that reaches for Mongoose directly has no connected Mongo to talk to. By default
-  // Mongoose queues the call for 10s before failing; fail it at once, with a message that
-  // names the cause, so the run stays fast and the coupling is obvious.
-  mongoose.set('bufferCommands', false);
-  // ...and the model calls tests use to arrange and check data go to the data layer instead.
-  installMongooseOnDataLayer();
+  if (MODE === 'kdb') {
+    // A test that reaches for Mongoose directly has no connected Mongo to talk to. By default
+    // Mongoose queues the call for 10s before failing; fail it at once, with a message that
+    // names the cause, so the run stays fast and the coupling is obvious.
+    mongoose.set('bufferCommands', false);
+  }
+  // ...and the model calls tests use to arrange and check data go to the data layer instead -
+  // in shadow mode too, so seeded fixtures are mirrored like any other write.
+  installMongooseOnDataLayer({ mongoConnected: MODE === 'shadow' });
 
   // Test files tear down Mongoose, not the data store, so the app's KDB connection would hold
   // the process open for ever. A root-level hook runs once the file's tests are done.
   after(async () => {
-    const { disconnectData } = await import('../../src/data/index.js');
+    const { disconnectData, getDataStore } = await import('../../src/data/index.js');
+    if (MODE === 'shadow') {
+      // disconnect() drains the queue of mirrored writes and queued comparisons, so the counters
+      // read afterwards are those of a settled system. The store object outlives the connection.
+      let store: { stats?: () => unknown; readStats?: () => unknown } = {};
+      try {
+        store = getDataStore() as unknown as typeof store;
+      } catch {
+        // A file that never connected (a pure unit test) has nothing to report.
+        return;
+      }
+      await disconnectData();
+      console.log(`QTASK_SHADOW_REPORT ${JSON.stringify({ pid: process.pid, writes: store.stats?.(), reads: store.readStats?.() })}`);
+      return;
+    }
     await disconnectData();
   });
 
-  process.env.DATA_KDB = 'true';
-  delete process.env.DATA_MONGO;
-  // The deployment configuration: pushdown on. Set QTASK_TEST_KDB_PUSHDOWN=false to compare.
+  if (MODE === 'kdb') {
+    process.env.DATA_KDB = 'true';
+    delete process.env.DATA_MONGO;
+  } else {
+    delete process.env.DATA_KDB;
+    process.env.DATA_SHADOW_WRITES = 'true';
+    process.env.DATA_SHADOW_READS = 'true';
+  }
   process.env.DATA_KDB_PUSHDOWN = process.env.QTASK_TEST_KDB_PUSHDOWN ?? 'true';
   process.env.KDB_ADDR = `tcp://127.0.0.1:${port}`;
   process.env.KDB_NAMESPACE_PREFIX = namespace;
