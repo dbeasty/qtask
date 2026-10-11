@@ -45,17 +45,18 @@ class TrackedCollection<T extends Doc> implements Collection<T> {
   constructor(
     private readonly inner: Collection<T>,
     private readonly meta: MetaStore,
-    private readonly replicated: boolean
+    private readonly replicated: boolean,
+    private readonly now: () => number
   ) {
     this.name = inner.name as CollectionName;
   }
 
   private mark(id: unknown): void {
-    if (this.replicated && typeof id === 'string') this.meta.markDirty(recKey(this.name, id));
+    if (this.replicated && typeof id === 'string') this.meta.markDirty(recKey(this.name, id), this.now());
   }
 
   private markAll(): void {
-    if (this.replicated) this.meta.markDirty(`${ALL_MARK}:${this.name}`);
+    if (this.replicated) this.meta.markDirty(`${ALL_MARK}:${this.name}`, this.now());
   }
 
   private async targets(filter: Filter, sort?: FindOptions['sort'], one = false): Promise<string[]> {
@@ -176,7 +177,8 @@ export class SyncDataStore implements DataStore {
 
   constructor(
     readonly inner: DataStore,
-    readonly meta: MetaStore
+    readonly meta: MetaStore,
+    private readonly now: () => number = Date.now
   ) {}
 
   get backend(): 'mongo' | 'kdb' | 'memory' {
@@ -194,7 +196,7 @@ export class SyncDataStore implements DataStore {
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {
     const cached = this.cache.get(name);
     if (cached) return cached as unknown as Collection<T>;
-    const tracked = new TrackedCollection<Doc>(this.inner.collection<Doc>(name), this.meta, isReplicated(name));
+    const tracked = new TrackedCollection<Doc>(this.inner.collection<Doc>(name), this.meta, isReplicated(name), this.now);
     this.cache.set(name, tracked);
     return tracked as unknown as Collection<T>;
   }

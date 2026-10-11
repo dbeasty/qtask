@@ -25,7 +25,7 @@ export async function makePeer(
 ): Promise<Peer> {
   const inner = new MemoryDataStore();
   const meta = new MemoryMetaStore({ nodeId: name });
-  const store = new SyncDataStore(inner, meta);
+  const store = new SyncDataStore(inner, meta, options.now);
   const engine = new SyncEngine({
     store,
     meta,

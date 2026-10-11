@@ -55,9 +55,13 @@ export class HybridClock {
     if (initial) this.observe(initial);
   }
 
-  /** A new stamp, strictly greater than every stamp this clock has minted or observed. */
-  tick(): string {
-    const physical = this.now();
+  /**
+   * A new stamp, strictly greater than every stamp this clock has minted or observed.
+   * `at` backdates the physical component to when a write really happened; a stamp
+   * can never go below what the clock has already seen, so causality still holds.
+   */
+  tick(at?: number): string {
+    const physical = at ?? this.now();
     if (physical > this.wall) {
       this.wall = physical;
       this.counter = 0;

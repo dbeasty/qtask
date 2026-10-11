@@ -120,13 +120,13 @@ export class SyncEngine {
   }
 
   private async captureNow(): Promise<number> {
-    const keys = this.meta.takeDirty();
-    if (keys.length === 0) return 0;
+    const entries = this.meta.takeDirty();
+    if (entries.length === 0) return 0;
     const wholeCollections = new Set<string>();
-    const direct: string[] = [];
-    for (const key of keys) {
-      if (key.startsWith(`${ALL_MARK}:`)) wholeCollections.add(key.slice(ALL_MARK.length + 1));
-      else direct.push(key);
+    const direct: Array<[string, number]> = [];
+    for (const entry of entries) {
+      if (entry[0].startsWith(`${ALL_MARK}:`)) wholeCollections.add(entry[0].slice(ALL_MARK.length + 1));
+      else direct.push(entry);
     }
     let changed = 0;
     if (wholeCollections.size > 0) changed += await this.reconcile([...wholeCollections] as ReplicatedCollection[]);
@@ -134,13 +134,15 @@ export class SyncEngine {
     return changed;
   }
 
-  private async captureKeys(keys: string[]): Promise<number> {
+  private async captureKeys(entries: Array<[string, number]>): Promise<number> {
     const byColl = new Map<ReplicatedCollection, string[]>();
-    for (const key of keys) {
+    const when = new Map<string, number>();
+    for (const [key, at] of entries) {
       const { coll, id } = parseKey(key);
       const list = byColl.get(coll) ?? [];
       list.push(id);
       byColl.set(coll, list);
+      when.set(key, at);
     }
     const ordered = [...byColl.entries()].sort(
       (a, b) => (COLL_ORDER.get(a[0]) ?? 99) - (COLL_ORDER.get(b[0]) ?? 99)
@@ -152,7 +154,7 @@ export class SyncEngine {
         const docs = await this.inner.collection(coll).find({ _id: { $in: chunk } });
         const byId = new Map(docs.map((doc) => [String(doc._id), doc]));
         for (const id of chunk) {
-          if (this.captureDoc(coll, id, byId.get(id) ?? null)) changed += 1;
+          if (this.captureDoc(coll, id, byId.get(id) ?? null, when.get(recKey(coll, id)))) changed += 1;
         }
       }
     }
@@ -164,13 +166,13 @@ export class SyncEngine {
    * disagree, stamps the difference as a local edit. Synchronous: it only touches
    * memory, so a batch cannot interleave with another capture.
    */
-  captureDoc(coll: ReplicatedCollection, id: string, doc: Doc | null): boolean {
+  captureDoc(coll: ReplicatedCollection, id: string, doc: Doc | null, at?: number): boolean {
     const key = recKey(coll, id);
     const existing = this.meta.get(key);
 
     if (!doc) {
       if (!existing || !isLive(existing)) return false;
-      const t = this.clock.tick();
+      const t = this.clock.tick(at);
       const node = this.nodeId;
       const c = (existing.vv[node] ?? 0) + 1;
       existing.vv[node] = c;
@@ -181,6 +183,9 @@ export class SyncEngine {
       this.commit(existing);
       return true;
     }
+
+    // A tombstoned id stays deleted; a local write that raced a remote delete loses.
+    if (existing?.del) return false;
 
     const rec: DocRec = existing ?? {
       coll,
@@ -213,7 +218,7 @@ export class SyncEngine {
     if (changedFields.length === 0 && existing && existing.scope === scope) return false;
 
     if (changedFields.length > 0) {
-      const t = this.clock.tick();
+      const t = this.clock.tick(at);
       const node = this.nodeId;
       const c = (rec.vv[node] ?? 0) + 1;
       rec.vv[node] = c;

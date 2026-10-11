@@ -67,7 +67,7 @@ export interface MetaSnapshot {
   seq: number;
   recs: DocRec[];
   peers: Record<string, PeerCursor>;
-  dirty: string[];
+  dirty: Array<[string, number]>;
 }
 
 export interface MetaStore {
@@ -80,8 +80,9 @@ export interface MetaStore {
   commit(rec: DocRec): void;
   all(): IterableIterator<DocRec>;
   readonly size: number;
-  markDirty(key: string): void;
-  takeDirty(): string[];
+  /** Notes that a document changed, remembering when (wall ms) so its stamp reflects the write. */
+  markDirty(key: string, at?: number): void;
+  takeDirty(): Array<[key: string, at: number]>;
   hasDirty(key: string): boolean;
   dirtyCount(): number;
   peer(peerId: string): PeerCursor | undefined;
@@ -119,7 +120,7 @@ export class MemoryMetaStore implements MetaStore {
   private readonly recs = new Map<string, DocRec>();
   private readonly logs = new Map<string, ScopeLog>();
   private logEntries = 0;
-  private dirty = new Set<string>();
+  private dirty = new Map<string, number>();
   private readonly peerCursors = new Map<string, PeerCursor>();
   private onChange?: () => void;
 
@@ -172,14 +173,14 @@ export class MemoryMetaStore implements MetaStore {
     return this.recs.values();
   }
 
-  markDirty(key: string): void {
-    this.dirty.add(key);
+  markDirty(key: string, at: number = Date.now()): void {
+    this.dirty.set(key, at);
   }
 
-  takeDirty(): string[] {
-    const keys = [...this.dirty];
-    this.dirty = new Set();
-    return keys;
+  takeDirty(): Array<[string, number]> {
+    const entries = [...this.dirty.entries()].sort((a, b) => a[1] - b[1]);
+    this.dirty = new Map();
+    return entries;
   }
 
   hasDirty(key: string): boolean {
@@ -273,7 +274,7 @@ export class MemoryMetaStore implements MetaStore {
       seq: this.seq,
       recs: [...this.recs.values()],
       peers: Object.fromEntries(this.peerCursors),
-      dirty: [...this.dirty],
+      dirty: [...this.dirty.entries()],
     };
   }
 
@@ -284,7 +285,7 @@ export class MemoryMetaStore implements MetaStore {
     store.compact();
     store.seq = snapshot.seq;
     for (const [peerId, cursor] of Object.entries(snapshot.peers)) store.peerCursors.set(peerId, cursor);
-    store.dirty = new Set(snapshot.dirty);
+    store.dirty = new Map(snapshot.dirty);
     store.onChange = undefined;
     return store;
   }

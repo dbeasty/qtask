@@ -18,9 +18,10 @@
  * updatedAt", and it makes the merge commutative, associative and idempotent: the
  * merged state is the per-field maximum, so any order of exchange converges.
  *
- * A tombstone is the maximum of both tombstones, and kills every field written at or
- * before it. A field written after it (a re-create, or an edit that did not see the
- * delete and carries a later stamp) keeps the document alive.
+ * A tombstone is the maximum of both tombstones and kills the whole document: delete
+ * wins over a concurrent edit regardless of which is later, because the alternative
+ * rebuilds a document from only the fields written since. An id that has been deleted
+ * stays deleted (application ids are never reused).
  */
 
 import { hashEncoded } from './codec.js';
@@ -110,14 +111,15 @@ export function mergeRecords(local: DocRec | undefined, remote: WireDoc): MergeO
   }
 
   if (del) {
+    // Delete wins: a tombstone kills every field, however late a concurrent edit was
+    // stamped. Letting a later edit "resurrect" would rebuild the document from only
+    // the fields written since, a task with a description and no title.
     for (const name of Object.keys(fields)) {
-      if (fields[name]!.t <= del.t) {
-        if (name in localFields) dropLocal.push(name);
-        delete fields[name];
-        const index = takeRemote.indexOf(name);
-        if (index >= 0) takeRemote.splice(index, 1);
-      }
+      if (name in localFields) dropLocal.push(name);
+      delete fields[name];
     }
+    takeRemote.length = 0;
+    conflicts.length = 0;
   }
 
   const vv: Record<string, number> = { ...localVv };
