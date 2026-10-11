@@ -328,11 +328,11 @@ export class ShadowDataStore implements DataStore {
   }
 
   /** The backend that answers. Callers asking "what am I reading from" get the truth. */
-  get backend(): 'mongo' | 'kdb' {
+  get backend(): 'mongo' | 'kdb' | 'memory' {
     return this.primary.backend;
   }
 
-  get shadowBackend(): 'mongo' | 'kdb' {
+  get shadowBackend(): 'mongo' | 'kdb' | 'memory' {
     return this.shadow.backend;
   }
 
