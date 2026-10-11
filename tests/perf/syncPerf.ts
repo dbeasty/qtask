@@ -402,6 +402,17 @@ async function main() {
   out(`Machine: ${cpus()[0]?.model}, ${cpus().length} cores, ${fmt(mb(totalmem()) / 1024, 0)} GB RAM; Node ${process.version}; ${process.platform}/${process.arch}`);
   out(`Sizes: ${SIZES.join(', ')} tasks; no-op runs per size: ${NOOP_RUNS}; HTTP section: ${HTTP ? HTTP_SIZES.join(', ') : 'not run'}`);
   out();
+  out('## Method');
+  out();
+  out('- Reproduce: `npm run perf:sync -- --http --http-sizes=1000,10000,50000 --out=docs/perf/phase2.md` (script: `tests/perf/syncPerf.ts`). Single run, single machine, no repetition across runs except where a column says median/p95 over many syncs.');
+  out('- Workload: tasks of ~15 fields (title, ~200-char description, status, priority, tags, dates, hours, empty steps/subtasks/links) in one project, one account. Synthetic, not production data.');
+  out('- "In-memory" runs use `MemoryDataStore` for both the device and the hub with a `LoopbackTransport` that JSON-serialises every request and response (so encoding and parsing cost is included, network latency is not). This isolates the sync engine from database speed. Batch size is 500 documents.');
+  out('- "Real hub" runs use the actual Express app with `QTASK_SYNC_HUB=true` on Mongo (mongodb-memory-server, in the same process) and a real HTTP client over localhost: JWT auth, body parsing, `HubAuthorizer` checks, Mongoose validation and the embedding-job enqueue for every received document. Localhost HTTP has no network latency or bandwidth limit; add round trips x RTT for a real link (an initial push is `ceil(n/500) + 2` requests, a no-op sync is 2).');
+  out('- Baseline stamp = `engine.init()` over existing local data that was never tracked (the Phase 1 adoption case). Initial push = first `syncWith` to an empty hub, including the hub applying, recomputing derived fields and queueing embeddings. Initial pull = a second, empty device of the same account syncing from the hub.');
+  out('- Incremental = 100 `updateOne` edits (two fields each) made through the tracked store, then one `syncWith`; then 100 hub-side edits pulled by the device. No-op = repeated `syncWith` with nothing changed.');
+  out('- Merge = the same field of the same documents edited on both sides while apart; the timed sync captures them, detects the conflicts, writes one `sync_conflict` activity per conflict on the hub, and returns the merged documents to the device. The run asserts the conflict count.');
+  out('- Heap figures are `process.memoryUsage().heapUsed` deltas after two forced GCs (`--expose-gc`); RSS is the whole process.');
+  out();
 
   const results: SizeResult[] = [];
   for (const n of SIZES) {
