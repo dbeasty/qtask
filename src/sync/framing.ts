@@ -202,6 +202,16 @@ export class FramedChannel {
     }
   }
 
+  /**
+   * Closes once everything already received has been handed to the application.
+   * Use for a peer-initiated end of stream: the last message and the FIN often arrive
+   * together, and the message must not be lost to the close.
+   */
+  closeAfterDelivery(err?: Error): void {
+    if (this.closed) return;
+    void this.deliverChain.then(() => this.close(err));
+  }
+
   close(err?: Error): void {
     if (this.closed) return;
     this.closed = true;

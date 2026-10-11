@@ -139,10 +139,16 @@ function channelFor(sock: Duplex, opts: Omit<FramedChannelOptions, 'write'> | un
       }),
   });
   sock.on('data', (d: Buffer) => ch.receive(d));
-  sock.on('close', () => ch.close());
+  sock.on('close', () => ch.closeAfterDelivery());
   sock.on('error', (e) => ch.close(e));
   ch.onClose = () => {
-    if (!sock.destroyed) sock.destroy();
+    // end() flushes anything still queued (a final message must not be lost to destroy()),
+    // then a timer makes sure a stuck peer cannot keep the socket around.
+    if (sock.destroyed) return;
+    sock.end();
+    const t = setTimeout(() => sock.destroy(), 2000);
+    t.unref();
+    sock.once('close', () => clearTimeout(t));
   };
   return ch;
 }
@@ -464,6 +470,7 @@ export class LanTransport extends EventEmitter implements SyncTransport {
       // Both sides apply the same rule: keep the connection initiated by the lower node id.
       const keepNew = link.initiatorId < existing.initiatorId;
       if (!keepNew) {
+        this.log(`duplicate link from ${link.peerId.slice(0, 8)} dropped`);
         link.close();
         return;
       }
