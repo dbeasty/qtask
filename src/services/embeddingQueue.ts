@@ -1,4 +1,5 @@
 import { collection } from '../data/index.js';
+import { isLocalMode } from '../local/config.js';
 import type {
   CommentDoc,
   EmbeddingJobDoc,
@@ -30,6 +31,9 @@ async function enqueueEntityEmbeddingJob(
   entityType: 'task' | 'project',
   entityId: string
 ): Promise<void> {
+  // Embeddings need a model server; a local-mode device has none and no worker to
+  // drain the queue, so queueing would only grow it without bound.
+  if (isLocalMode()) return;
   // A single atomic pipeline update instead of a separate findOne-then-write
   // (which raced with the job's own status changes): if the job is
   // currently 'processing', leave it running and just mark it dirty so it

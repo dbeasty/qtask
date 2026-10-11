@@ -12,6 +12,7 @@
  */
 
 import { createLogger } from '../utils/logger.js';
+import { isLocalMode } from '../local/config.js';
 import type { CollectionName, Collection, DataStore, Doc } from './types.js';
 
 const log = createLogger('data');
@@ -24,8 +25,14 @@ export type DataBackend = 'mongo' | 'kdb';
  * one means half a deployment could read from the other.
  */
 export function resolveDataBackend(env: NodeJS.ProcessEnv = process.env): DataBackend {
+  const local = isLocalMode(env);
   const wantsMongo = env.DATA_MONGO === 'true';
-  const wantsKdb = env.DATA_KDB === 'true';
+  // A local-mode device has no database server to run Mongo against: its store is the
+  // embedded KDB child the app supervises.
+  if (local && wantsMongo) {
+    throw new Error('QTASK_LOCAL uses the embedded KDB store and cannot be combined with DATA_MONGO');
+  }
+  const wantsKdb = env.DATA_KDB === 'true' || local;
 
   if (wantsMongo && wantsKdb) {
     throw new Error('DATA_MONGO and DATA_KDB are mutually exclusive — set exactly one');
