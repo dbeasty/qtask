@@ -246,3 +246,24 @@ export function uniqueConstraints(schema: Schema): Array<{ fields: string[]; spa
 
   return out;
 }
+
+/** The stored field `kdb-service --expire-field` watches. It is a dedicated field,
+ *  not `expiresAt`: invites also carry an `expiresAt` and must stay readable after it
+ *  passes (they are marked `expired`, not deleted), whereas a Mongo TTL index only
+ *  ever existed on the collections that should disappear. */
+export const EXPIRE_FIELD = '_expireAt';
+
+/**
+ * The TTL a schema declares, as the path holding the deadline and a grace in ms, or
+ * null when it declares none. Mongo's `expireAfterSeconds` index is the source of
+ * truth, so the two backends expire exactly the same collections.
+ */
+export function ttlSpec(schema: Schema): { path: string; graceMs: number } | null {
+  const declared = (schema as unknown as { indexes(): Array<[Record<string, unknown>, Record<string, unknown>]> }).indexes();
+  for (const [fields, options] of declared) {
+    const seconds = options?.expireAfterSeconds;
+    const keys = Object.keys(fields);
+    if (typeof seconds === 'number' && keys.length === 1) return { path: keys[0], graceMs: seconds * 1000 };
+  }
+  return null;
+}

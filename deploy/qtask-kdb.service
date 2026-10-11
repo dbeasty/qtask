@@ -1,0 +1,44 @@
+[Unit]
+Description=QTask KDB (document store)
+Documentation=file:///opt/qtask/docs/KDB_MIGRATION.md
+After=network.target
+Before=qtask.service
+
+[Service]
+Type=simple
+User=qtask
+Group=qtask
+WorkingDirectory=/var/lib/qtask/kdb
+# Pinned: v0.6.2. Installed from the KDB release (dist/bin/kdb-service-linux-<arch>),
+# never built on the host. See docs/KDB_MIGRATION.md before changing it.
+#
+# Flags that are not optional:
+#  --namespace         must equal KDB_NAMESPACE_PREFIX in /opt/qtask/.env. This binary opens
+#                      exactly one namespace; every collection lives inside it.
+#  --peer-addr ''      v0.6.2 listens for peer sync on 127.0.0.1:9091 and streams on :9092
+#  --stream-addr ''    by default. qtask uses neither, and a second instance (staging, a
+#                      restore drill) would fail to start on the collision.
+#  --expire-field      the store stamps _expireAt on collections that had a Mongo TTL index;
+#                      without this flag expired auth codes and tokens are never reclaimed.
+#  --sql-addr          loopback only. The client speaks this port; nothing else should.
+ExecStart=/opt/qtask/bin/kdb-service \
+  --data-dir /var/lib/qtask/kdb/data \
+  --namespace qtask/docs \
+  --sql-addr "tcp://127.0.0.1:7700?bind=true" \
+  --peer-addr "" \
+  --stream-addr "" \
+  --admin-addr 127.0.0.1:7701 \
+  --expire-field _expireAt \
+  --expire-interval 1m \
+  --durability sync \
+  --log-format json \
+  --log-level info
+Restart=on-failure
+RestartSec=5
+# Exit 75 is the supervisor contract for an orderly stop under sustained memory pressure.
+RestartForceExitStatus=75
+TimeoutStopSec=60
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

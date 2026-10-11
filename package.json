@@ -21,6 +21,7 @@
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test:perf": "node --import tsx --test tests/performance.test.ts",
     "hash-admin-password": "tsx src/scripts/hash-admin-password.ts",
+    "migrate:kdb": "tsx src/scripts/migrate-mongo-to-kdb.ts",
     "release": "bash scripts/build-release.sh",
     "release:jetson": "bash scripts/build-jetson-release.sh",
     "publish:jetson": "bash scripts/publish-jetson-release.sh",

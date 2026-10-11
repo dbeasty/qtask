@@ -6,8 +6,8 @@
  * `SELECT kdb_id, _doc`, and every filter, sort and projection is applied in process
  * by the shared query engine — the same engine checked against a real mongod in
  * tests/data-query-parity.test.ts. Pushing predicates into KDB SQL is a later,
- * separately-flagged step (`DATA_KDB_PUSHDOWN`); doing it now would mean debugging
- * two translation layers at once.
+ * separately-flagged step (`DATA_KDB_PUSHDOWN`, see pushdown.ts): the server narrows
+ * the scan and the engine still decides, so it can only make a query cheaper.
  *
  * Three KDB behaviours shape the code below, all of them verified against a running
  * server rather than assumed:
@@ -36,7 +36,8 @@ import { applyProjection, applySort } from '../query/shape.js';
 import { valuesEqual } from '../query/compare.js';
 import { getPath } from '../query/paths.js';
 import { generateObjectId, toDocumentUuid } from './ids.js';
-import { normalizeDocument, touchUpdatedAt, uniqueConstraints, ValidationError } from './schema.js';
+import { buildWhere } from './pushdown.js';
+import { EXPIRE_FIELD, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints, ValidationError } from './schema.js';
 import type {
   BulkOperation,
   Collection,
@@ -57,6 +58,8 @@ interface KdbClient {
   upsert(ns: string, docId: string, body: unknown): Promise<string>;
   queryRaw(ns: string, sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: string[][] }>;
   exec(ns: string, sql: string, args?: unknown[]): Promise<void>;
+  /** Keyed read. Rejects with an error named KdbNotFoundError when there is no such document. */
+  get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
   close(): Promise<void>;
 }
 
@@ -102,8 +105,47 @@ function reviveDates(schema: Schema, doc: Doc): Doc {
   return out;
 }
 
+/**
+ * kdb-service v0.6.2 stops a non-indexed scan after collecting 10,000 document ids,
+ * *before* the WHERE clause runs (go/kdb/sql/executor.go, MaxRows). On a namespace
+ * holding more than that, every SQL read examines only the first 10,000 documents and
+ * says nothing: COUNT(*) reports 10000, and a lookup of document 10,001 by id finds
+ * nothing. qtask reads and writes (unique checks, key-removal detection) all go
+ * through those scans, so past the cap the answers are wrong rather than slow.
+ *
+ * Wrong answers that look right are the worst way for a database to fail, so the store
+ * refuses instead. Set KDB_SERVER_ROW_CAP=0 once the server no longer truncates (the
+ * regression test in tests/data-kdb-scan-cap.test.ts says when), or to the cap the
+ * server was actually configured with.
+ */
+export class KdbScanCapError extends Error {
+  constructor(count: number, cap: number) {
+    super(
+      `KDB namespace holds at least ${count} documents, which reaches the server's ${cap}-row scan cap; ` +
+        'SQL reads would silently ignore everything past it. Refusing to answer rather than return a truncated result. ' +
+        'See docs/KDB_MIGRATION.md (blocker B1).'
+    );
+    this.name = 'KdbScanCapError';
+  }
+}
+
+/** Shared by every collection: the cap is a property of the one namespace, not of a collection. */
+const capCheck: { at?: number; count: number } = { count: 0 };
+
+const DEFAULT_SERVER_ROW_CAP = 10_000;
+const CAP_RECHECK_MS = 5_000;
+
+function serverRowCap(): number {
+  const raw = process.env.KDB_SERVER_ROW_CAP;
+  if (raw === undefined || raw === '') return DEFAULT_SERVER_ROW_CAP;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`KDB_SERVER_ROW_CAP must be a non-negative integer, got "${raw}"`);
+  return parsed;
+}
+
 class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private readonly unique: Array<{ fields: string[]; sparse: boolean }>;
+  private readonly ttl: { path: string; graceMs: number } | null;
 
   constructor(
     readonly name: CollectionName,
@@ -113,23 +155,27 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     private readonly client: () => KdbClient
   ) {
     this.unique = uniqueConstraints(schema);
+    this.ttl = ttlSpec(schema);
   }
 
   /** Every document in the collection. The only read primitive: filtering happens
    *  above this, in the shared engine. */
-  private async scan(): Promise<T[]> {
+  private async scan(filter: Filter = {}): Promise<T[]> {
+    await this.assertWithinScanCap();
+    // Pushdown only ever narrows: the caller re-checks every row with the shared
+    // engine, so a clause the server cannot express is just left to that check.
+    const pushed = config.kdb.pushdown ? buildWhere(filter) : null;
     const { rows } = await this.client().queryRaw(
       this.namespace,
-      `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?`,
-      [this.name]
+      `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
+      [this.name, ...(pushed?.args ?? [])]
     );
     const docs: T[] = [];
     for (const row of rows) {
       const json = row[1];
       if (!json) continue;
       try {
-        const { _c: _discriminator, ...body } = JSON.parse(json) as Doc;
-        docs.push(reviveDates(this.schema, body) as T);
+        docs.push(this.decode(JSON.parse(json) as Doc));
       } catch {
         // A document that will not parse is corruption, not a query result. Skipping
         // it would hide that; failing the whole read makes it visible immediately.
@@ -139,8 +185,54 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     return docs;
   }
 
+  /** A stored body back to the application's document: bookkeeping fields off, dates revived. */
+  private decode(stored: Doc): T {
+    const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, ...body } = stored;
+    return reviveDates(this.schema, body) as T;
+  }
+
+  /**
+   * One document by id through KDB's keyed read, which does not scan and so is not
+   * subject to the scan cap (see KdbScanCapError). Returns null for a missing document
+   * and for one that belongs to another collection - ids are unique across the
+   * namespace, but a collection must never serve another's document.
+   */
+  private async fetchById(id: string): Promise<T | null> {
+    let stored: Doc;
+    try {
+      stored = (await this.client().get(this.namespace, toDocumentUuid(id))).body as Doc;
+    } catch (error) {
+      if ((error as Error).constructor.name === 'KdbNotFoundError') return null;
+      throw error;
+    }
+    return stored._c === this.name ? this.decode(stored) : null;
+  }
+
+  /** Checks (at most every few seconds) that the namespace is still small enough for
+   *  the server to scan completely. COUNT(*) is itself capped, so a result at or past
+   *  the cap means "at least this many", which is all the check needs. */
+  private async assertWithinScanCap(): Promise<void> {
+    const cap = serverRowCap();
+    if (cap === 0) return;
+    const now = Date.now();
+    if (capCheck.at === undefined || now - capCheck.at > CAP_RECHECK_MS) {
+      const { rows } = await this.client().queryRaw(this.namespace, `SELECT COUNT(*) FROM ${this.table}`);
+      capCheck.count = Number(rows[0]?.[0] ?? 0);
+      capCheck.at = now;
+    }
+    // Exactly the cap, not "at least": a truncating server can never report more than
+    // the cap, while a server with the fix reports the true count, which may be larger
+    // and must not be refused.
+    if (capCheck.count === cap) throw new KdbScanCapError(capCheck.count, cap);
+  }
+
   private async matching(filter: Filter): Promise<T[]> {
-    const docs = await this.scan();
+    const keys = Object.keys(filter);
+    if (keys.length === 1 && keys[0] === '_id' && typeof filter._id === 'string') {
+      const doc = await this.fetchById(filter._id);
+      return doc ? [doc] : [];
+    }
+    const docs = await this.scan(filter);
     return docs.filter((doc) => matchesFilter(doc, filter));
   }
 
@@ -284,6 +376,20 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     return { matched, modified };
   }
 
+  /**
+   * Writes a document exactly as given - no defaults, no casting, no `updatedAt`
+   * stamp, no unique check. This is for copying data that another backend already
+   * validated (src/scripts/migrate-mongo-to-kdb.ts); `create` would re-stamp
+   * timestamps, which is precisely what a faithful copy must not do. Idempotent:
+   * running it again over the same document leaves the same document.
+   */
+  async importDocument(doc: Doc): Promise<void> {
+    if (typeof doc._id !== 'string') throw new Error(`${this.name}: cannot import a document without a string _id`);
+    // Keyed, so a bulk copy neither scans per document nor hits the scan cap.
+    const previous = await this.fetchById(doc._id);
+    await this.writeDocument(doc, previous);
+  }
+
   // --- write helpers -------------------------------------------------------------
 
   /** Applies an update to one document and writes it back. Returns the stored result
@@ -335,7 +441,16 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       const removed = Object.keys(previous).filter((key) => !(key in doc));
       if (removed.length > 0) await this.removeById(previous._id as string);
     }
-    await this.client().upsert(this.namespace, toDocumentUuid(id), { ...doc, _c: this.name });
+    await this.client().upsert(this.namespace, toDocumentUuid(id), { ...doc, _c: this.name, ...this.expiry(doc) });
+  }
+
+  /** The deadline the server's expiry sweeper reads, for collections whose Mongo
+   *  schema declared a TTL index. Epoch milliseconds, which the sweeper accepts. */
+  private expiry(doc: Doc): Doc {
+    if (!this.ttl) return {};
+    const at = getPath(doc, this.ttl.path);
+    const ms = at instanceof Date ? at.getTime() : typeof at === 'string' ? Date.parse(at) : NaN;
+    return Number.isNaN(ms) ? {} : { [EXPIRE_FIELD]: ms + this.ttl.graceMs };
   }
 
   private async removeById(id: string): Promise<void> {
@@ -343,6 +458,17 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       this.namespace,
       `DELETE FROM ${this.table} WHERE kdb_id = '${toDocumentUuid(id)}'`
     );
+    // The client has no delete operation, so this is a SQL DELETE - a scan, and
+    // therefore subject to the scan cap (KdbScanCapError): past it the statement
+    // reports success and removes nothing. A keyed read costs one round trip and turns
+    // that silent failure into an error, which matters because the caller goes on to
+    // tell the user the document is gone.
+    if ((await this.fetchById(id)) !== null) {
+      throw new Error(
+        `${this.name}: delete of ${id} had no effect - the namespace is past the KDB server's scan cap ` +
+          '(docs/KDB_MIGRATION.md, blocker B1)'
+      );
+    }
   }
 
   /**
@@ -356,13 +482,15 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   private async assertUnique(doc: Doc, excludeId: string | null): Promise<void> {
     if (this.unique.length === 0) return;
-    const existing = await this.scan();
-
     for (const constraint of this.unique) {
       const values = constraint.fields.map((field) => getPath(doc, field));
       // A constraint with any part absent or null claims nothing — sparse semantics,
       // which is what makes "unique email" work for accounts that have no email yet.
       if (values.some((value) => value === undefined || value === null)) continue;
+
+      // Only documents sharing the constraint's values can clash, so ask for those
+      // rather than the whole collection (the comparison below still decides).
+      const existing = await this.scan(Object.fromEntries(constraint.fields.map((field, i) => [field, values[i]])));
 
       const clash = existing.find((candidate) => {
         if (excludeId !== null && candidate._id === excludeId) return false;
@@ -385,6 +513,7 @@ export class KdbDataStore implements DataStore {
 
   async connect(): Promise<void> {
     const { connect } = await loadClient();
+    capCheck.at = undefined;
     this.client = await connect(config.kdb.addr, config.kdb.token);
   }
 
@@ -416,12 +545,18 @@ export class KdbDataStore implements DataStore {
     return collection;
   }
 
+  /** Verbatim import for the migration tool; see KdbBackedCollection.importDocument. */
+  async importDocument(name: CollectionName, doc: Doc): Promise<void> {
+    await (this.collection(name) as unknown as KdbBackedCollection<Doc>).importDocument(doc);
+  }
+
   async clear(): Promise<void> {
     if (config.nodeEnv !== 'test') throw new Error('clear() is test-support only');
     if (!this.client) return;
     // One namespace holds every collection (see the file comment), so one statement
     // empties them all.
     await this.client.exec(config.kdb.namespacePrefix, 'DELETE FROM docs');
+    capCheck.at = undefined;
   }
 }
 

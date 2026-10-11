@@ -49,7 +49,7 @@ runDataStoreConformance({
         '--memory',
         '--namespace',
         'qtaskconf/docs',
-        '--sql-addr',
+        '--peer-addr', '', '--stream-addr', '', '--sql-addr',
         `tcp://127.0.0.1:${PORT}?bind=true`,
         '--log-level',
         'error',
