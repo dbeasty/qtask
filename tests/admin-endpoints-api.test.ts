@@ -126,7 +126,9 @@ describe('admin ollama metrics endpoints', () => {
   async function seedMetrics() {
     const { LlmCallMetricModel } = await import('../src/models/index.js');
     const base = new Date('2026-01-15T10:00:00.000Z');
-    const expiresAt = new Date(base.getTime() + 30 * 24 * 3600_000);
+    // In the future relative to *now*: the metrics are dated 2026-01-15, and a TTL that has already
+    // passed is hidden at once on KDB, where Mongo's TTL monitor only sweeps about once a minute.
+    const expiresAt = new Date(Date.now() + 30 * 24 * 3600_000);
     const metric = (
       overrides: Record<string, unknown> & { startedAt: Date; durationMs: number }
     ) => ({
