@@ -22,6 +22,7 @@ import { mountWellKnownRoutes } from './routes/wellKnown.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
 import { readOnlyMiddleware, getDeploymentHealthPayload } from './middleware/readOnly.js';
 import { requireAuth } from './middleware/auth.js';
+import { createSyncRouter } from './sync/hub.js';
 import { startEmbeddingWorker } from './services/embeddingQueue.js';
 import { startFeedbackVisionWorker } from './services/feedbackVisionQueue.js';
 import { config, getHealthFeaturesPayload } from './config/index.js';
@@ -78,7 +79,10 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
       credentials: true,
     })
   );
-  app.use(express.json({ limit: '1mb' }));
+  // Sync batches carry whole documents and legitimately exceed the 1mb API default;
+  // that route parses its own body with a larger, still bounded, limit.
+  const jsonParser = express.json({ limit: '1mb' });
+  app.use((req, res, next) => (req.path.startsWith('/api/sync') ? next() : jsonParser(req, res, next)));
   app.use(express.urlencoded({ extended: false }));
 
   const authLimiter = rateLimit({
@@ -145,6 +149,7 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
 
   app.get('/api/invites/preview/:token', authLimiter, invitePreviewHandler);
 
+  app.use('/api/sync', requireAuth, express.json({ limit: '32mb' }), createSyncRouter());
   app.use('/api/tasks', requireAuth, tasksRouter);
   app.use('/api/projects', requireAuth, projectsRouter);
   app.use('/api/invites', requireAuth, invitesRouter);

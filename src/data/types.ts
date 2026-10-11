@@ -108,7 +108,7 @@ export type CollectionName =
  * `collection` is the only way in.
  */
 export interface DataStore {
-  readonly backend: 'mongo' | 'kdb';
+  readonly backend: 'mongo' | 'kdb' | 'memory';
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T>;
