@@ -135,6 +135,10 @@ class RecordingStore implements DataStore {
   async disconnect(): Promise<void> {
     this.connected = false;
   }
+
+  async ping(): Promise<void> {
+    if (!this.connected) throw new Error('not connected');
+  }
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {
     let existing = this.collections.get(name);
     if (!existing) {

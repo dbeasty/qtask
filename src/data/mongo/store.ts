@@ -27,31 +27,9 @@ import type {
   UpdateOptions,
   UpdateResult,
 } from '../types.js';
+import { MODEL_BY_COLLECTION } from '../modelNames.js';
 
 /** Model names as registered in src/models/index.ts, by collection name. */
-const MODEL_BY_COLLECTION: Record<CollectionName, string> = {
-  users: 'User',
-  tasks: 'Task',
-  projects: 'Project',
-  comments: 'Comment',
-  activities: 'Activity',
-  conversations: 'Conversation',
-  notifications: 'Notification',
-  invites: 'Invite',
-  feedback: 'Feedback',
-  feedbackVisionJobs: 'FeedbackVisionJob',
-  embeddingJobs: 'EmbeddingJob',
-  llmCallMetrics: 'LlmCallMetric',
-  llmDailyMetrics: 'LlmDailyMetric',
-  adminAudits: 'AdminAudit',
-  mcpApiKeys: 'McpApiKey',
-  mcpSessions: 'McpSession',
-  mcpOAuthClients: 'McpOAuthClient',
-  mcpOAuthAuthorizationCodes: 'McpOAuthAuthorizationCode',
-  mcpOAuthRefreshTokens: 'McpOAuthRefreshToken',
-  mcpOAuthPendingConsents: 'McpOAuthPendingConsent',
-  userOAuthAuthCodes: 'UserOAuthAuthCode',
-};
 
 /**
  * Turns a lean Mongoose result into a plain document. ObjectIds become strings —
@@ -206,6 +184,11 @@ export class MongoDataStore implements DataStore {
 
   async disconnect(): Promise<void> {
     await mongoose.disconnect();
+  }
+
+  async ping(): Promise<void> {
+    if (mongoose.connection.readyState !== 1) throw new Error('mongodb is not connected');
+    await mongoose.connection.db?.admin().ping();
   }
 
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {

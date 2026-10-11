@@ -24,6 +24,20 @@ export class ValidationError extends Error {
   }
 }
 
+/**
+ * A write that would repeat a value a unique constraint forbids. Carries MongoDB's duplicate-key
+ * code (11000) because that is how the application recognises it (`isDuplicateKeyError` in
+ * authService) and turns it into a 409 - the data layer's contract is that either backend
+ * rejects a duplicate in the same shape.
+ */
+export class DuplicateKeyError extends Error {
+  readonly code = 11000;
+  constructor(message: string) {
+    super(message);
+    this.name = 'DuplicateKeyError';
+  }
+}
+
 interface NormalizeOptions {
   /** A create applies defaults and required-checks; an update only casts what is present. */
   isCreate: boolean;
@@ -34,7 +48,20 @@ interface NormalizeOptions {
  * ids minted, timestamps stamped.
  */
 export function normalizeDocument(schema: Schema, input: Doc, options: NormalizeOptions): Doc {
-  const out = applySchema(schema, { ...input }, options, '');
+  // Mongoose reports every problem in a document at once ("title is required, status is not a
+  // valid enum value, ..."), and API callers see that message. Stopping at the first problem
+  // would show them one at a time, so problems are collected through the whole walk (it is
+  // synchronous, so a module-level collector cannot interleave) and raised together.
+  const outer = collecting;
+  const problems: string[] = [];
+  collecting = problems;
+  let out: Doc;
+  try {
+    out = applySchema(schema, { ...input }, options, '');
+  } finally {
+    collecting = outer;
+  }
+  if (problems.length > 0) throw new ValidationError(problems.join(', '));
 
   if (hasTimestamps(schema)) {
     const now = new Date();
@@ -49,6 +76,8 @@ export function normalizeDocument(schema: Schema, input: Doc, options: Normalize
 
   return out;
 }
+
+let collecting: string[] | null = null;
 
 /** Stamps `updatedAt` on a document being written back, when the schema has timestamps. */
 export function touchUpdatedAt(schema: Schema, doc: Doc): Doc {
@@ -75,23 +104,32 @@ function applySchema(schema: Schema, doc: Doc, options: NormalizeOptions, prefix
     // handled through `type.schema` below, so a dotted path here is a leaf of one.
     if (path.includes('.')) continue;
 
-    const present = out[path] !== undefined && out[path] !== null;
+    try {
+      const present = out[path] !== undefined && out[path] !== null;
 
-    if (!present) {
-      if (options.isCreate) {
-        const fallback = defaultFor(type);
-        if (fallback !== undefined) {
-          out[path] = fallback;
+      if (!present) {
+        if (options.isCreate) {
+          const fallback = defaultFor(type);
+          if (fallback !== undefined) {
+            out[path] = fallback;
+          }
         }
       }
-    }
 
-    if (out[path] !== undefined && out[path] !== null) {
-      out[path] = castValue(type, out[path], options, `${prefix}${path}`);
-    }
+      if (out[path] !== undefined && out[path] !== null) {
+        out[path] = castValue(type, out[path], options, `${prefix}${path}`);
+      }
 
-    if (options.isCreate && isRequired(type) && (out[path] === undefined || out[path] === null || out[path] === '')) {
-      throw new ValidationError(`${prefix}${path} is required`);
+      if (options.isCreate && isRequired(type) && (out[path] === undefined || out[path] === null || out[path] === '')) {
+        throw new ValidationError(`${prefix}${path} is required`);
+      }
+    } catch (error) {
+      // Record and carry on to the next path; normalizeDocument raises them together.
+      if (error instanceof ValidationError && collecting) {
+        collecting.push(error.message);
+        continue;
+      }
+      throw error;
     }
   }
 

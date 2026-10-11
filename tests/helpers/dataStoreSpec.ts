@@ -81,6 +81,21 @@ export function runDataStoreConformance(backend: BackendHarness): void {
         assert.equal(await tasks.findById('not-an-id'), null);
       });
 
+      it('returns dates as Dates at every depth, not only at the top level', async () => {
+        const stamp = new Date('2026-05-06T07:08:09.010Z');
+        const projects = store.collection('projects');
+        const created = await projects.create({
+          userId: 'u1',
+          name: 'dated',
+          trackingRollup: { hoursSpent: 3, updatedAt: stamp },
+        });
+        const found = (await projects.findById(created._id as string))!;
+        const rollup = found.trackingRollup as { updatedAt: unknown };
+        assert.ok(rollup.updatedAt instanceof Date, `updatedAt came back as ${typeof rollup.updatedAt}`);
+        assert.equal((rollup.updatedAt as Date).toISOString(), stamp.toISOString());
+        assert.ok(found.createdAt instanceof Date);
+      });
+
       it('returns plain objects a caller may mutate', async () => {
         const created = await tasks.create({ userId: 'u1', title: 'mutable' });
         const found = (await tasks.findById(created._id as string))!;
@@ -166,6 +181,67 @@ export function runDataStoreConformance(backend: BackendHarness): void {
 
       it('returns null when nothing matches', async () => {
         assert.equal(await tasks.findOne({ title: 'nothing' }), null);
+      });
+    });
+
+    describe('positional updates', () => {
+      // `pendingProposals.$.status` with the element chosen by the filter: how the agent and MCP
+      // flows approve or reject one proposal without rewriting the whole array.
+      it('updates only the array element the filter matched', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({
+          userId: 'u1',
+          pendingProposals: [
+            { id: 'a', status: 'pending' },
+            { id: 'b', status: 'pending' },
+            { id: 'c', status: 'pending' },
+          ],
+        });
+        const updated = await conversations.findOneAndUpdate(
+          { _id: created._id, userId: 'u1', 'pendingProposals.id': 'b' },
+          { $set: { 'pendingProposals.$.status': 'approved' } },
+          { returnDocument: 'after' }
+        );
+        const status = (id: string) =>
+          (updated?.pendingProposals as Array<{ id: string; status: string }>).find((p) => p.id === id)?.status;
+        assert.equal(status('a'), 'pending');
+        assert.equal(status('b'), 'approved');
+        assert.equal(status('c'), 'pending');
+      });
+
+      it('lands both of two concurrent updates to different elements', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({
+          userId: 'u1',
+          pendingProposals: [
+            { id: 'a', status: 'pending' },
+            { id: 'b', status: 'pending' },
+          ],
+        });
+        await Promise.all(
+          ['a', 'b'].map((id) =>
+            conversations.findOneAndUpdate(
+              { _id: created._id, 'pendingProposals.id': id },
+              { $set: { 'pendingProposals.$.status': 'approved' } }
+            )
+          )
+        );
+        const final = (await conversations.findById(created._id as string))!;
+        assert.deepEqual(
+          (final.pendingProposals as Array<{ status: string }>).map((p) => p.status),
+          ['approved', 'approved']
+        );
+      });
+
+      it('leaves the document alone when the filter matches no element', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({ userId: 'u1', pendingProposals: [{ id: 'a', status: 'pending' }] });
+        const result = await conversations.updateOne(
+          { _id: created._id, 'pendingProposals.id': 'zzz' },
+          { $set: { 'pendingProposals.$.status': 'approved' } }
+        );
+        assert.equal(result.matched, 0);
+        assert.equal(((await conversations.findById(created._id as string))!.pendingProposals as Array<{ status: string }>)[0].status, 'pending');
       });
     });
 
@@ -326,6 +402,73 @@ export function runDataStoreConformance(backend: BackendHarness): void {
       });
     });
 
+    describe('concurrent writes', () => {
+      it('lets exactly one of several concurrent conditional updates win', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'claim me' });
+        // "Claim it if nobody has" with the condition in the filter - how the application
+        // implements feedback replies, proposal approval and queue claims.
+        const results = await Promise.all(
+          Array.from({ length: 8 }, (_, i) =>
+            tasks.updateOne({ _id: doc._id, status: 'todo' }, { $set: { status: 'in_progress', title: `winner-${i}` } })
+          )
+        );
+        assert.equal(results.filter((r) => r.matched === 1).length, 1, 'exactly one claim may succeed');
+        assert.equal(results.filter((r) => r.modified === 1).length, 1);
+        const final = (await tasks.findById(doc._id as string))!;
+        assert.equal(final.status, 'in_progress');
+        assert.match(final.title as string, /^winner-\d$/);
+      });
+
+      it('lets exactly one concurrent findOneAndUpdate claim a document', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'queued' });
+        const claims = await Promise.all(
+          Array.from({ length: 6 }, () =>
+            tasks.findOneAndUpdate({ _id: doc._id, status: 'todo' }, { $set: { status: 'in_progress' } }, { returnDocument: 'after' })
+          )
+        );
+        assert.equal(claims.filter((c) => c !== null).length, 1);
+      });
+
+      it('does not lose concurrent increments', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'counter', percentComplete: 0 });
+        await Promise.all(Array.from({ length: 20 }, () => tasks.updateOne({ _id: doc._id }, { $inc: { percentComplete: 1 } })));
+        assert.equal((await tasks.findById(doc._id as string))?.percentComplete, 20);
+      });
+
+      it('lets exactly one of several concurrent deletes of a document report success', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'delete once' });
+        const results = await Promise.all(Array.from({ length: 6 }, () => tasks.deleteOne({ _id: doc._id })));
+        assert.equal(results.filter((r) => r.deleted === 1).length, 1);
+      });
+
+      it('rejects one of two concurrent creates of the same unique value, as a duplicate key', async () => {
+        const settled = await Promise.allSettled([
+          users.create({ email: 'race@example.com', displayName: 'A', passwordHash: 'x' }),
+          users.create({ email: 'race@example.com', displayName: 'B', passwordHash: 'x' }),
+        ]);
+        assert.equal(settled.filter((r) => r.status === 'fulfilled').length, 1);
+        const rejected = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+        // The application turns code 11000 into a 409; both backends must raise it.
+        assert.equal((rejected.reason as { code?: unknown }).code, 11000);
+        assert.equal(await users.countDocuments({ email: 'race@example.com' }), 1);
+      });
+
+      it('deletes concurrently without a spurious error on any of them', async () => {
+        const created = await Promise.all(
+          Array.from({ length: 12 }, (_, i) => tasks.create({ userId: 'u1', title: `bulk-${i}` }))
+        );
+        // Deletes of different documents, in different shapes, all in flight at once - what
+        // `Promise.all` over several collections does in the application.
+        const results = await Promise.all([
+          ...created.slice(0, 4).map((t) => tasks.deleteOne({ _id: t._id })),
+          tasks.deleteMany({ title: { $in: created.slice(4, 8).map((t) => t.title) } }),
+          ...created.slice(8).map((t) => tasks.findOneAndDelete({ _id: t._id })),
+        ]);
+        assert.equal(results.length, 9);
+        assert.equal(await tasks.countDocuments({ userId: 'u1' }), 0);
+      });
+    });
+
     describe('constraints', () => {
       it('enforces a unique index', async () => {
         await users.create({ email: 'dup@example.com' });
@@ -335,6 +478,18 @@ export function runDataStoreConformance(backend: BackendHarness): void {
       it('lowercases and trims where the schema says to', async () => {
         const created = await users.create({ email: '  MixedCase@Example.COM ' });
         assert.equal(created.email, 'mixedcase@example.com');
+      });
+
+      it('reports every validation problem at once, not just the first', async () => {
+        await assert.rejects(
+          tasks.create({ userId: 'u1', status: 'not-a-real-status', percentComplete: 99999 }),
+          (error: Error) => {
+            assert.match(error.message, /title/, 'the missing title');
+            assert.match(error.message, /status/, 'the invalid status');
+            assert.match(error.message, /percentComplete/, 'the out-of-range percent');
+            return true;
+          }
+        );
       });
 
       it('rejects a document missing a required field', async () => {

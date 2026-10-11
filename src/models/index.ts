@@ -710,3 +710,16 @@ const userOAuthAuthCodeSchema = new Schema(
 userOAuthAuthCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const UserOAuthAuthCodeModel = model('UserOAuthAuthCode', userOAuthAuthCodeSchema);
+
+// One-shot migration bookkeeping (src/db/migrations.ts). This collection predates the data layer
+// and was written through the raw driver, so the model adopts it as it is: the same `app_meta`
+// collection, no timestamps, no _id surprises, and nothing else added to documents that exist.
+const appMetaSchema = new Schema(
+  {
+    key: { type: String, required: true },
+    at: { type: Date, required: true },
+  },
+  { timestamps: false, collection: 'app_meta' }
+);
+
+export const AppMetaModel = model('AppMeta', appMetaSchema);

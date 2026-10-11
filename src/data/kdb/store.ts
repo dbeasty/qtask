@@ -34,10 +34,10 @@ import { matchesFilter } from '../query/filter.js';
 import { applyUpdate, isOperatorUpdate, structuredCloneDoc } from '../query/update.js';
 import { applyProjection, applySort } from '../query/shape.js';
 import { valuesEqual } from '../query/compare.js';
-import { getPath } from '../query/paths.js';
+import { getPath, setPath } from '../query/paths.js';
 import { generateObjectId, toDocumentUuid } from './ids.js';
 import { buildWhere } from './pushdown.js';
-import { EXPIRE_FIELD, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints, ValidationError } from './schema.js';
+import { DuplicateKeyError, EXPIRE_FIELD, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints } from './schema.js';
 import type {
   BulkOperation,
   Collection,
@@ -51,6 +51,7 @@ import type {
   UpdateOptions,
   UpdateResult,
 } from '../types.js';
+import { MODEL_BY_COLLECTION } from '../modelNames.js';
 
 /** The minimum of `@kdb/client` this store depends on. Declared here so the adapter
  *  boundary is explicit and the module can be loaded dynamically. */
@@ -65,44 +66,93 @@ interface KdbClient {
 
 type ConnectFn = (addr: string, token: string) => Promise<KdbClient>;
 
-const MODEL_BY_COLLECTION: Record<CollectionName, string> = {
-  users: 'User',
-  tasks: 'Task',
-  projects: 'Project',
-  comments: 'Comment',
-  activities: 'Activity',
-  conversations: 'Conversation',
-  notifications: 'Notification',
-  invites: 'Invite',
-  feedback: 'Feedback',
-  feedbackVisionJobs: 'FeedbackVisionJob',
-  embeddingJobs: 'EmbeddingJob',
-  llmCallMetrics: 'LlmCallMetric',
-  llmDailyMetrics: 'LlmDailyMetric',
-  adminAudits: 'AdminAudit',
-  mcpApiKeys: 'McpApiKey',
-  mcpSessions: 'McpSession',
-  mcpOAuthClients: 'McpOAuthClient',
-  mcpOAuthAuthorizationCodes: 'McpOAuthAuthorizationCode',
-  mcpOAuthRefreshTokens: 'McpOAuthRefreshToken',
-  mcpOAuthPendingConsents: 'McpOAuthPendingConsent',
-  userOAuthAuthCodes: 'UserOAuthAuthCode',
-};
+/**
+ * The client's `exec` is two round trips on one shared session per namespace - run the DML, then
+ * commit whatever the session holds - with nothing to stop two callers interleaving them. Two
+ * concurrent deletes both buffer, the first commit takes both, and the second commit fails with
+ * "no pending transaction to commit": a spurious error on the second caller, after its delete
+ * has in fact been applied. The application deletes concurrently as a matter of course
+ * (`Promise.all` over collections), so every DML statement goes through one queue here. Reads and
+ * upserts are unaffected: they do not touch the session's pending buffer.
+ *
+ * The right fix is in the client; this keeps the store correct against any client version, and
+ * costs nothing where DML is already one-at-a-time.
+ */
+class SerializedDmlClient implements KdbClient {
+  private tail: Promise<unknown> = Promise.resolve();
 
-/** JSON revives dates as strings; the schema knows which paths are dates, and the
- *  query engine compares dates by instant, so reads rehydrate them on the way out. */
+  constructor(private readonly inner: KdbClient) {}
+
+  upsert(ns: string, docId: string, body: unknown): Promise<string> {
+    return this.inner.upsert(ns, docId, body);
+  }
+  queryRaw(ns: string, sql: string, args?: unknown[]) {
+    return this.inner.queryRaw(ns, sql, args);
+  }
+  get(ns: string, docId: string) {
+    return this.inner.get(ns, docId);
+  }
+  close(): Promise<void> {
+    return this.inner.close();
+  }
+  exec(ns: string, sql: string, args?: unknown[]): Promise<void> {
+    // A failed statement must not poison the queue for the next one.
+    const run = this.tail.then(
+      () => this.inner.exec(ns, sql, args),
+      () => this.inner.exec(ns, sql, args)
+    );
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+}
+
+
+/** JSON revives dates as strings; the schema knows which paths are dates, and the query engine
+ *  compares dates by instant, so reads rehydrate them on the way out. Recurses into
+ *  sub-documents, arrays of sub-documents and arrays of dates: a store that revived only
+ *  top-level dates handed `project.trackingRollup.updatedAt` back as a string, and the first
+ *  caller to call `.toISOString()` on it failed in production code. */
 function reviveDates(schema: Schema, doc: Doc): Doc {
   const out: Doc = { ...doc };
   for (const [path, type] of Object.entries(schema.paths)) {
-    const instance = (type as unknown as { instance?: string }).instance;
-    if (instance !== 'Date') continue;
-    const value = out[path];
-    if (typeof value === 'string') {
-      const date = new Date(value);
-      if (!Number.isNaN(date.getTime())) out[path] = date;
-    }
+    const value = getPath(out, path);
+    if (value === undefined || value === null) continue;
+    const revived = reviveValue(type as unknown as SchemaTypeLike, value);
+    if (revived !== value) setPath(out, path, revived);
   }
   return out;
+}
+
+interface SchemaTypeLike {
+  instance?: string;
+  schema?: Schema;
+  caster?: { instance?: string };
+  $embeddedSchemaType?: { instance?: string };
+}
+
+function reviveValue(type: SchemaTypeLike, value: unknown): unknown {
+  if (type.instance === 'Date') {
+    if (typeof value !== 'string') return value;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date;
+  }
+  // A single sub-document, or an array of them: both carry the sub-schema.
+  if (type.schema) {
+    if (Array.isArray(value)) {
+      return value.map((item) => (isPlainObject(item) ? reviveDates(type.schema as Schema, item) : item));
+    }
+    return isPlainObject(value) ? reviveDates(type.schema, value) : value;
+  }
+  // An array of dates.
+  if (type.instance === 'Array' && Array.isArray(value)) {
+    const element = type.caster ?? type.$embeddedSchemaType;
+    if (element?.instance === 'Date') return value.map((item) => reviveValue(element, item));
+  }
+  return value;
+}
+
+function isPlainObject(value: unknown): value is Doc {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
 }
 
 /**
@@ -142,6 +192,41 @@ function serverRowCap(): number {
   if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`KDB_SERVER_ROW_CAP must be a non-negative integer, got "${raw}"`);
   return parsed;
 }
+
+/**
+ * A per-key async mutex. The store runs inside one process, and the operations MongoDB
+ * guarantees to be atomic on a single document (`updateOne` with a condition in the filter,
+ * `findOneAndUpdate`, `findOneAndDelete`) are read-evaluate-write here, so two callers can both
+ * pass the same condition and both write. Taking the document's lock, re-reading it and
+ * re-checking the filter under the lock restores what callers rely on: exactly one of two
+ * concurrent "claim this if unclaimed" updates wins.
+ *
+ * Scope, stated plainly: this makes a single process correct. A second process writing the same
+ * namespace (an A/B deploy overlap, a second app instance) is not excluded by it; that needs the
+ * server to arbitrate (conditional writes on a content hash), and is listed in the migration
+ * plan as a condition for running more than one instance.
+ */
+const locks = new Map<string, Promise<void>>();
+
+async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = locks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => (release = resolve));
+  const tail = previous.then(() => mine);
+  locks.set(key, tail);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (locks.get(key) === tail) locks.delete(key);
+  }
+}
+
+/** Attempts at "find a candidate, lock it, find it no longer matches" before giving up. Each
+ *  retry means another writer changed the candidate away from the filter, so the answer is
+ *  almost always "nothing matches any more" within one or two. */
+const MAX_CLAIM_ATTEMPTS = 8;
 
 class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private readonly unique: Array<{ fields: string[]; sparse: boolean }>;
@@ -227,10 +312,12 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   private async matching(filter: Filter): Promise<T[]> {
-    const keys = Object.keys(filter);
-    if (keys.length === 1 && keys[0] === '_id' && typeof filter._id === 'string') {
+    // A filter that names the document is a keyed read, whatever else it says: fetch it and let
+    // the engine apply the rest. Without this a conditional update by id ({_id, status: 'open'})
+    // would scan the whole collection to find one document.
+    if (typeof filter._id === 'string') {
       const doc = await this.fetchById(filter._id);
-      return doc ? [doc] : [];
+      return doc && matchesFilter(doc, filter) ? [doc] : [];
     }
     const docs = await this.scan(filter);
     return docs.filter((doc) => matchesFilter(doc, filter));
@@ -276,8 +363,12 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   async create(doc: Doc): Promise<T> {
     const normalized = normalizeDocument(this.schema, doc, { isCreate: true });
     if (normalized._id === undefined) normalized._id = generateObjectId();
-    await this.assertUnique(normalized, null);
-    await this.writeDocument(normalized, null);
+    // The unique check and the write are one step: without the lock two concurrent creates of
+    // the same email both pass the check.
+    await this.guardUnique(async () => {
+      await this.assertUnique(normalized, null);
+      await this.writeDocument(normalized, null);
+    });
     return normalized as T;
   }
 
@@ -288,38 +379,50 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async updateOne(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<UpdateResult> {
-    const [target] = await this.find(filter, options.sort ? { sort: options.sort } : {});
-    if (!target) {
-      if (options.upsert) {
-        const created = await this.upsertFrom(filter, update);
-        return { matched: 0, modified: 0, upsertedId: created._id as string };
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter, options.sort ? { sort: options.sort } : {});
+      if (!candidate) {
+        if (options.upsert) {
+          const created = await this.upsertFrom(filter, update);
+          return { matched: 0, modified: 0, upsertedId: created._id as string };
+        }
+        return { matched: 0, modified: 0 };
       }
-      return { matched: 0, modified: 0 };
+      const claimed = await this.claim(candidate._id as string, filter, (fresh) => this.applyToDocument(fresh, update, filter));
+      if (claimed.hit) return { matched: 1, modified: claimed.value.changed ? 1 : 0 };
     }
-    const { changed } = await this.applyToDocument(target, update);
-    return { matched: 1, modified: changed ? 1 : 0 };
+    return { matched: 0, modified: 0 };
   }
 
   async updateMany(filter: Filter, update: Update): Promise<UpdateResult> {
     const targets = await this.matching(filter);
+    let matched = 0;
     let modified = 0;
     for (const target of targets) {
-      const { changed } = await this.applyToDocument(target, update);
-      if (changed) modified++;
+      const claimed = await this.claim(target._id as string, filter, (fresh) => this.applyToDocument(fresh, update, filter));
+      if (!claimed.hit) continue;
+      matched++;
+      if (claimed.value.changed) modified++;
     }
-    return { matched: targets.length, modified };
+    return { matched, modified };
   }
 
   async findOneAndUpdate(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<T | null> {
-    const [target] = await this.find(filter, options.sort ? { sort: options.sort } : {});
-    if (!target) {
-      if (!options.upsert) return null;
-      const created = await this.upsertFrom(filter, update);
-      return options.returnDocument === 'before' ? null : (created as T);
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter, options.sort ? { sort: options.sort } : {});
+      if (!candidate) {
+        if (!options.upsert) return null;
+        const created = await this.upsertFrom(filter, update);
+        return options.returnDocument === 'before' ? null : (created as T);
+      }
+      const claimed = await this.claim(candidate._id as string, filter, async (fresh) => {
+        const before = structuredCloneDoc(fresh);
+        const { doc } = await this.applyToDocument(fresh, update, filter);
+        return options.returnDocument === 'before' ? (before as T) : (doc as T);
+      });
+      if (claimed.hit) return claimed.value;
     }
-    const before = structuredCloneDoc(target);
-    const { doc } = await this.applyToDocument(target, update);
-    return options.returnDocument === 'before' ? (before as T) : (doc as T);
+    return null;
   }
 
   async findByIdAndUpdate(id: string, update: Update, options: UpdateOptions = {}): Promise<T | null> {
@@ -327,38 +430,55 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async replaceOne(filter: Filter, doc: Doc): Promise<UpdateResult> {
-    const [target] = await this.find(filter);
-    if (!target) return { matched: 0, modified: 0 };
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter);
+      if (!candidate) return { matched: 0, modified: 0 };
+      const claimed = await this.claim(candidate._id as string, filter, async (target) => {
+        const { _id: _ignored, ...body } = doc;
+        const replacement = normalizeDocument(this.schema, body, { isCreate: true });
+        replacement._id = target._id;
+        replacement.createdAt = target.createdAt ?? replacement.createdAt;
+        const stamped = touchUpdatedAt(this.schema, replacement);
 
-    const { _id: _ignored, ...body } = doc;
-    const replacement = normalizeDocument(this.schema, body, { isCreate: true });
-    replacement._id = target._id;
-    replacement.createdAt = target.createdAt ?? replacement.createdAt;
-    const stamped = touchUpdatedAt(this.schema, replacement);
-
-    await this.assertUnique(stamped, target._id as string);
-    await this.writeDocument(stamped, target);
-    return { matched: 1, modified: 1 };
+        await this.assertUnique(stamped, target._id as string);
+        await this.writeDocument(stamped, target);
+      });
+      if (claimed.hit) return { matched: 1, modified: 1 };
+    }
+    return { matched: 0, modified: 0 };
   }
 
   async deleteOne(filter: Filter): Promise<DeleteResult> {
-    const [target] = await this.find(filter);
-    if (!target) return { deleted: 0 };
-    await this.removeById(target._id as string);
-    return { deleted: 1 };
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter);
+      if (!candidate) return { deleted: 0 };
+      const claimed = await this.claim(candidate._id as string, filter, (fresh) => this.removeById(fresh._id as string));
+      if (claimed.hit) return { deleted: 1 };
+    }
+    return { deleted: 0 };
   }
 
   async deleteMany(filter: Filter): Promise<DeleteResult> {
     const targets = await this.matching(filter);
-    for (const target of targets) await this.removeById(target._id as string);
-    return { deleted: targets.length };
+    let deleted = 0;
+    for (const target of targets) {
+      const claimed = await this.claim(target._id as string, filter, (fresh) => this.removeById(fresh._id as string));
+      if (claimed.hit) deleted++;
+    }
+    return { deleted };
   }
 
   async findOneAndDelete(filter: Filter): Promise<T | null> {
-    const [target] = await this.find(filter);
-    if (!target) return null;
-    await this.removeById(target._id as string);
-    return target;
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter);
+      if (!candidate) return null;
+      const claimed = await this.claim(candidate._id as string, filter, async (fresh) => {
+        await this.removeById(fresh._id as string);
+        return fresh;
+      });
+      if (claimed.hit) return claimed.value;
+    }
+    return null;
   }
 
   async bulkWrite(operations: BulkOperation[]): Promise<UpdateResult> {
@@ -392,11 +512,34 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
   // --- write helpers -------------------------------------------------------------
 
+  /** Runs `fn` while holding the collection's unique-constraint lock, if it has constraints.
+   *  Always taken before a document lock, never after, so two writers cannot deadlock. */
+  private guardUnique<R>(fn: () => Promise<R>): Promise<R> {
+    return this.unique.length > 0 ? withLock(`${this.namespace}/${this.name}#unique`, fn) : fn();
+  }
+
+  /**
+   * Acts on one document atomically with respect to other writers in this process: takes the
+   * document's lock, re-reads it, and only proceeds if it still satisfies `filter`. A miss means
+   * somebody changed or removed it between the caller finding it and now - the caller looks
+   * again rather than acting on a stale reading.
+   */
+  private claim<R>(id: string, filter: Filter, fn: (fresh: T) => Promise<R>): Promise<{ hit: true; value: R } | { hit: false }> {
+    return this.guardUnique(() =>
+      withLock(`${this.namespace}/${this.name}/${id}`, async () => {
+        const fresh = await this.fetchById(id);
+        if (!fresh || !matchesFilter(fresh, filter)) return { hit: false as const };
+        return { hit: true as const, value: await fn(fresh) };
+      })
+    );
+  }
+
   /** Applies an update to one document and writes it back. Returns the stored result
    *  and whether anything actually changed — `modified` must not count a no-op
    *  update, which is how a caller tells "already in that state" from "wrote it". */
-  private async applyToDocument(target: T, update: Update): Promise<{ doc: Doc; changed: boolean }> {
-    const updated = applyUpdate(target, update);
+  private async applyToDocument(target: T, update: Update, filter: Filter): Promise<{ doc: Doc; changed: boolean }> {
+    // The filter is what the positional operator (`list.$.field`) resolves against.
+    const updated = applyUpdate(target, update, false, filter);
     if (!isOperatorUpdate(update)) updated._id = target._id;
     // Cast and validate what the update produced; an update can set an enum field to
     // a value the schema forbids exactly as a create can.
@@ -422,7 +565,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       }
       seed[key] = value;
     }
-    const built = applyUpdate(seed, update, true);
+    const built = applyUpdate(seed, update, true, filter);
     return this.create(built);
   }
 
@@ -498,9 +641,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       });
 
       if (clash) {
-        throw new ValidationError(
-          `${this.name}: duplicate value for unique ${constraint.fields.join(' + ')}`
-        );
+        throw new DuplicateKeyError(`${this.name}: duplicate value for unique ${constraint.fields.join(' + ')}`);
       }
     }
   }
@@ -514,7 +655,12 @@ export class KdbDataStore implements DataStore {
   async connect(): Promise<void> {
     const { connect } = await loadClient();
     capCheck.at = undefined;
-    this.client = await connect(config.kdb.addr, config.kdb.token);
+    this.client = new SerializedDmlClient(await connect(config.kdb.addr, config.kdb.token));
+  }
+
+  async ping(): Promise<void> {
+    if (!this.client) throw new Error('KDB store is not connected');
+    await this.client.queryRaw(config.kdb.namespacePrefix, 'SELECT 1');
   }
 
   async disconnect(): Promise<void> {

@@ -359,6 +359,11 @@ export class ShadowDataStore implements DataStore {
     await Promise.allSettled([this.primary.disconnect(), this.shadow.disconnect()]);
   }
 
+  /** Health is the primary's: it serves every request, and the shadow is allowed to be down. */
+  async ping(): Promise<void> {
+    await this.primary.ping();
+  }
+
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {
     const existing = this.collections.get(name);
     if (existing) return existing as Collection<T>;

@@ -224,3 +224,50 @@ function asArray(operator: string, operand: unknown): unknown[] {
   if (!Array.isArray(operand)) throw new Error(`${operator} expects an array`);
   return operand;
 }
+
+
+/**
+ * The index the positional operator (`array.$.field`) stands for: the first element of
+ * `arrayPath` that the query matched, taken from the filter's own conditions on that array
+ * (`'array.field': value`, or `array: { $elemMatch: {...} }`). Returns null when the filter says
+ * nothing about the array - the case MongoDB rejects as "the positional operator did not find
+ * the match needed from the query".
+ *
+ * An element must satisfy every condition on it; if no single element does (conditions that
+ * different elements satisfied), the first one satisfying any condition is used, which is where
+ * MongoDB points the operator too.
+ */
+export function positionalIndex(doc: Doc, filter: Filter, arrayPath: string): number | null {
+  const array = resolvePathValues(doc, arrayPath).find(Array.isArray) as unknown[] | undefined;
+  if (!array) return null;
+
+  const conditions: Array<(element: unknown) => boolean> = [];
+  const collect = (clauses: Filter) => {
+    for (const [key, condition] of Object.entries(clauses)) {
+      if (key === '$and' && Array.isArray(condition)) {
+        for (const sub of condition) collect(sub as Filter);
+      } else if (key === arrayPath) {
+        if (isOperatorObject(condition) && '$elemMatch' in condition) {
+          const sub = condition.$elemMatch as Filter;
+          conditions.push((el) => isObject(el) && matchesFilter(el as Doc, sub));
+        } else {
+          conditions.push((el) => matchesFilter({ v: el }, { v: condition }));
+        }
+      } else if (key.startsWith(`${arrayPath}.`)) {
+        const rest = key.slice(arrayPath.length + 1);
+        conditions.push((el) => isObject(el) && matchesFilter(el as Doc, { [rest]: condition }));
+      }
+    }
+  };
+  collect(filter);
+  if (conditions.length === 0) return null;
+
+  const all = array.findIndex((el) => conditions.every((c) => c(el)));
+  if (all >= 0) return all;
+  const any = array.findIndex((el) => conditions.some((c) => c(el)));
+  return any >= 0 ? any : null;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
+}
