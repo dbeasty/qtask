@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const WORKER = fileURLToPath(new URL('./lan-worker.ts', import.meta.url));
+export const ENGINE_WORKER = fileURLToPath(new URL('./lan-engine-worker.ts', import.meta.url));
 
 export class Device {
   private seq = 0;
@@ -15,10 +16,11 @@ export class Device {
   constructor(
     readonly name: string,
     readonly dir: string,
+    private readonly worker: string = WORKER,
   ) {}
 
   async spawn(discoveryPort?: number): Promise<this> {
-    this.proc = fork(WORKER, [], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    this.proc = fork(this.worker, [], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     await new Promise<void>((resolve, reject) => {
       this.proc.on('message', (m: any) => {
         if (m.event === 'ready') return resolve();
@@ -67,8 +69,9 @@ export class Device {
 
 export class Fleet {
   devices: Device[] = [];
+  constructor(private readonly worker: string = WORKER) {}
   async add(name: string, discoveryPort?: number, dir?: string): Promise<Device> {
-    const d = new Device(name, dir ?? (await mkdtemp(join(tmpdir(), `qtask-fleet-${name}-`))));
+    const d = new Device(name, dir ?? (await mkdtemp(join(tmpdir(), `qtask-fleet-${name}-`))), this.worker);
     await d.spawn(discoveryPort);
     this.devices.push(d);
     return d;

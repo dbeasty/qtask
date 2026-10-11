@@ -21,7 +21,7 @@ import { networkInterfaces } from 'node:os';
 import tls from 'node:tls';
 import type { Duplex } from 'node:stream';
 import { FramedChannel, type FramedChannelOptions } from '../framing.js';
-import type { SyncPeerLink, SyncTransport } from '../transport-contract.js';
+import type { PeerLinkTransport, SyncPeerLink } from '../transport-contract.js';
 import {
   canonicalJson,
   signRecordBody,
@@ -247,7 +247,7 @@ interface PairingWindow {
 const HANDSHAKE_MS = 10_000;
 const PAIR_STEP_MS = 120_000;
 
-export class LanTransport extends EventEmitter implements SyncTransport {
+export class LanTransport extends EventEmitter implements PeerLinkTransport {
   readonly kind = 'lan' as const;
   port = 0;
   private server: tls.Server | null = null;

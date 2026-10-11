@@ -6,7 +6,7 @@
  * (auto-sync on peer-up, whole messages, many peers) without depending on it.
  */
 
-import type { SyncPeerLink, SyncTransport } from '../../src/sync/transport-contract.ts';
+import type { PeerLinkTransport, SyncPeerLink } from '../../src/sync/transport-contract.ts';
 
 export interface LwwDoc {
   id: string;
@@ -29,7 +29,7 @@ export class LwwReplica {
 
   constructor(
     readonly nodeId: string,
-    transport: SyncTransport,
+    transport: PeerLinkTransport,
     private readonly batch = 500,
   ) {
     transport.onPeerUp((l) => this.attach(l));

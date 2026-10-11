@@ -1,3 +1,5 @@
+// Named PeerLinkTransport (not SyncTransport) because the engine's own SyncTransport in
+// types.ts is the request/response interface (hello/pull/push). rpc.ts bridges the two.
 /**
  * The minimal transport-side contract the sync engine (Phase 2) is coded against.
  *
@@ -27,7 +29,7 @@ export interface SyncPeerLink {
   close(): void;
 }
 
-export interface SyncTransport {
+export interface PeerLinkTransport {
   readonly kind: TransportKind;
   start(): Promise<void>;
   stop(): Promise<void>;

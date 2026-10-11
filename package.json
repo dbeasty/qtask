@@ -22,6 +22,7 @@
     "test:perf": "node --import tsx --test tests/performance.test.ts",
     "perf:sync": "node --expose-gc --import tsx tests/perf/syncPerf.ts",
     "perf:lan": "tsx scripts/perf-phase3.ts",
+    "perf:lan-engine": "tsx scripts/perf-lan-engine.ts",
     "hash-admin-password": "tsx src/scripts/hash-admin-password.ts",
     "migrate:kdb": "tsx src/scripts/migrate-mongo-to-kdb.ts",
     "release": "bash scripts/build-release.sh",
