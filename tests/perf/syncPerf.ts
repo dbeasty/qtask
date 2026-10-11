@@ -35,6 +35,7 @@ const SIZES = (args.get('sizes') ?? '1000,10000,50000').split(',').map(Number);
 const HTTP = args.has('http');
 const HTTP_SIZES = (args.get('http-sizes') ?? '1000,10000').split(',').map(Number);
 const OUT = args.get('out');
+const HUB_DERIVED = !args.has('no-derived');
 const NOOP_RUNS = Number(args.get('noop-runs') ?? 50);
 
 const gc = (globalThis as { gc?: () => void }).gc;
@@ -151,7 +152,7 @@ async function runSize(n: number): Promise<SizeResult> {
   const projectId = 'proj-1';
   const heap0 = heap();
   const device = makeNode('device', 'device');
-  const hub = makeNode('hub', 'hub', true);
+  const hub = makeNode('hub', 'hub', HUB_DERIVED);
 
   // Existing local data (what Phase 1 leaves behind), written straight to the store.
   await device.inner.collection('projects').create({ _id: projectId, userId: user, name: 'P', collaborators: [] });
