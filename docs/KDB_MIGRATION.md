@@ -44,16 +44,27 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 
 ### B1. Scans silently stop at 10,000 documents (blocks any dataset that large)
 
-**Status: fixed in the Go server on KDB branch `fix/scan-cap-before-filter` (not yet merged or
+**Status: fixed upstream on KDB branch `fix/scan-cap-before-filter` (pushed, not yet merged or
 released).** The release binary v0.6.2 still has the defect, so everything below about the guard
-still applies until a KDB release containing the fix is the pinned version. The fix: the scan no
-longer stops at `MaxRows` before `WHERE` runs (work is bounded by the examined-rows budget
-instead), index lookups are no longer truncated, and a result larger than `MaxRows` is a
-`RESOURCE_EXHAUSTED` error instead of a silent cut. Consequences for qtask: with the fix, an
-unfiltered read of a collection with more than 10,000 documents fails loudly, so
-`DATA_KDB_PUSHDOWN` becomes a requirement rather than an optimisation, and unfiltered reads of
-very large collections need a configurable result bound (not built; see below). The Kotlin
-engine has the same truncation in about ten places and is not fixed.
+applies until the pinned KDB version is a release containing the fix. What the branch does
+(`docs/kdb-scan-cap-plan.md` in the KDB repo has the detail):
+
+- Scans no longer stop at `MaxRows` before `WHERE` runs, in both the Go server and the Kotlin
+  engine (one shared fixture holds them to the same answers). Index lookups and ranked searches
+  are no longer cut either.
+- A result larger than the bound is `RESOURCE_EXHAUSTED`, not a prefix. The bound is now
+  `--max-result-rows` (default 10000), so a deployment that reads whole collections can raise it.
+- `kdb_id = ?` / `IN (...)` is a keyed lookup, so `UPDATE`/`DELETE` by id no longer scan.
+- Both clients give `RESOURCE_EXHAUSTED` its own non-retryable error (the TS client used to call it
+  "server busy"), and the TS client can delete by key.
+
+Verified against this repository: the full data suite passes against a build of the branch
+(257 passed; the 3 guard tests skip because the server no longer truncates).
+
+Consequences for qtask once it moves to that release: pin the new version, set
+`--max-result-rows` high enough for the largest unfiltered read (or keep `DATA_KDB_PUSHDOWN` on so
+reads are filtered), and retire the workarounds below. Keep `KDB_SERVER_ROW_CAP` as is; the guard
+stands down by itself on a fixed server.
 
 Original description:
 
@@ -107,10 +118,9 @@ checks and runs the post-fix checks instead. The guard itself only fires when `C
 the cap exactly (all a truncating server can report), so it stands down automatically on a fixed
 server; `KDB_SERVER_ROW_CAP=0` forces it off.
 
-Still open after the fix: the result bound is hard-coded to 10,000 in the server's wire listener,
-so a legitimate read of more than 10,000 rows (an unfiltered `find({})` over a big collection)
-errors. A `--max-result-rows` flag would remove that. Also, the TS client reports the new error
-as "server busy", which reads as retryable; it is not.
+Still open: a release containing the fix, and qtask's pin moving to it. An unfiltered read of a
+collection with more rows than `--max-result-rows` fails loudly rather than truncating; size the
+flag for the largest such read.
 
 ### B2. No indexes, so reads are linear
 
