@@ -94,12 +94,33 @@ const MODEL_BY_COLLECTION: Record<CollectionName, string> = {
 function reviveDates(schema: Schema, doc: Doc): Doc {
   const out: Doc = { ...doc };
   for (const [path, type] of Object.entries(schema.paths)) {
-    const instance = (type as unknown as { instance?: string }).instance;
-    if (instance !== 'Date') continue;
+    const t = type as unknown as {
+      instance?: string;
+      schema?: Schema;
+      caster?: { instance?: string };
+    };
     const value = out[path];
-    if (typeof value === 'string') {
-      const date = new Date(value);
-      if (!Number.isNaN(date.getTime())) out[path] = date;
+    if (value === undefined || value === null) continue;
+    // Recurses into single nested subdocuments and arrays of subdocuments: a Date inside
+    // one (`trackingRollup.updatedAt`, a subtask's `dueDate`) would otherwise stay a
+    // string and break every `.toISOString()` downstream.
+    if (t.instance === 'Date') {
+      if (typeof value === 'string') {
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) out[path] = date;
+      }
+    } else if (t.schema && Array.isArray(value)) {
+      out[path] = value.map((item) =>
+        item && typeof item === 'object' ? reviveDates(t.schema as Schema, item as Doc) : item
+      );
+    } else if (t.schema && typeof value === 'object') {
+      out[path] = reviveDates(t.schema, value as Doc);
+    } else if (t.instance === 'Array' && t.caster?.instance === 'Date' && Array.isArray(value)) {
+      out[path] = value.map((item) => {
+        if (typeof item !== 'string') return item;
+        const date = new Date(item);
+        return Number.isNaN(date.getTime()) ? item : date;
+      });
     }
   }
   return out;

@@ -40,6 +40,7 @@ import {
 } from './storage';
 import { setSessionExpiredHandler, setTokenRefreshedHandler } from '../api/client';
 import { createLogger } from '../utils/logger';
+import { ensureLocalSession, isLocalMode } from '../runtime';
 import { applyTheme, getCachedTheme, resolveTheme } from '../theme';
 
 const logger = createLogger('session');
@@ -82,6 +83,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const handleSessionExpired = useCallback(
     (reason: SessionExpiryReason = 'expired', source: 'api' | 'cross_tab' | 'refresh_failed' = 'api') => {
       logger.warn('Session expired', { reason, source, userId: user?.id });
+      if (isLocalMode()) {
+        // There is nobody to sign in: the device is the account. Mint a new local
+        // session and start over rather than showing a sign-in page that cannot work.
+        void ensureLocalSession()
+          .then(() => window.location.reload())
+          .catch((err: unknown) => logger.warn('Local session could not be renewed', { error: String(err) }));
+        return;
+      }
       clearRefreshTimer();
       clearStoredToken();
       setMustChangePassword(false);

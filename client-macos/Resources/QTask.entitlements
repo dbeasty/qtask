@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	What the app declares for a sandboxed (Mac App Store) build, which Phase 1 does not
+	ship: the sandbox itself is not switched on, and the ad hoc signature here carries no
+	hardened runtime. When it is, the loopback servers need network.server, the app's own
+	calls to them need network.client, and the bundled Node runs JIT-compiled code so it
+	needs the two memory entitlements. No other entitlement is requested: the app does not
+	use the camera, microphone, contacts, location, or Bluetooth in this phase.
+	-->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

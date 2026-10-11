@@ -20,6 +20,7 @@ import { ProjectTasksList } from '../components/ProjectTasksList';
 import { CurrentProjectLabel } from '../components/CurrentProjectBar';
 import { HourlyRateDialog } from '../components/HourlyRateDialog';
 import { ProjectMembersDialog } from '../components/ProjectMembersDialog';
+import { isLocalMode } from '../runtime';
 import { ProjectHierarchyTree } from '../components/ProjectHierarchyTree';
 import { ProjectRoleIndicator } from '../components/ProjectRoleIndicator';
 import { TaskSplitInput } from '../components/TaskSplitInput';
@@ -44,6 +45,8 @@ interface ProjectsPageProps {
   restoredListExpanded?: boolean;
   onSessionRestoreConsumed?: () => void;
   editsDisabled?: boolean;
+  /** Incremented by the shell (the Mac app's File > New Project) to open the new-project form. */
+  newProjectRequest?: number;
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -70,6 +73,7 @@ export function ProjectsPage({
   restoredListExpanded,
   onSessionRestoreConsumed,
   editsDisabled = false,
+  newProjectRequest = 0,
 }: ProjectsPageProps) {
   const { user, updateProfile } = useAuth();
   const preferences = getUserPreferences(user);
@@ -85,6 +89,15 @@ export function ProjectsPage({
   const [creatingChildOf, setCreatingChildOf] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newDescription, setNewDescription] = useState('');
+  const handledNewProjectRequestRef = useRef(newProjectRequest);
+  useEffect(() => {
+    if (newProjectRequest === handledNewProjectRequestRef.current) return;
+    handledNewProjectRequestRef.current = newProjectRequest;
+    setCreatingRoot(true);
+    setCreatingChildOf(null);
+    setNewName('');
+    setNewDescription('');
+  }, [newProjectRequest]);
   const [membersOpen, setMembersOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [detailName, setDetailName] = useState('');
@@ -862,7 +875,7 @@ export function ProjectsPage({
                     </span>
                   </p>
                   <div className="task-form-actions">
-                    <button
+                    {isLocalMode() ? null : <button
                       type="button"
                       className="secondary-button"
                       data-demo-step="project-members"
@@ -870,7 +883,7 @@ export function ProjectsPage({
                       onClick={() => setMembersOpen(true)}
                     >
                       Members
-                    </button>
+                    </button>}
                   </div>
                 </form>
               </article>

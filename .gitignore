@@ -7,3 +7,5 @@ release/
 *.log
 .DS_Store
 data/uploads/
+client-macos/build/
+client-macos/.build/

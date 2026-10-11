@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import { createPortal } from 'react-dom';
 import { getUserPreferences, type AuthUser, type StartupViewPreference, type ThemePreference, type UserPreferences } from '../auth/storage';
 import { applyTheme } from '../theme';
+import { isLocalMode } from '../runtime';
 
 interface UserMenuProps {
   user: AuthUser;
@@ -46,6 +47,7 @@ export function UserMenu({
   const [prefSaving, setPrefSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const preferences = getUserPreferences(user);
+  const local = isLocalMode();
 
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
@@ -209,6 +211,7 @@ export function UserMenu({
       {error && <p className="user-menu-error">{error}</p>}
 
       <div className="user-menu-section-label">Preferences</div>
+      {local ? null : (<>
       <label className="user-menu-toggle">
         <input
           type="checkbox"
@@ -231,6 +234,7 @@ export function UserMenu({
         />
         <span>Auto-approve agent actions</span>
       </label>
+      </>)}
       <label className="user-menu-toggle">
         <input
           type="checkbox"
@@ -349,19 +353,21 @@ export function UserMenu({
         </button>
       ) : null}
 
-      <button
-        type="button"
-        className="user-menu-item"
-        role="menuitem"
-        onClick={() => {
-          onOpenMcpSettings();
-          onClose();
-        }}
-      >
-        External AI (MCP)
-      </button>
+      {local ? null : (
+        <button
+          type="button"
+          className="user-menu-item"
+          role="menuitem"
+          onClick={() => {
+            onOpenMcpSettings();
+            onClose();
+          }}
+        >
+          External AI (MCP)
+        </button>
+      )}
 
-      {user.hasPassword !== false ? (
+      {!local && user.hasPassword !== false ? (
         <button
           type="button"
           className="user-menu-item"
@@ -383,19 +389,23 @@ export function UserMenu({
         Terms &amp; Disclaimer
       </a>
 
-      <div className="user-menu-divider" role="separator" />
+      {local ? null : (
+        <>
+          <div className="user-menu-divider" role="separator" />
 
-      <button
-        type="button"
-        className="user-menu-item user-menu-item-danger"
-        role="menuitem"
-        onClick={() => {
-          onSignOut();
-          onClose();
-        }}
-      >
-        Sign out
-      </button>
+          <button
+            type="button"
+            className="user-menu-item user-menu-item-danger"
+            role="menuitem"
+            onClick={() => {
+              onSignOut();
+              onClose();
+            }}
+          >
+            Sign out
+          </button>
+        </>
+      )}
     </div>,
     document.body
   );
