@@ -82,6 +82,12 @@ export interface PullResponse {
 export interface PushRequest {
   from: string;
   docs: WireDoc[];
+  /**
+   * More batches of the same push follow. The receiver defers its derived-field
+   * recomputation to the last batch instead of rebuilding project rollups once per
+   * batch, which would make a large initial sync quadratic.
+   */
+  more?: boolean;
 }
 
 export interface PushRejection {

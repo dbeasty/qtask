@@ -19,10 +19,16 @@ const log = createLogger('sync');
 /** Embeddings never replicate, so every peer rebuilds its own for documents that arrived. */
 async function queueEmbeddings(touched: ReadonlyArray<TouchedDoc>): Promise<void> {
   const { enqueueEmbeddingJob, enqueueProjectEmbeddingJob } = await import('../services/embeddingQueue.js');
-  for (const doc of touched) {
-    if (doc.coll === 'tasks') await enqueueEmbeddingJob(doc.id);
-    else if (doc.coll === 'projects') await enqueueProjectEmbeddingJob(doc.id);
-  }
+  // Each enqueue is two small upserts; run them concurrently so a bulk initial sync
+  // is not serialised behind one round trip per document.
+  const jobs = touched.flatMap((doc) =>
+    doc.coll === 'tasks'
+      ? [() => enqueueEmbeddingJob(doc.id)]
+      : doc.coll === 'projects'
+        ? [() => enqueueProjectEmbeddingJob(doc.id)]
+        : []
+  );
+  for (let i = 0; i < jobs.length; i += 50) await Promise.all(jobs.slice(i, i + 50).map((run) => run()));
 }
 
 let hubEngine: SyncEngine | undefined;
@@ -54,6 +60,9 @@ export async function installHubSync(store: DataStore, env: NodeJS.ProcessEnv = 
     meta = opened.meta;
     persistence = opened.persistence;
   } else {
+    log.warn(
+      'QTASK_SYNC_META_PATH is not set: sync records are in memory, so a restart loses tombstones and peer cursors. Set it in production.'
+    );
     meta = new MemoryMetaStore();
   }
   const tracked = new SyncDataStore(store, meta);

@@ -50,13 +50,24 @@ export class HubAuthorizer implements SyncAuthorizer {
     return scopes;
   }
 
+  /** Role lookups repeat for every document of a project in a batch, so they are memoised. */
+  private readonly roles = new Map<string, { role: ProjectRole | null; exists: boolean }>();
+  private readonly taskProjects = new Map<string, string | undefined>();
+
   private async roleIn(projectId: string): Promise<{ role: ProjectRole | null; exists: boolean }> {
+    const cached = this.roles.get(projectId);
+    if (cached) return cached;
     const project = await this.inner.collection('projects').findById(projectId);
-    if (!project) return { role: null, exists: false };
-    if (project.userId === this.userId) return { role: 'owner', exists: true };
-    const collaborators = (project.collaborators ?? []) as Array<{ userId: string; role: string }>;
-    const found = collaborators.find((c) => c.userId === this.userId);
-    return { role: (found?.role as ProjectRole) ?? null, exists: true };
+    let result: { role: ProjectRole | null; exists: boolean };
+    if (!project) result = { role: null, exists: false };
+    else if (project.userId === this.userId) result = { role: 'owner', exists: true };
+    else {
+      const collaborators = (project.collaborators ?? []) as Array<{ userId: string; role: string }>;
+      const found = collaborators.find((c) => c.userId === this.userId);
+      result = { role: (found?.role as ProjectRole) ?? null, exists: true };
+    }
+    this.roles.set(projectId, result);
+    return result;
   }
 
   private projectIdOf(coll: string, id: string, fieldValue: (n: string) => unknown, existing: Doc | null): string | undefined {
@@ -70,6 +81,15 @@ export class HubAuthorizer implements SyncAuthorizer {
   }
 
   async checkWrite(wire: WireDoc, existing: Doc | null, changed: string[]): Promise<string | null> {
+    // A project document is about to change, which can change roles: forget what we cached.
+    if (wire.coll === 'projects') {
+      this.roles.clear();
+      this.taskProjects.clear();
+    }
+    return this.checkWriteUncached(wire, existing, changed);
+  }
+
+  private async checkWriteUncached(wire: WireDoc, existing: Doc | null, changed: string[]): Promise<string | null> {
     if (!isReplicated(wire.coll)) return 'collection does not replicate';
     const uid = this.userId;
     const incoming = (name: string): unknown => {
@@ -85,8 +105,11 @@ export class HubAuthorizer implements SyncAuthorizer {
     if ((wire.coll === 'comments' || wire.coll === 'activities') && !projectId) {
       const taskId = (existing?.taskId ?? incoming('taskId')) as string | undefined;
       if (taskId) {
-        const task = await this.inner.collection('tasks').findById(taskId);
-        if (task) projectId = this.projectIdOf('tasks', taskId, () => undefined, task);
+        if (!this.taskProjects.has(taskId)) {
+          const task = await this.inner.collection('tasks').findById(taskId);
+          this.taskProjects.set(taskId, task ? this.projectIdOf('tasks', taskId, () => undefined, task) : undefined);
+        }
+        projectId = this.taskProjects.get(taskId);
       }
     }
 
@@ -196,29 +219,26 @@ export function createSyncRouter(): Router {
     try {
       const service = serviceFor(req, res);
       if (!service) return;
-      const { from, docs } = req.body ?? {};
+      const { from, docs, more } = req.body ?? {};
       if (typeof from !== 'string' || !Array.isArray(docs)) {
         res.status(400).json({ error: 'from and docs are required' });
         return;
       }
-      res.json(await service.push({ from, docs }));
+      res.json(await service.push({ from, docs, more: more === true }));
     } catch (error) {
       next(error);
     }
   });
 
-  router.get('/status', async (req, res, next) => {
-    try {
-      const engine = getHubEngine();
-      if (!engine) {
-        res.status(503).json({ error: 'Sync is not enabled on this server' });
-        return;
-      }
-      const status = await engine.status();
-      res.json({ role: status.role, nodeId: status.nodeId, documents: status.documents, tombstones: status.tombstones });
-    } catch (error) {
-      next(error);
+  // Liveness for the device's "can I reach the hub" check; deliberately says nothing
+  // about how much data the server holds.
+  router.get('/status', (req, res) => {
+    const engine = getHubEngine();
+    if (!engine) {
+      res.status(503).json({ error: 'Sync is not enabled on this server' });
+      return;
     }
+    res.json({ role: engine.role, nodeId: engine.nodeId, serverTime: new Date().toISOString() });
   });
 
   return router;

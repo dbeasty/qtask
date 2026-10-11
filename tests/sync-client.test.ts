@@ -189,4 +189,28 @@ describe('sync records persistence', () => {
     await b2.syncWith(new LoopbackTransport(a.engine.service()));
     assert.equal(freshData.count('tasks'), 10);
   });
+
+  it('data that predates tracking never outranks a real edit (hub restarted with empty records)', async () => {
+    const hubData = new MemoryDataStore();
+    const boot = async () => {
+      const meta = new MemoryMetaStore({ nodeId: 'hub' });
+      const engine = new SyncEngine({ store: new SyncDataStore(hubData, meta), meta, role: 'hub' });
+      await engine.init();
+      return engine;
+    };
+    let hubEngine = await boot();
+    const device = await makePeer('device');
+    const task = await device.store.collection('tasks').create({ userId: 'u', title: 'original' });
+    await device.engine.syncWith(new LoopbackTransport(hubEngine.service()));
+
+    // the device edits offline, then the hub process restarts and re-baselines its data
+    await device.store.collection('tasks').updateOne({ _id: task._id }, { $set: { title: 'offline edit' } });
+    await new Promise((r) => setTimeout(r, 3));
+    hubEngine = await boot();
+    await device.engine.syncWith(new LoopbackTransport(hubEngine.service()));
+    await device.engine.syncWith(new LoopbackTransport(hubEngine.service()));
+
+    assert.equal((await hubData.collection('tasks').findById(String(task._id)))?.title, 'offline edit');
+    assert.equal(hubData.count('activities'), 0, 'a baseline is not a conflicting edit');
+  });
 });

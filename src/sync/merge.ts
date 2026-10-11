@@ -25,7 +25,7 @@
  */
 
 import { hashEncoded } from './codec.js';
-import { stampNode } from './clock.js';
+import { stampNode, stampWall } from './clock.js';
 import type { DocRec, FieldRec } from './meta.js';
 import type { WireDoc, WireField } from './types.js';
 
@@ -58,6 +58,11 @@ function seen(vv: Record<string, number>, t: string, c: number): boolean {
   return (vv[stampNode(t)] ?? 0) >= c;
 }
 
+/** Stamps minted when pre-existing data was first tracked sit at wall time zero. */
+function isBaseline(t: string): boolean {
+  return stampWall(t) === 0;
+}
+
 function remoteHash(field: WireField): number {
   return field.x ? 0 : hashEncoded(field.v);
 }
@@ -87,7 +92,9 @@ export function mergeRecords(local: DocRec | undefined, remote: WireDoc): MergeO
       continue;
     }
     const remoteWins = r.t > l.t;
-    if (!seen(localVv, r.t, r.c) && !seen(remote.vv, l.t, l.c)) {
+    // A baseline stamp (data that predates tracking) is not an edit, so losing to one
+    // or beating one is never a conflict.
+    if (!isBaseline(l.t) && !isBaseline(r.t) && !seen(localVv, r.t, r.c) && !seen(remote.vv, l.t, l.c)) {
       const rh = remoteHash(r);
       const lh = l.x ? 0 : l.h;
       if (rh !== lh || Boolean(l.x) !== Boolean(r.x)) {

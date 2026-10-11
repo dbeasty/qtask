@@ -107,7 +107,11 @@ export class SyncEngine {
    * database, becomes replicable); on later runs it only repairs what a crash lost.
    */
   async init(): Promise<void> {
-    await this.reconcile();
+    // Data that existed before tracking began has no known edit time. On first run it
+    // is stamped at the epoch, so any real edit made anywhere (a device's offline
+    // change, a hub's own) outranks the baseline instead of being overwritten by it.
+    const firstRun = this.meta.size === 0 && !this.meta.clock;
+    await this.reconcile(undefined, firstRun ? 0 : undefined);
   }
 
   // --- change capture ---------------------------------------------------------------
@@ -252,7 +256,7 @@ export class SyncEngine {
    * record, and every live record against the store. Used on startup and after a
    * write whose targets could not be known. O(documents).
    */
-  async reconcile(only?: ReplicatedCollection[]): Promise<number> {
+  async reconcile(only?: ReplicatedCollection[], at?: number): Promise<number> {
     const targets = only ?? REPLICATED_COLLECTIONS;
     let changed = 0;
     for (const coll of targets) {
@@ -261,11 +265,11 @@ export class SyncEngine {
       for (const doc of docs) {
         const id = String(doc._id);
         present.add(id);
-        if (this.captureDoc(coll, id, doc)) changed += 1;
+        if (this.captureDoc(coll, id, doc, at)) changed += 1;
       }
       for (const rec of [...this.meta.all()]) {
         if (rec.coll !== coll || !isLive(rec) || present.has(rec.id)) continue;
-        if (this.captureDoc(coll, rec.id, null)) changed += 1;
+        if (this.captureDoc(coll, rec.id, null, at)) changed += 1;
       }
     }
     return changed;
@@ -282,7 +286,9 @@ export class SyncEngine {
   async applyRemote(
     wire: WireDoc,
     peerId: string,
-    check?: (merge: MergeOutcome, existing: Doc | null) => Promise<string | null>
+    check?: (merge: MergeOutcome, existing: Doc | null) => Promise<string | null>,
+    /** The stored document if the caller already fetched it (null: known absent). */
+    prefetched?: Doc | null
   ): Promise<{ applied: boolean; conflicts: number; rejected?: string }> {
     const key = recKey(wire.coll, wire.id);
     if (this.meta.hasDirty(key)) await this.capture();
@@ -295,7 +301,7 @@ export class SyncEngine {
     if (!merge.changed && local) return { applied: false, conflicts: 0 };
 
     const coll = this.inner.collection(wire.coll);
-    const current = await coll.findById(wire.id);
+    const current = prefetched !== undefined && !this.touchedSincePrefetch(key) ? prefetched : await coll.findById(wire.id);
 
     if (check) {
       const reason = await check(merge, current);
@@ -317,8 +323,11 @@ export class SyncEngine {
     } else if (!current) {
       try {
         finalDoc = await coll.create({ _id: wire.id, ...set });
-      } catch {
-        // A concurrent create of the same id: fall through to an update.
+      } catch (error) {
+        // Only a concurrent create of the same id is recoverable (as an update); any
+        // other failure, such as a schema violation, must not look like success.
+        const raced = await coll.findById(wire.id);
+        if (!raced) throw error;
         await coll.updateOne({ _id: wire.id }, { $set: set });
         finalDoc = await coll.findById(wire.id);
       }
@@ -412,7 +421,27 @@ export class SyncEngine {
     return this.syncLog;
   }
 
+  private deferredTimer?: NodeJS.Timeout;
+
+  /**
+   * A multi-batch push defers derived recomputation to its last batch. If that batch
+   * never arrives (the peer dropped), this flushes after a grace period so documents
+   * are not left with stale derived fields.
+   */
+  private scheduleDeferredFinish(): void {
+    if (this.deferredTimer) clearTimeout(this.deferredTimer);
+    this.deferredTimer = setTimeout(() => {
+      this.deferredTimer = undefined;
+      void this.finishApply().catch(() => undefined);
+    }, 10_000);
+    this.deferredTimer.unref();
+  }
+
   private async finishApply(): Promise<void> {
+    if (this.deferredTimer) {
+      clearTimeout(this.deferredTimer);
+      this.deferredTimer = undefined;
+    }
     if (this.touched.size === 0) return;
     const touched = [...this.touched.values()];
     this.touched = new Map();
@@ -486,6 +515,7 @@ export class SyncEngine {
     const ordered = [...req.docs].sort(
       (a, b) => (COLL_ORDER.get(a.coll) ?? 99) - (COLL_ORDER.get(b.coll) ?? 99)
     );
+    const existing = await this.prefetch(ordered);
     for (const wire of ordered) {
       if (!COLL_ORDER.has(wire.coll)) {
         rejected.push({ coll: wire.coll, id: wire.id, reason: 'collection does not replicate' });
@@ -495,7 +525,12 @@ export class SyncEngine {
         ? (merge: MergeOutcome, existing: Doc | null) =>
             authorizer.checkWrite(wire, existing, merge.takeRemote)
         : undefined;
-      const result = await this.applyRemote(wire, from, check);
+      let result: Awaited<ReturnType<SyncEngine['applyRemote']>>;
+      try {
+        result = await this.applyRemote(wire, from, check, existing.get(recKey(wire.coll, wire.id)));
+      } catch (error) {
+        result = { applied: false, conflicts: 0, rejected: `store error: ${(error as Error).message}` };
+      }
       if (result.rejected) {
         rejected.push({ coll: wire.coll, id: wire.id, reason: result.rejected });
         this.pushLog({
@@ -508,8 +543,37 @@ export class SyncEngine {
         accepted += 1;
       }
     }
-    await this.finishApply();
+    if (req.more) this.scheduleDeferredFinish();
+    else await this.finishApply();
     return { accepted, rejected };
+  }
+
+  /** Stored documents for a batch in one query per collection, instead of one per document. */
+  private async prefetch(wires: WireDoc[]): Promise<Map<string, Doc | null>> {
+    const found = new Map<string, Doc | null>();
+    const byColl = new Map<ReplicatedCollection, string[]>();
+    for (const wire of wires) {
+      if (!COLL_ORDER.has(wire.coll)) continue;
+      const list = byColl.get(wire.coll) ?? [];
+      list.push(wire.id);
+      byColl.set(wire.coll, list);
+    }
+    for (const [coll, ids] of byColl) {
+      for (let i = 0; i < ids.length; i += this.batchSize) {
+        const chunk = ids.slice(i, i + this.batchSize);
+        for (const id of chunk) found.set(recKey(coll, id), null);
+        const docs = await this.inner.collection(coll).find({ _id: { $in: chunk } });
+        for (const doc of docs) found.set(recKey(coll, String(doc._id)), doc);
+      }
+    }
+    this.prefetchedAt = this.meta.seq;
+    return found;
+  }
+
+  private prefetchedAt = -1;
+  /** A prefetched document is stale if applying an earlier document of the batch rewrote it. */
+  private touchedSincePrefetch(key: string): boolean {
+    return this.touched.has(key) && (this.meta.get(key)?.seq ?? 0) > this.prefetchedAt;
   }
 
   // --- syncing with a peer ----------------------------------------------------------
@@ -586,7 +650,7 @@ export class SyncEngine {
       }
       const docs = await this.toWire(recs);
       if (docs.length > 0) {
-        const response = await transport.push({ from: this.nodeId, docs });
+        const response = await transport.push({ from: this.nodeId, docs, ...(more ? { more: true } : {}) });
         result.pushed += response.accepted;
         total += response.accepted;
         for (const rejection of response.rejected) {
@@ -614,7 +678,16 @@ export class SyncEngine {
         sig: cursor.sig,
       });
       for (const wire of response.docs) {
-        const applied = await this.applyRemote(wire, peerId);
+        let applied: Awaited<ReturnType<SyncEngine['applyRemote']>>;
+        try {
+          applied = await this.applyRemote(wire, peerId);
+        } catch (error) {
+          // One document the local store refuses must not wedge every later sync.
+          const rejection = { coll: wire.coll, id: wire.id, reason: `store error: ${(error as Error).message}` };
+          result.rejected.push(rejection);
+          this.pushLog({ at: new Date(this.now()).toISOString(), kind: 'rejected', peerId, rejection });
+          continue;
+        }
         if (applied.applied) {
           result.pulled += 1;
           total += 1;

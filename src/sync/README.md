@@ -1,7 +1,8 @@
 # src/sync — application-level sync engine (Phase 2)
 
-Status: interface-first draft, committed early so Phase 1 (`src/local/`) and Phase 3
-(LAN/BLE transports) can code against it. Branch: `worktree-agent-afd3ddba006404c04`.
+Status: implemented and tested (see `tests/sync-*.test.ts`, `docs/perf/phase2.md`).
+The interface below was committed first so Phase 1 (`src/local/`) and Phase 3 (LAN/BLE
+transports) could code against it. Branch: `worktree-agent-afd3ddba006404c04`.
 
 This does **not** depend on KDB peer sync or its multi-namespace runtime. It sits on
 the backend-agnostic `DataStore` (`src/data`), works over Mongo, KDB or the in-memory
@@ -23,10 +24,13 @@ store, and treats the cloud as one more peer.
   (`u:<userId>` or `p:<projectId>`).
 * **Deletes are tombstones in the sync record.** The `SyncDataStore` wrapper sees
   every `deleteOne/deleteMany/findOneAndDelete` (including cascades) and records a
-  tombstone; services keep calling the normal API. A tombstone beats an older edit;
-  a newer edit (re-create) beats an older tombstone.
-* **Merge** is field level. Same field changed on both sides (neither side's dot is
-  in the other's `vv`): later HLC wins, the loser is written to the `activities`
+  tombstone; services keep calling the normal API and the document is still removed
+  from the data store, so no read path needs a `deletedAt` filter. **Delete wins**
+  over a concurrent edit, whichever is later, and a deleted id stays deleted
+  (application ids are never reused). Tombstones are never purged yet (plan Phase 5).
+* **Merge** is field level over top-level fields (arrays and sub-objects such as
+  `steps`, `subtasks`, `tags` are atomic values). Same field changed on both sides
+  (neither side's dot is in the other's `vv`): later HLC wins, the loser is written to the `activities`
   collection (`action: 'sync_conflict'`, `source: 'system'`) and the engine's sync
   log. Derived fields (`percentComplete`, `progressShare`, `trackingRollup`,
   `updatedAt`, `embedding`) are never merged; after a merge they are recomputed by
@@ -97,3 +101,46 @@ first sign-in.
 `meta.ts` sync records · `tracker.ts` `SyncDataStore` · `merge.ts` three-way field
 merge · `engine.ts` capture/apply/delta · `transport.ts` · `hub.ts` · `client.ts` ·
 `adopt.ts` · `derived.ts`.
+
+## Wiring
+
+* Cloud: `QTASK_SYNC_HUB=true` makes `connectData()` wrap the store with
+  `SyncDataStore` and register the hub engine; `/api/sync/*` is mounted in
+  `src/app.ts`. `QTASK_SYNC_META_PATH=/path/meta.json` persists the sync records
+  (debounced atomic JSON snapshot); without it a restart re-baselines every document.
+* Device (Phase 1): build `MemoryMetaStore`/`FileMetaPersistence.open(path)`,
+  `new SyncDataStore(localStore, meta)` and hand **that** store to the services, then
+  `new SyncEngine({store, meta, role: 'device', derived: createDefaultDerived()})`,
+  `await engine.init()` (baselines existing local data), and a `DeviceSyncClient`.
+  On sign-in call `adoptLocalAccount(engine, localUserId, accountUserId)` once, then
+  `client.syncNow()`.
+* `SyncResult.conflicts` counts conflicts found while *applying pulled* documents;
+  conflicts the hub finds while applying a push are in the hub's log and, after the
+  next pull, in the device's `activities` (`action: 'sync_conflict'`).
+
+## Service audit (plan 5.3 / 5.5)
+
+| Finding | Where | Handling |
+|---|---|---|
+| Hard deletes of tasks/comments (incl. cascades) | `taskService` (delete, promote, move-subtask), `projectService.deleteProject`, `commentService`, `conversationService`, `authService` rollback | Captured by `SyncDataStore` -> tombstone in the sync record. No service change was needed; the document is still removed from the store. |
+| Staged agent proposals deleted on rollback/expiry | `stagingService` | Docs with `staging` set are never replicated and leave no tombstone; they replicate once committed. |
+| Derived fields | `percentComplete` (tasks, projects), project `status`, `trackingRollup` | Excluded from stamps; recomputed after merge by `DerivedRecompute` (`derived.ts`, same pure util functions as the services). |
+| `progressShare` | tasks, projects | An input weight, so it **is** replicated (LWW). Only the normalised/effective share is derived, at read time. |
+| `$inc sortOrder` on siblings | `taskService.promoteSubtask` | Becomes per-task `sortOrder` LWW edits; concurrent reorders on two devices can leave ties, not lost tasks. Not recomputed. |
+| `$push` onto `conversation.messages` | `conversationService.appendMessages` | `messages` is one LWW field, so two devices appending to the same conversation offline keep only the later side (logged as a conflict). Messages have no ids, so a union merge is not possible without a schema change. |
+| `$inc attempts`, LLM counters | `embeddingQueue`, `feedbackVisionQueue`, `llmMetrics` | Local-only collections; never replicated. |
+| Embeddings | `embedding` on tasks/projects | Never replicated; `afterApply` queues a local rebuild on the receiver. |
+| Id collisions offline | ObjectId-shaped ids with a per-process random part | Collision-free for practical purposes; the engine also never trusts an id to be unique across owners (see `HubAuthorizer`). |
+
+## Known limits
+
+* Merge granularity is the top-level field. Concurrent edits to different elements of
+  one array (two new `steps`) conflict as a whole; the later side wins and the loser is
+  logged.
+* A rejected push (role violation) leaves the change on the device; the device sees it
+  in `SyncResult.rejected` and the log, but nothing reverts it.
+* Tasks moved out of a shared project are not removed from collaborators' devices.
+* Sync records are in memory plus a JSON snapshot; the hub without
+  `QTASK_SYNC_META_PATH` loses cursors and stamps on restart.
+* `updatedAt` is not replicated (the backend stamps it on write); sync keeps its own
+  `ut` per record.
