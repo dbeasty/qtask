@@ -6,7 +6,7 @@
 
 import tls from 'node:tls';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   FileSecretStore,
   LanTransport,
@@ -76,9 +76,10 @@ const handlers: Record<string, (a: any) => Promise<unknown> | unknown> = {
     replica.put(a.id, a.value);
     return { t: t.toString() };
   },
-  seed(a: { n: number; prefix: string; bytes: number }) {
-    const filler = 'x'.repeat(Math.max(0, a.bytes));
-    replica.seed(a.n, a.prefix, (i) => ({ title: `Task ${i}`, notes: filler, n: i, tags: ['a', 'b'], done: i % 7 === 0 }));
+  seed(a: { n: number; prefix: string; bytes: number; random?: boolean }) {
+    const same = 'x'.repeat(Math.max(0, a.bytes));
+    const filler = () => (a.random ? randomBytes(Math.ceil((a.bytes * 3) / 4)).toString('base64').slice(0, a.bytes) : same);
+    replica.seed(a.n, a.prefix, (i) => ({ title: `Task ${i}`, notes: filler(), n: i, tags: ['a', 'b'], done: i % 7 === 0 }));
     return replica.docs.size;
   },
   get(a: { id: string }) {
@@ -127,7 +128,7 @@ const handlers: Record<string, (a: any) => Promise<unknown> | unknown> = {
     return { cpuUserMs: cpu.user / 1000, cpuSystemMs: cpu.system / 1000, rssMB: m.rss / 1048576, heapMB: m.heapUsed / 1048576 };
   },
   stats() {
-    return replica.stats;
+    return { ...replica.stats, wire: transport.wireStats() };
   },
   /** Connect as a stranger (own cert, sync ALPN) and report whether any application byte came back. */
   async probe(a: { port: number }) {

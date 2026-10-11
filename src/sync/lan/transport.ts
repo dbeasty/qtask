@@ -284,6 +284,17 @@ export class LanTransport extends EventEmitter implements SyncTransport {
     return [...this.live.values()];
   }
 
+  /** Bytes on the wire (after compression and framing) across live links, for diagnostics and perf runs. */
+  wireStats(): { bytesIn: number; bytesOut: number; creditStalls: number } {
+    let bytesIn = 0, bytesOut = 0, creditStalls = 0;
+    for (const l of this.live.values()) {
+      bytesIn += l.channel.stats.bytesIn;
+      bytesOut += l.channel.stats.bytesOut;
+      creditStalls += l.channel.stats.creditStalls;
+    }
+    return { bytesIn, bytesOut, creditStalls };
+  }
+
   // --- lifecycle ---
 
   async start(): Promise<void> {

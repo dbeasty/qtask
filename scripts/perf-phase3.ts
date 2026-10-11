@@ -80,12 +80,12 @@ async function latencyBench(fleet: Fleet) {
   return lat;
 }
 
-async function bulkBench(fleet: Fleet, docs: number, bytesPerDoc: number, peers: 1 | 2) {
-  const label = `${docs}x${bytesPerDoc}B/${peers}p`;
+async function bulkBench(fleet: Fleet, docs: number, bytesPerDoc: number, peers: 1 | 2, random: boolean) {
+  const label = `${docs}x${bytesPerDoc}B${random ? 'rnd' : 'rep'}-${peers}p`;
   const a = await fleet.add(`BA-${label}`, MDNS_PORT);
   const rest: Device[] = [];
   for (let i = 0; i < peers; i++) rest.push(await fleet.add(`BB${i}-${label}`, MDNS_PORT));
-  await a.call('seed', { n: docs, prefix: 'k', bytes: bytesPerDoc });
+  await a.call('seed', { n: docs, prefix: 'k', bytes: bytesPerDoc, random });
   const logicalBytes = docs * (bytesPerDoc + 60);
   const before = await Promise.all([a, ...rest].map((d) => d.call<any>('usage')));
   const t0 = process.hrtime.bigint();
@@ -118,6 +118,9 @@ async function bulkBench(fleet: Fleet, docs: number, bytesPerDoc: number, peers:
     cpuMs: after.map((u, i) => u.cpuUserMs + u.cpuSystemMs - before[i].cpuUserMs - before[i].cpuSystemMs),
     rssMB: after.map((u) => u.rssMB),
     docsReceived: stats.map((s) => s.docsReceived),
+    wireInMB: stats.map((s) => s.wire.bytesIn / 1048576),
+    stalls: stats.map((s) => s.wire.creditStalls),
+    random,
     converged,
   };
 }
@@ -134,12 +137,15 @@ async function main() {
   console.error('stage: bulk');
   const bulk = [];
   for (const cfg of [
-    [10_000, 200, 1],
-    [10_000, 1000, 1],
-    [10_000, 200, 2],
+    [10_000, 200, 1, false],
+    [10_000, 1000, 1, false],
+    [10_000, 1000, 1, true],
+    [10_000, 200, 2, false],
+    [10_000, 1000, 2, true],
+    [50_000, 1000, 1, true],
   ] as const) {
     const fl = new Fleet();
-    bulk.push(await bulkBench(fl, cfg[0], cfg[1], cfg[2]));
+    bulk.push(await bulkBench(fl, cfg[0], cfg[1], cfg[2], cfg[3]));
     await fl.cleanup();
   }
 
@@ -213,11 +219,11 @@ async function main() {
   log();
   log('### Initial sync of a large database');
   log();
-  log('| Docs | Filler/doc | Peers pulling | Logical size | Wall time, all converged | Link-up to last doc, per peer (ms) | Docs received per peer | Converged |');
-  log('|---|---|---|---|---|---|---|---|');
+  log('| Docs | Filler/doc | Peers pulling | Logical size | Wire MB received per peer | Wall time, all converged | Link-up to last doc, per peer (ms) | Docs received per peer | Converged |');
+  log('|---|---|---|---|---|---|---|---|---|');
   for (const r of bulk)
     log(
-      `| ${r.docs} | ${r.bytesPerDoc} B | ${r.peers} | ${f(r.logicalMB, 1)} MB | ${f(r.totalMs, 0)} ms (includes pairing) | ${r.perPeerLinkToDone.map((x) => f(x, 0)).join(', ')} | ${r.docsReceived.join(', ')} | ${r.converged ? 'yes' : 'NO'} |`,
+      `| ${r.docs} | ${r.bytesPerDoc} B ${r.random ? 'random (incompressible)' : 'repeated char (very compressible)'} | ${r.peers} | ${f(r.logicalMB, 1)} MB | ${r.wireInMB.map((x) => f(x, 2)).join(', ')} | ${f(r.totalMs, 0)} ms (includes pairing) | ${r.perPeerLinkToDone.map((x) => f(x, 0)).join(', ')} | ${r.docsReceived.join(', ')} | ${r.converged ? 'yes' : 'NO'} |`,
     );
   log();
   log('Throughput (logical JSON MB divided by link-up-to-last-doc, first peer):');
@@ -230,6 +236,13 @@ async function main() {
   log('|---|---|---|');
   for (const r of bulk) log(`| ${r.label} | ${r.cpuMs.map((x) => f(x, 0)).join(', ')} | ${r.rssMB.map((x) => f(x, 0)).join(', ')} |`);
   log(`| idle, 3 connected peers, 5 s | ${idleCpu.map((x) => f(x, 1)).join(', ')} | ${idleAfter.map((u) => f(u.rssMB, 0)).join(', ')} |`);
+  log();
+  log('### Notes on the numbers');
+  log();
+  log('- Repeated-character filler compresses ~50x, which makes those rows measure JSON parse/stringify and TLS more than the link; the **random** rows are the realistic worst case (incompressible content, wire bytes about equal to logical bytes). Real task data (titles, notes, ids) sits between the two.');
+  log('- On incompressible data the sender still tries deflate on every message and discards the result when it does not shrink; that is part of the higher CPU in the random rows. A heuristic to skip compression for already-dense content is a possible later optimisation, not done here.');
+  log('- With two peers pulling from A at once and also paired with each other, each receives roughly 2x the documents ("Docs received per peer" above 10000): the stand-in engine gossips accepted documents to all other links, so a document can arrive from both A and the other peer. The transport delivers each message once; avoiding the duplicate work is the Phase 2 engine\'s job (for example by gossiping only after the digest round settles, or sending digests that include what is in flight).');
+  log('- Single-change latency is sub-millisecond on loopback, so on real Wi-Fi it will be dominated by the radio round trip, not by this code.');
   log();
   const text = out.join('\n') + '\n';
   const target = join(dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'perf', 'phase3.md');
