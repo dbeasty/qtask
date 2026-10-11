@@ -253,6 +253,8 @@ export class LanTransport extends EventEmitter implements SyncTransport {
   private addrs = new Map<string, { host: string; port: number }>();
   private dials = new Map<string, { attempts: number; timer: NodeJS.Timeout | null; busy: boolean }>();
   private pairing: PairingWindow | null = null;
+  /** Last advertisement seen per node id, so a device paired *after* it was seen is dialed at once. */
+  private seen = new Map<string, MdnsService>();
   private stopped = true;
   private readonly log: (m: string) => void;
 
@@ -267,6 +269,7 @@ export class LanTransport extends EventEmitter implements SyncTransport {
 
   onPeerUp(h: (l: SyncPeerLink) => void): void {
     this.upHandlers.push(h);
+    for (const l of this.live.values()) h(l); // replay: a late subscriber still learns of live links
   }
   onPeerDown(h: (id: string, e?: Error) => void): void {
     this.downHandlers.push(h);
@@ -318,7 +321,7 @@ export class LanTransport extends EventEmitter implements SyncTransport {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    this.pairing?.reject(new Error('transport stopped'));
+    if (this.pairing) this.closePairing(this.pairing, new Error('transport stopped'));
     this.browser?.stop();
     await this.advertiser?.stop();
     for (const d of this.dials.values()) if (d.timer) clearTimeout(d.timer);
@@ -345,6 +348,8 @@ export class LanTransport extends EventEmitter implements SyncTransport {
   private onDiscovered(s: MdnsService): void {
     const id = s.txt.id;
     if (!id || id === this.self.nodeId || s.txt.v !== String(PROTOCOL_VERSION)) return;
+    if (!/^[0-9a-f]{32}$/.test(id)) return;
+    if (this.seen.size < 512 || this.seen.has(id)) this.seen.set(id, s);
     if (!this.o.peers.get(id)) return; // unpaired devices are ignored entirely
     this.addrs.set(id, { host: s.addresses[0] ?? '', port: s.port });
     this.log(`discovered paired peer ${id.slice(0, 8)} at ${s.addresses[0]}:${s.port}`);
@@ -553,6 +558,7 @@ export class LanTransport extends EventEmitter implements SyncTransport {
         reject(new Error('pairing window expired'));
       }, timeoutMs),
     };
+    w.timer.unref();
     this.pairing = w;
     const parts: PairLink = {
       host: this.o.advertiseHost ?? firstLocalAddress(),
@@ -628,6 +634,8 @@ export class LanTransport extends EventEmitter implements SyncTransport {
       const rec: PairingRecord = { ...body, sigA, sigB: String(s.sig) };
       if (s.t !== 'sig' || !verifyRecord(rec)) throw new Error('bad pairing signature');
       const peer = await this.o.peers.add(rec);
+      const adv = this.seen.get(peer.nodeId);
+      if (adv) this.onDiscovered(adv);
       await send({ t: 'done' });
       await new Promise((r) => setTimeout(r, 20)); // let the final frame flush before teardown
       ch.close();
@@ -714,6 +722,7 @@ export class LanTransport extends EventEmitter implements SyncTransport {
       const peer = await this.o.peers.add(rec);
       ch.close();
       this.addrs.set(peer.nodeId, { host: target.host, port: target.port });
+      this.scheduleDial(peer.nodeId, 0);
       return peer;
     } catch (e) {
       ch.close();
