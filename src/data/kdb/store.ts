@@ -60,7 +60,10 @@ interface KdbClient {
   close(): Promise<void>;
 }
 
-type ConnectFn = (addr: string, token: string) => Promise<KdbClient>;
+type ConnectFn = (
+  addr: string,
+  options: string | { token?: string; requestTimeoutMs?: number }
+) => Promise<KdbClient>;
 
 const MODEL_BY_COLLECTION: Record<CollectionName, string> = {
   users: 'User',
@@ -160,7 +163,31 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     return docs;
   }
 
+  /**
+   * One document by id, without reading the collection. Every filter below goes through
+   * `scan`, which moves the whole collection over the wire and parses it, so a lookup that
+   * names an `_id` (every get, update and delete of one task) cost O(collection). With
+   * tens of thousands of tasks that is the difference between a millisecond and seconds.
+   */
+  private async fetchById(id: string): Promise<T | null> {
+    const { rows } = await this.client().queryRaw(
+      this.namespace,
+      `SELECT kdb_id, _doc FROM ${this.table} WHERE kdb_id = ? AND _c = ?`,
+      [toDocumentUuid(id), this.name]
+    );
+    const json = rows[0]?.[1];
+    if (!json) return null;
+    const { _c: _discriminator, ...body } = JSON.parse(json) as Doc;
+    return reviveDates(this.schema, body) as T;
+  }
+
   private async matching(filter: Filter): Promise<T[]> {
+    // An AND-filter that pins `_id` can match at most that one document; the rest of the
+    // filter is still applied to it by the shared engine, so semantics are unchanged.
+    if (typeof filter._id === 'string' && !('$or' in filter) && !('$nor' in filter)) {
+      const doc = await this.fetchById(filter._id);
+      return doc && matchesFilter(doc, filter) ? [doc] : [];
+    }
     const docs = await this.scan();
     return docs.filter((doc) => matchesFilter(doc, filter));
   }
@@ -406,7 +433,17 @@ export class KdbDataStore implements DataStore {
 
   async connect(): Promise<void> {
     const { connect } = await loadClient();
-    this.client = await connect(config.kdb.addr, config.kdb.token);
+    // KDB_REQUEST_TIMEOUT_MS raises the client's per-request deadline (30 s by default).
+    // The Mac app sets it: opening a store with a few thousand documents can make the
+    // first request wait longer than that while kdb-service recovers, and a timeout there
+    // is a failed launch rather than a slow one.
+    const timeout = Number(process.env.KDB_REQUEST_TIMEOUT_MS);
+    this.client = await connect(
+      config.kdb.addr,
+      Number.isFinite(timeout) && timeout > 0
+        ? { token: config.kdb.token || undefined, requestTimeoutMs: timeout }
+        : config.kdb.token
+    );
   }
 
   async disconnect(): Promise<void> {

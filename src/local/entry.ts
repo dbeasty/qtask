@@ -40,6 +40,8 @@ process.env.MCP_OAUTH_JWT_SECRET = secrets.mcpOAuthJwtSecret;
 process.env.STORAGE_BACKEND = 'local';
 process.env.STORAGE_LOCAL_PATH = path.join(paths.uploadsDir);
 process.env.KDB_NAMESPACE_PREFIX = process.env.KDB_NAMESPACE_PREFIX ?? 'qtask/docs';
+// See KdbDataStore.connect: the first request after opening a large store can be slow.
+process.env.KDB_REQUEST_TIMEOUT_MS = process.env.KDB_REQUEST_TIMEOUT_MS ?? String(15 * 60 * 1000);
 
 if (!process.env.KDB_ADDR) {
   console.error('KDB_ADDR is required: the supervisor starts kdb-service and passes its address');

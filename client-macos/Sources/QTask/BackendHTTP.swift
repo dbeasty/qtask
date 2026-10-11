@@ -40,7 +40,11 @@ final class BackendHTTP: @unchecked Sendable {
     config.httpShouldSetCookies = false
     config.urlCache = nil
     config.requestCachePolicy = .reloadIgnoringLocalCacheData
-    config.timeoutIntervalForRequest = 120
+    // Generous on purpose: the first request after opening a large store can wait while
+    // kdb-service recovers (minutes at tens of thousands of tasks); failing it early would
+    // turn a slow launch into a broken one.
+    config.timeoutIntervalForRequest = 1800
+    config.timeoutIntervalForResource = 3600
     config.httpMaximumConnectionsPerHost = 8
     session = URLSession(configuration: config)
   }
