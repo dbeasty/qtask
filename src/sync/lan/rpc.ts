@@ -30,6 +30,18 @@ type Envelope =
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/**
+ * The link went away under an in-flight request: the peer left, or the transport
+ * replaced a duplicate link. Not a sync failure; the replacement link (or the peer's
+ * return) starts a new round, and everything unsent is still pending in the engine.
+ */
+export class LinkClosedError extends Error {
+  constructor(message = 'link closed') {
+    super(message);
+    this.name = 'LinkClosedError';
+  }
+}
+
 export class LinkRpc implements SyncTransport {
   readonly kind: string;
   private nextId = 1;
@@ -43,7 +55,7 @@ export class LinkRpc implements SyncTransport {
   ) {
     this.kind = link.transport;
     link.onMessage((m) => this.receive(m));
-    link.onClose((reason) => this.fail(reason ?? new Error('link closed')));
+    link.onClose((reason) => this.fail(new LinkClosedError(reason ? `link closed: ${reason.message}` : 'link closed')));
   }
 
   hello(req: HelloRequest): Promise<HelloResponse> {
@@ -56,12 +68,12 @@ export class LinkRpc implements SyncTransport {
     return this.call('push', req);
   }
   async close(): Promise<void> {
-    this.fail(new Error('closed'));
+    this.fail(new LinkClosedError('closed'));
     this.link.close();
   }
 
   private call<T>(op: Op, body: unknown): Promise<T> {
-    if (this.closed) return Promise.reject(new Error('link closed'));
+    if (this.closed) return Promise.reject(new LinkClosedError());
     const id = this.nextId++;
     const timeoutMs = this.options.timeoutMs ?? 120_000;
     return new Promise<T>((resolve, reject) => {
@@ -229,7 +241,8 @@ export class LanSyncCoordinator {
           const result = await this.engine.syncWith(rpc, { headersFirst: this.options.headersFirst !== false });
           this.options.onResult?.(peerId, result);
         } catch (e) {
-          this.options.onError?.(peerId, e as Error);
+          // A link that closed mid-round is expected churn, not a failure to report.
+          if (!(e instanceof LinkClosedError)) this.options.onError?.(peerId, e as Error);
         }
       } while (this.again.has(peerId));
     })().finally(() => this.running.delete(peerId));
