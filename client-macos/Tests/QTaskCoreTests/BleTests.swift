@@ -171,6 +171,18 @@ final class BleLaunchTests: XCTestCase {
     XCTAssertFalse(Launch.bleBridgeWanted(environment: ["QTASK_BLE": "0"]))
   }
 
+  func testOnlyTheSyncOffSwitchIsPassedThrough() {
+    let off = Launch.nodeEnvironment(
+      dataDir: URL(fileURLWithPath: "/d"), deviceToken: "t", kdbPort: 1, kdbClientModule: URL(fileURLWithPath: "/k.mjs"),
+      inherit: ["QTASK_LOCAL_SYNC": "0", "QTASK_SYNC_MDNS_PORT": "1"])
+    XCTAssertEqual(off["QTASK_LOCAL_SYNC"], "0")
+    XCTAssertNil(off["QTASK_SYNC_MDNS_PORT"])
+    let on = Launch.nodeEnvironment(
+      dataDir: URL(fileURLWithPath: "/d"), deviceToken: "t", kdbPort: 1, kdbClientModule: URL(fileURLWithPath: "/k.mjs"),
+      inherit: ["QTASK_LOCAL_SYNC": "yes"])
+    XCTAssertNil(on["QTASK_LOCAL_SYNC"])
+  }
+
   func testDeviceNameIsPassedTrimmedAndBounded() {
     let env = Launch.nodeEnvironment(
       dataDir: URL(fileURLWithPath: "/d"), deviceToken: "t", kdbPort: 1, kdbClientModule: URL(fileURLWithPath: "/k.mjs"),

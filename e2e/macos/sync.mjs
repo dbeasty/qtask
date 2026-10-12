@@ -12,7 +12,31 @@
 // mDNS runs on the real port 5353, as the app always does.
 import { rmSync } from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { Instance, backendClient, makeWork, prepareApp, sleep } from './lib.mjs';
+
+/** CPU seconds (user+sys) of a pid, from ps. */
+function cpuSeconds(pid) {
+  try {
+    const parts = execFileSync('ps', ['-o', 'time=', '-p', String(pid)], { encoding: 'utf8' }).trim().split(':').map(Number);
+    return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
+  } catch {
+    return 0;
+  }
+}
+
+/** % of one core used by an app copy and its two children over `seconds` of idling. */
+async function idleCpu(inst, seconds) {
+  const s = await inst.state();
+  const pids = [s.appPid, s.nodePid, s.kdbPid];
+  const before = pids.map(cpuSeconds);
+  await sleep(seconds * 1000);
+  const after = pids.map(cpuSeconds);
+  const per = pids.map((_, i) => Math.round(((after[i] - before[i]) / seconds) * 10000) / 100);
+  return { totalPct: Math.round(per.reduce((a, b) => a + b, 0) * 100) / 100, appPct: per[0], nodePct: per[1], kdbPct: per[2] };
+}
+
+const IDLE_S = Number(process.env.QTASK_E2E_IDLE_SECONDS ?? 0);
 
 const WORK = makeWork('qtask-macos-sync-');
 let failures = 0;
@@ -134,10 +158,29 @@ async function main() {
     await until('nothing pending on A', async () => (await backendClient(await A.state()).call('GET', '/api/local-sync/status')).body.peers[0].pendingChanges === 0);
   });
 
+  if (IDLE_S > 0) {
+    await step(`idle CPU over ${IDLE_S} s, paired and connected (window visible, Tasks view)`, async () => {
+      await sleep(3000);
+      const [ia, ib] = await Promise.all([idleCpu(A, IDLE_S), idleCpu(B, IDLE_S)]);
+      timings.idlePaired = { a: ia, b: ib };
+    });
+  }
+
   await step('both quit cleanly', async () => {
     const [ra, rb] = await Promise.all([A.quit(), B.quit()]);
     assert(ra.code === 0 && rb.code === 0, `exit codes ${ra.code} ${rb.code}`);
   });
+
+  if (IDLE_S > 0) {
+    await step(`idle CPU over ${IDLE_S} s with device sync off (QTASK_LOCAL_SYNC=0), same data`, async () => {
+      A.start({ env: { QTASK_DEVICE_NAME: 'E2E Mac A', QTASK_LOCAL_SYNC: '0' } });
+      await A.waitForUi();
+      await A.js(clickNav('Tasks'));
+      await sleep(3000);
+      timings.idleSyncOff = await idleCpu(A, IDLE_S);
+      await A.quit();
+    });
+  }
 
   console.log(JSON.stringify({ timings }));
   if (failures) {

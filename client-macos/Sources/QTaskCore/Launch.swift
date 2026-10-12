@@ -58,6 +58,9 @@ public enum Launch {
     if let name = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
       env["QTASK_DEVICE_NAME"] = String(name.prefix(60))
     }
+    // The one sync switch that is passed through: QTASK_LOCAL_SYNC=0 starts the backend with
+    // device sync off entirely (diagnostics, and the idle-CPU comparison in e2e/macos/sync.mjs).
+    if inherit["QTASK_LOCAL_SYNC"] == "0" { env["QTASK_LOCAL_SYNC"] = "0" }
     // Test hooks the e2e harness uses to point the backend elsewhere are not forwarded.
     env["NODE_NO_WARNINGS"] = "1"
     return env
