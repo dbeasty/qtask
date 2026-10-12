@@ -43,6 +43,17 @@ export interface WireDoc {
   del?: WireTombstone;
 }
 
+/**
+ * A document's identity and version vector, without its content. Peers exchange these
+ * first so a document one side already has is never sent again (see `headersFirst`).
+ */
+export interface WireHeader {
+  coll: ReplicatedCollection;
+  id: string;
+  vv: Record<string, number>;
+  del?: WireTombstone;
+}
+
 export const PROTOCOL_VERSION = 1;
 
 export interface HelloRequest {
@@ -68,6 +79,10 @@ export interface PullRequest {
   limit: number;
   /** Scope signature the cursor was issued under; a mismatch restarts from 0. */
   sig?: string;
+  /** Answer with `headers` only (no content). A peer that ignores this sends `docs`. */
+  headersOnly?: boolean;
+  /** Instead of a cursor page, send exactly these documents (the ones `headers` said were needed). */
+  ids?: Array<{ coll: ReplicatedCollection; id: string }>;
 }
 
 export interface PullResponse {
@@ -77,6 +92,8 @@ export interface PullResponse {
   more: boolean;
   /** Signature of the scopes this response covers. Send it back with the next pull. */
   sig: string;
+  /** Present instead of `docs` content when the request was `headersOnly`. */
+  headers?: WireHeader[];
 }
 
 export interface PushRequest {
@@ -88,6 +105,13 @@ export interface PushRequest {
    * batch, which would make a large initial sync quadratic.
    */
   more?: boolean;
+  /**
+   * Offer only: `docs` is empty and `offer` lists what the sender would push. The
+   * receiver answers with `need`; the sender then pushes just those. A receiver that
+   * does not know offers applies nothing and returns no `need`, and the sender
+   * falls back to a plain push.
+   */
+  offer?: WireHeader[];
 }
 
 export interface PushRejection {
@@ -99,6 +123,8 @@ export interface PushRejection {
 export interface PushResponse {
   accepted: number;
   rejected: PushRejection[];
+  /** For an offer: `coll:id` of the documents the receiver wants. */
+  need?: string[];
 }
 
 /**

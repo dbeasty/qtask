@@ -137,6 +137,8 @@ interface SyncServiceLike {
 export interface LanSyncOptions {
   /** Minimum gap between two rounds with the same peer. */
   debounceMs?: number;
+  /** Offer version vectors before content so nothing is sent twice. On by default; false for A/B comparison. */
+  headersFirst?: boolean;
   onResult?: (peerId: string, result: SyncResult) => void;
   onError?: (peerId: string, error: Error) => void;
 }
@@ -200,7 +202,7 @@ export class LanSyncCoordinator {
         const rpc = this.rpcs.get(peerId);
         if (!rpc || this.stopped) return;
         try {
-          const result = await this.engine.syncWith(rpc);
+          const result = await this.engine.syncWith(rpc, { headersFirst: this.options.headersFirst !== false });
           this.options.onResult?.(peerId, result);
         } catch (e) {
           this.options.onError?.(peerId, e as Error);

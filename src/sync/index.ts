@@ -4,7 +4,7 @@ export { mergeRecords, type MergeOutcome, type FieldConflict } from './merge.js'
 export { FileMetaPersistence, MemoryMetaStore, isLive, recKey } from './meta.js';
 export type { DocRec, FieldRec, MetaStore, PeerCursor } from './meta.js';
 export { SyncDataStore } from './tracker.js';
-export { SyncEngine, SyncService, type DerivedRecompute, type SyncEngineOptions } from './engine.js';
+export { SyncEngine, SyncService, headerNeeded, type DerivedRecompute, type SyncEngineOptions, type SyncWithOptions } from './engine.js';
 export { HttpSyncTransport, LoopbackTransport, SyncTransportError } from './transport.js';
 export { HubAuthorizer, createSyncRouter, EXECUTOR_TASK_FIELDS } from './hub.js';
 export { DeviceSyncClient, type ClientStatus, type ClientState, type DeviceSyncClientOptions } from './client.js';

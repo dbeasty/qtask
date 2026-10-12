@@ -28,6 +28,7 @@ import {
   type PushResponse,
   type ReplicatedCollection,
   type SyncAuthorizer,
+  type WireHeader,
   type SyncLogEntry,
   type SyncResult,
   type SyncStatus,
@@ -60,6 +61,26 @@ export interface SyncEngineOptions {
 
 const COLL_ORDER = new Map(REPLICATED_COLLECTIONS.map((name, index) => [name, index]));
 const CHUNK = 500;
+
+/** Identity and version vector of a record, without content. */
+function toHeader(rec: DocRec): WireHeader {
+  return { coll: rec.coll, id: rec.id, vv: rec.vv, ...(rec.del ? { del: rec.del } : {}) };
+}
+
+/**
+ * Whether merging `header` into `local` could change anything. Equal or dominated
+ * version vectors mean the local record already contains everything the sender has;
+ * an unknown document, a newer counter from any node, or a delete we have not seen
+ * means it might not. Conservative: a false positive only costs one document's bytes.
+ */
+export function headerNeeded(local: DocRec | undefined, header: WireHeader): boolean {
+  if (!local) return true;
+  if (header.del && !local.del) return true;
+  for (const [node, counter] of Object.entries(header.vv)) {
+    if (counter > (local.vv[node] ?? 0)) return true;
+  }
+  return false;
+}
 const MAX_ROUNDS = 5;
 const LOG_LIMIT = 500;
 
@@ -71,6 +92,16 @@ function parseKey(key: string): { coll: ReplicatedCollection; id: string } {
 /** A deterministic ObjectId-shaped id, so two peers logging the same conflict agree. */
 function deterministicId(...parts: string[]): string {
   return createHash('sha1').update(parts.join('\u0000')).digest('hex').slice(0, 24);
+}
+
+export interface SyncWithOptions {
+  /**
+   * Exchange version vectors first and move only the documents the other side lacks.
+   * Costs an extra round trip per batch, so it is for links where bandwidth is
+   * scarcer than latency (LAN, Bluetooth) and for meshes where a document is
+   * otherwise offered by several peers. Peers that do not understand it still work.
+   */
+  headersFirst?: boolean;
 }
 
 export class SyncEngine {
@@ -500,16 +531,31 @@ export class SyncEngine {
     const sig = scopes ? createHash('sha1').update([...scopes].sort().join('|')).digest('hex').slice(0, 16) : '*';
     const cursor = req.sig === sig ? req.cursor : 0;
     const limit = Math.max(1, Math.min(req.limit, 2000));
+    if (req.ids) {
+      const recs: DocRec[] = [];
+      for (const ref of req.ids.slice(0, 5000)) {
+        const rec = this.meta.get(recKey(ref.coll, ref.id));
+        if (rec && (!scopes || scopes.has(rec.scope))) recs.push(rec);
+      }
+      return { docs: await this.toWire(recs), next: req.cursor, more: false, sig };
+    }
     const head = this.meta.seq;
     const { recs, more } = this.meta.since(scopes, cursor, limit, from);
-    const docs = await this.toWire(recs);
     const next = more ? recs[recs.length - 1]!.seq : head;
+    if (req.headersOnly) return { docs: [], headers: recs.map(toHeader), next, more, sig };
+    const docs = await this.toWire(recs);
     return { docs, next, more, sig };
   }
 
   /** @internal used by SyncService */
   async servePush(from: string, req: PushRequest, authorizer?: SyncAuthorizer): Promise<PushResponse> {
     await this.capture();
+    if (req.offer) {
+      const need = req.offer
+        .filter((h) => COLL_ORDER.has(h.coll) && headerNeeded(this.meta.get(recKey(h.coll, h.id)), h))
+        .map((h) => recKey(h.coll, h.id));
+      return { accepted: 0, rejected: [], need };
+    }
     let accepted = 0;
     const rejected: PushRejection[] = [];
     const ordered = [...req.docs].sort(
@@ -583,7 +629,7 @@ export class SyncEngine {
    * missing, repeat until a round changes nothing locally (merges can create new
    * local content, such as conflict activities, that the peer should also receive).
    */
-  async syncWith(transport: SyncTransport): Promise<SyncResult> {
+  async syncWith(transport: SyncTransport, options: SyncWithOptions = {}): Promise<SyncResult> {
     const started = performance.now();
     const hello = await transport.hello({
       protocol: PROTOCOL_VERSION,
@@ -612,8 +658,8 @@ export class SyncEngine {
     await this.capture();
     for (let round = 1; round <= MAX_ROUNDS; round++) {
       result.rounds = round;
-      await this.pushTo(transport, peerId, cursor, result);
-      await this.pullFrom(transport, peerId, cursor, result);
+      await this.pushTo(transport, peerId, cursor, result, options);
+      await this.pullFrom(transport, peerId, cursor, result, options);
       cursor.lastSyncedAt = new Date(this.now()).toISOString();
       this.meta.setPeer(peerId, cursor);
       await this.finishApply();
@@ -637,7 +683,8 @@ export class SyncEngine {
     transport: SyncTransport,
     peerId: string,
     cursor: { pushedSeq: number },
-    result: SyncResult
+    result: SyncResult,
+    options: SyncWithOptions
   ): Promise<number> {
     let total = 0;
     for (;;) {
@@ -648,7 +695,16 @@ export class SyncEngine {
         cursor.pushedSeq = Math.max(cursor.pushedSeq, head);
         return total;
       }
-      const docs = await this.toWire(recs);
+      let toSend = recs;
+      if (options.headersFirst) {
+        const offered = await transport.push({ from: this.nodeId, docs: [], offer: recs.map(toHeader) });
+        // A peer that predates offers returns no `need`: send everything, as before.
+        if (offered.need) {
+          const wanted = new Set(offered.need);
+          toSend = recs.filter((r) => wanted.has(recKey(r.coll, r.id)));
+        }
+      }
+      const docs = await this.toWire(toSend);
       if (docs.length > 0) {
         const response = await transport.push({ from: this.nodeId, docs, ...(more ? { more: true } : {}) });
         result.pushed += response.accepted;
@@ -667,7 +723,8 @@ export class SyncEngine {
     transport: SyncTransport,
     peerId: string,
     cursor: { pulledSeq: number; sig?: string },
-    result: SyncResult
+    result: SyncResult,
+    options: SyncWithOptions
   ): Promise<number> {
     let total = 0;
     for (;;) {
@@ -676,8 +733,25 @@ export class SyncEngine {
         cursor: cursor.pulledSeq,
         limit: this.batchSize,
         sig: cursor.sig,
+        ...(options.headersFirst ? { headersOnly: true } : {}),
       });
-      for (const wire of response.docs) {
+      let incoming = response.docs;
+      if (response.headers) {
+        // Ask only for what the headers say we lack.
+        const needed = response.headers.filter((h) => headerNeeded(this.meta.get(recKey(h.coll, h.id)), h));
+        incoming = needed.length
+          ? (
+              await transport.pull({
+                from: this.nodeId,
+                cursor: 0,
+                limit: this.batchSize,
+                sig: response.sig,
+                ids: needed.map((h) => ({ coll: h.coll, id: h.id })),
+              })
+            ).docs
+          : [];
+      }
+      for (const wire of incoming) {
         let applied: Awaited<ReturnType<SyncEngine['applyRemote']>>;
         try {
           applied = await this.applyRemote(wire, peerId);

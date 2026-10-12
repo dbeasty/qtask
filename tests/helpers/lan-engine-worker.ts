@@ -60,6 +60,7 @@ const handlers: Record<string, (a: any) => Promise<unknown> | unknown> = {
     engine = new SyncEngine({ store, meta, role: 'device' });
     await engine.init();
     coordinator = new LanSyncCoordinator(engine, transport, {
+      headersFirst: process.env.HEADERS_FIRST !== '0',
       onResult: () => void rounds++,
       onError: (_p, e) => void errors.push(e.message),
     });
