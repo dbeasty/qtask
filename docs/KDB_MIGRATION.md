@@ -169,10 +169,17 @@ synthetic `_u_<collection>_<fields>` field that only its collection's documents 
 design; prefixing `_c` does not help). Proven with five real processes racing to register one
 email: exactly one wins and the rest get a duplicate key, which `authService` turns into a 409.
 
-Remaining: the one constraint over array elements (a user's linked identity providers) cannot be a
-field tuple and stays in-process only. A server older than #147 accepts the declaration and
-enforces nothing; the in-process check still stands, so it loses the extra guarantee and nothing
-else. This needs the pinned KDB to include #147.
+The constraint over array elements (a user's linked identity providers: one Google or Microsoft
+login may belong to one account) is now held by the server too. The store carries it as an array
+of per-element keys, one per linked login, and KDB treats an array under a unique constraint as
+multikey, as MongoDB does (KDB `feat/multikey-unique`, for the release after 0.7.1). Proven with
+five processes racing to link one login to five accounts: exactly one wins. On a server without
+multikey support the in-process check still stands, and only the cross-process guarantee for this
+one rule is lost.
+
+A server older than #147 accepts the declarations and enforces nothing; the in-process check
+still stands, so it loses the extra guarantee and nothing else. The pinned KDB must include #147,
+and multikey for the linked-login rule.
 
 ### B4. Search quality differs, deliberately
 
@@ -338,15 +345,20 @@ reason when it is absent.
 - **Performance on disk is unmeasured.** The figures in B2 are in-memory.
 - **Single `kdb-service`.** One service is a single point of failure, as one Mongo is today. KDB's
   peer sync could give a replica; that is not part of this plan.
-- **Shadow-mode residue.** Sub-documents added by an update get different `_id`s on each side, so
-  addressing one by id during shadow can miss on the shadow. The backfill and `verify` at cutover
-  reconcile it; it cannot happen after the flip.
+- **Sub-document ids are the same in both stores.** While Mongo is primary and KDB mirrors it,
+  the shadow layer gives every sub-document a write introduces its `_id` before either store sees
+  the write (`src/data/subdocumentIds.ts`), so both store the same id and a sub-document can be
+  addressed by id on either side. Before, each store minted its own, and only the backfill at
+  cutover reconciled them. Documents keep their Mongo ids through the backfill as before.
 - **Load flakes in the test suite itself** (`socket hang up` from supertest) occur at about the same
   rate on MongoDB and on KDB (1 in 16 runs of `collaboration` under 8-way load on each).
-- **`@kdb/client` is loaded from the KDB checkout** (`KDB_CLIENT_MODULE`), not installed as a
-  dependency; it is `packages/kdb-client` at version 0.1.0, unchanged between the old dev build
-  and v0.6.2. Production needs it vendored or published and pinned to the v0.6.2 source before
-  Stage 2.
+- **KDB comes from a release, never a source tree.** `@kdb/client` is a dependency at the
+  release's version (installed from the release tarball; it is not on npm), and the tests'
+  `kdb-service` is the same release's binary, fetched by `npm run kdb:fetch` and checked against
+  its `SHA256SUMS`. Production runs that release's image
+  (`ghcr.io/dbeasty/kdb/kdb-service:v<version>`). The client refuses a server from another
+  release, so the one pin covers both. `KDB_SERVICE_BIN` / `KDB_CLIENT_MODULE` override them, for
+  trying a KDB build before it ships.
 
 ## 7. Follow-up work KDB v0.6.2 makes possible
 

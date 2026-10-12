@@ -78,6 +78,42 @@ describe('KDB atomicity across processes', { skip }, () => {
     assert.equal(await store.collection('users').countDocuments({ email: 'mp-race@example.com' }), 1);
   });
 
+  it('lets exactly one of several processes link the same external login', async () => {
+    const outcomes = await Promise.all(
+      Array.from({ length: 5 }, () => runWorker('', 0, { WORKER_MODE: 'link-login', WORKER_LOGIN: 'g-race' }))
+    );
+    const results = outcomes.map((o) => o.outcome as string);
+    assert.deepEqual(results.filter((r) => r !== 'created' && r !== 'duplicate'), [], `unexpected outcomes: ${JSON.stringify(results)}`);
+    assert.equal(results.filter((r) => r === 'created').length, 1, `exactly one process may link it: ${JSON.stringify(results)}`);
+    assert.equal(await store.collection('users').countDocuments({ 'identityProviders.providerUserId': 'g-race' }), 1);
+  });
+
+  it('holds a linked login per element: overlap refused, own relink fine, an unlinked login is free', async () => {
+    const users = store.collection('users');
+    const login = (provider: string, providerUserId: string) => ({ provider, providerUserId });
+    const holder = await users.create({
+      email: 'holder@example.com', displayName: 'H', passwordHash: 'x',
+      identityProviders: [login('google', 'g-1'), login('microsoft', 'm-1')],
+    });
+    // A different list sharing one login: different as a whole, so only the server's per-element
+    // constraint refuses it.
+    await assert.rejects(
+      users.create({ email: 'other@example.com', displayName: 'O', passwordHash: 'x', identityProviders: [login('microsoft', 'm-9'), login('google', 'g-1')] }),
+      (e: { code?: number }) => e.code === 11000
+    );
+    // The same id under another provider is another login.
+    await users.create({ email: 'third@example.com', displayName: 'T', passwordHash: 'x', identityProviders: [login('microsoft', 'g-1')] });
+    // The holder rewrites its own list, keeping one login and dropping the other.
+    await users.updateOne({ _id: holder._id }, { $set: { identityProviders: [login('google', 'g-1')] } });
+    await users.create({ email: 'fourth@example.com', displayName: 'F', passwordHash: 'x', identityProviders: [login('microsoft', 'm-1')] });
+    // Accounts with no linked login claim nothing.
+    await users.create({ email: 'none-1@example.com', displayName: 'N', passwordHash: 'x' });
+    await users.create({ email: 'none-2@example.com', displayName: 'N', passwordHash: 'x', identityProviders: [] });
+    // ...and the synthetic key never reaches the caller.
+    const read = (await users.findById(holder._id as string))!;
+    assert.deepEqual(Object.keys(read).filter((k) => k.startsWith('_u_')), []);
+  });
+
   it('scopes a constraint to its collection: a repeated clientId is fine on codes, not on clients', async () => {
     const clients = store.collection('mcpOAuthClients');
     const codes = store.collection('mcpOAuthAuthorizationCodes');

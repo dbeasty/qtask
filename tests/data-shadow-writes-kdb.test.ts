@@ -112,6 +112,34 @@ describe('shadow writes into a real KDB', { skip: unavailable() }, () => {
     assert.deepEqual(fromShadow.tags, ['a', 'b']);
   });
 
+  it('gives a sub-document the same _id in both stores, at any depth', async () => {
+    const tasks = store.collection('tasks');
+    const created = await tasks.create({ userId: 'u1', title: 'with steps', steps: [{ text: 'first' }] });
+    // Pushed after creation - minted by neither store's create path - including one nested two
+    // levels down, inside a subtask, and a $set that replaces the whole list.
+    await tasks.updateOne({ _id: created._id }, { $push: { steps: { text: 'second' } } });
+    await tasks.updateOne({ _id: created._id }, { $push: { subtasks: { title: 'sub', steps: [{ text: 'inner' }] } } });
+    await tasks.updateMany({ _id: created._id }, { $push: { steps: { $each: [{ text: 'third' }, { text: 'fourth' }] } } });
+    await tasks.findOneAndUpdate({ _id: created._id }, { $set: { 'subtasks.0.steps': [{ text: 'replaced' }] } });
+    await store.drainShadow();
+
+    const fromPrimary = (await tasks.findById(String(created._id)))!;
+    const fromShadow = (await shadow.collection('tasks').findById(String(created._id)))!;
+    const ids = (doc: Doc) => ({
+      steps: (doc.steps as Doc[]).map((step) => String(step._id)),
+      subtasks: (doc.subtasks as Doc[]).map((sub) => [String(sub._id), (sub.steps as Doc[]).map((step) => String(step._id))]),
+    });
+    assert.equal((fromPrimary.steps as Doc[]).length, 4);
+    assert.deepEqual(ids(fromShadow), ids(fromPrimary));
+    // ...so addressing a sub-document by id works on both sides.
+    const second = (fromPrimary.steps as Doc[])[1]!._id;
+    await tasks.updateOne({ _id: created._id, 'steps._id': second }, { $set: { 'steps.$.text': 'edited' } });
+    await store.drainShadow();
+    const edited = (await shadow.collection('tasks').findById(String(created._id)))!;
+    assert.equal((edited.steps as Doc[])[1]!.text, 'edited');
+    assert.equal(store.stats().failed, 0, store.stats().lastError ?? '');
+  });
+
   it('mirrors a delete', async () => {
     const tasks = store.collection('tasks');
     const created = await tasks.create({ userId: 'u1', title: 'temporary' });

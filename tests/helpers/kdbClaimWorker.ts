@@ -28,6 +28,27 @@ if (process.env.WORKER_MODE === 'create-user') {
   process.exit(0);
 }
 
+if (process.env.WORKER_MODE === 'link-login') {
+  // Race to link one external login to several different accounts. Each racer's list is
+  // otherwise its own, so the lists differ as wholes and only a per-element constraint can tell.
+  let outcome: string;
+  try {
+    await store.collection('users').create({
+      email: `linker-${process.pid}@example.com`, displayName: 'linker', passwordHash: 'x',
+      identityProviders: [
+        { provider: 'microsoft', providerUserId: `own-${process.pid}` },
+        { provider: 'google', providerUserId: process.env.WORKER_LOGIN },
+      ],
+    });
+    outcome = 'created';
+  } catch (error) {
+    outcome = (error as { code?: number }).code === 11000 ? 'duplicate' : `error: ${(error as Error).message}`;
+  }
+  await store.disconnect();
+  console.log(`WORKER_RESULT ${JSON.stringify({ pid: process.pid, outcome })}`);
+  process.exit(0);
+}
+
 const id = process.env.WORKER_DOC_ID!;
 const rounds = Number(process.env.WORKER_ROUNDS ?? 10);
 let claimed = 0;

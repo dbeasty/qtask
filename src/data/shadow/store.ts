@@ -34,7 +34,10 @@
  * why compare.ts ignores that field and nothing else.
  */
 
+import mongoose, { type Schema } from 'mongoose';
 import { createLogger } from '../../utils/logger.js';
+import { MODEL_BY_COLLECTION } from '../modelNames.js';
+import { presetSubdocumentIds } from '../subdocumentIds.js';
 import { ShadowQueue, type ShadowStats } from './queue.js';
 import {
   compareCounts,
@@ -158,6 +161,16 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
 
   // --- writes: primary answers, shadow mirrors -----------------------------------
 
+  /**
+   * The write with an `_id` already on every sub-document it introduces, so that both stores
+   * store the same ids rather than each minting its own (see subdocumentIds.ts). Applied before
+   * the primary sees the write; the shadow replays the same payload.
+   */
+  private withIds<U extends Doc>(update: U): U {
+    const schema = mongoose.models[MODEL_BY_COLLECTION[this.name]]?.schema as Schema | undefined;
+    return schema ? presetSubdocumentIds(schema, update) : update;
+  }
+
   async create(doc: Doc): Promise<T> {
     const created = await this.primary.create(doc);
     // The stored document, not the input: it carries the id and timestamps the
@@ -174,7 +187,8 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
     return created;
   }
 
-  async updateOne(filter: Filter, update: Update, options?: UpdateOptions): Promise<UpdateResult> {
+  async updateOne(filter: Filter, original: Update, options?: UpdateOptions): Promise<UpdateResult> {
+    const update = this.withIds(original);
     const args = snap({ filter, update, options });
     const result = await this.primary.updateOne(filter, update, options);
     if (result.upsertedId) {
@@ -195,14 +209,16 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
     return result;
   }
 
-  async updateMany(filter: Filter, update: Update): Promise<UpdateResult> {
+  async updateMany(filter: Filter, original: Update): Promise<UpdateResult> {
+    const update = this.withIds(original);
     const args = snap({ filter, update });
     const result = await this.primary.updateMany(filter, update);
     this.mirror('updateMany', () => this.shadow.updateMany(args.filter, args.update));
     return result;
   }
 
-  async findOneAndUpdate(filter: Filter, update: Update, options?: UpdateOptions): Promise<T | null> {
+  async findOneAndUpdate(filter: Filter, original: Update, options?: UpdateOptions): Promise<T | null> {
+    const update = this.withIds(original);
     const args = snap({ filter, update, options });
     const result = await this.primary.findOneAndUpdate(filter, update, options);
     // An upsert that created a document has to carry the primary's id across, or the
@@ -223,14 +239,16 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
     return result;
   }
 
-  async findByIdAndUpdate(id: string, update: Update, options?: UpdateOptions): Promise<T | null> {
+  async findByIdAndUpdate(id: string, original: Update, options?: UpdateOptions): Promise<T | null> {
+    const update = this.withIds(original);
     const args = snap({ update, options });
     const result = await this.primary.findByIdAndUpdate(id, update, options);
     this.mirror('findByIdAndUpdate', () => this.shadow.findByIdAndUpdate(id, args.update, args.options));
     return result;
   }
 
-  async replaceOne(filter: Filter, doc: Doc): Promise<UpdateResult> {
+  async replaceOne(filter: Filter, original: Doc): Promise<UpdateResult> {
+    const doc = this.withIds(original);
     const args = snap({ filter, doc });
     const result = await this.primary.replaceOne(filter, doc);
     this.mirror('replaceOne', () => this.shadow.replaceOne(args.filter, args.doc));
@@ -258,7 +276,8 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
     return result;
   }
 
-  async bulkWrite(operations: BulkOperation[]): Promise<UpdateResult> {
+  async bulkWrite(original: BulkOperation[]): Promise<UpdateResult> {
+    const operations = original.map((op) => ({ updateOne: { ...op.updateOne, update: this.withIds(op.updateOne.update) } }));
     const replay = snap(operations);
     const result = await this.primary.bulkWrite(operations);
     // An upsert may have created documents, and replaying it would mint different ids on the

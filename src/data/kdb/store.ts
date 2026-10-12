@@ -263,7 +263,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private readonly ttl: { path: string; graceMs: number } | null;
   /** Unique constraints the server enforces, each carried on a synthetic field only this
    *  collection's documents have (see declareConstraints). */
-  private readonly serverKeys: Array<{ field: string; paths: string[] }>;
+  private readonly serverKeys: Array<{ field: string; paths: string[]; arrayPrefix?: string }>;
 
   constructor(
     readonly name: CollectionName,
@@ -274,9 +274,15 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   ) {
     this.unique = uniqueConstraints(schema);
     this.ttl = ttlSpec(schema);
-    this.serverKeys = this.unique
-      .filter((constraint) => !constraint.fields.some((field) => isArrayPath(schema, field)))
-      .map((constraint) => ({ field: serverKeyField(name, constraint.fields), paths: constraint.fields }));
+    this.serverKeys = this.unique.flatMap((constraint) => {
+      const field = serverKeyField(name, constraint.fields);
+      if (!constraint.fields.some((path) => isArrayPath(schema, path))) return [{ field, paths: constraint.fields }];
+      // Through an array: one key per element, which the server holds as a multikey constraint.
+      // Only the shape the schemas use - every part under the same array of sub-documents - has
+      // an unambiguous per-element meaning; anything else stays with the in-process check.
+      const arrayPrefix = sharedArrayPrefix(schema, constraint.fields);
+      return arrayPrefix ? [{ field, paths: constraint.fields, arrayPrefix }] : [];
+    });
   }
 
   /** Every document in the collection. The only read primitive: filtering happens
@@ -655,8 +661,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private async writeDocument(doc: Doc, _previous: Doc | null, guard?: { hash: string }): Promise<void> {
     const key = toDocumentUuid(doc._id as string);
     const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
-    for (const { field, paths } of this.serverKeys) {
-      const value = serverKeyValue(doc, paths);
+    for (const { field, paths, arrayPrefix } of this.serverKeys) {
+      const value = arrayPrefix ? serverKeyValues(doc, paths, arrayPrefix) : serverKeyValue(doc, paths);
       if (value !== undefined) body[field] = value;
     }
     try {
@@ -757,8 +763,9 @@ export class KdbDataStore implements DataStore {
    * behaviour the schemas declare.
    *
    * Idempotent: stating a constraint the server already holds does nothing. It fails if existing
-   * data already violates one, which is the right place to find out. A constraint over array
-   * elements (a user's linked identity providers) cannot be a field tuple and stays in-process.
+   * data already violates one, which is the right place to find out. A constraint through an
+   * array of sub-documents (a user's linked identity providers) is carried as an array of
+   * per-element keys, which the server enforces element by element (multikey, KDB 0.7.2).
    *
    * Needs a server that installs constraints for CREATE UNIQUE INDEX (KDB 0.7.0 + #147). An older
    * one accepts the statement and enforces nothing; the in-process check still stands, so that
@@ -766,7 +773,7 @@ export class KdbDataStore implements DataStore {
    */
   private async declareConstraints(): Promise<void> {
     for (const name of Object.keys(MODEL_BY_COLLECTION) as CollectionName[]) {
-      for (const { field, paths } of (this.collection(name) as unknown as { serverKeys: Array<{ field: string; paths: string[] }> }).serverKeys) {
+      for (const { field, paths } of (this.collection(name) as unknown as { serverKeys: Array<{ field: string; paths: string[]; arrayPrefix?: string }> }).serverKeys) {
         try {
           await this.client!.exec(config.kdb.namespacePrefix, `CREATE UNIQUE INDEX qtask_${field} ON docs (${field})`);
         } catch (error) {
@@ -881,6 +888,40 @@ function serverKeyValue(doc: Doc, fields: string[]): string | undefined {
     parts.push(value instanceof Date ? value.toISOString() : value);
   }
   return JSON.stringify(parts);
+}
+
+/**
+ * A constraint through an array of sub-documents as one key per element, e.g. a user's linked
+ * logins `identityProviders.[provider, providerUserId]` as `['["google","1"]', '["github","7"]']`.
+ * The server treats an array under a unique constraint as multikey (KDB 0.7.2), so no two users
+ * may hold the same login. Pairs are taken within one element, which is what the rule means; an
+ * element missing a part claims nothing, and so does an empty list.
+ */
+function serverKeyValues(doc: Doc, fields: string[], arrayPrefix: string): string[] | undefined {
+  const elements = getPath(doc, arrayPrefix);
+  if (!Array.isArray(elements)) return undefined;
+  const rest = fields.map((field) => field.slice(arrayPrefix.length + 1));
+  const keys = new Set<string>();
+  for (const element of elements) {
+    if (element === null || typeof element !== 'object') continue;
+    const value = serverKeyValue(element as Doc, rest);
+    if (value !== undefined) keys.add(value);
+  }
+  return keys.size > 0 ? [...keys] : undefined;
+}
+
+/** The array of sub-documents every part of a constraint sits under, when there is exactly one. */
+function sharedArrayPrefix(schema: Schema, fields: string[]): string | undefined {
+  const prefixes = fields.map((field) => {
+    const segments = field.split('.');
+    for (let i = 1; i < segments.length; i++) {
+      const prefix = segments.slice(0, i).join('.');
+      if ((schema.path(prefix) as unknown as { instance?: string } | undefined)?.instance === 'Array') return prefix;
+    }
+    return undefined;
+  });
+  const first = prefixes[0];
+  return first && prefixes.every((prefix) => prefix === first) ? first : undefined;
 }
 
 /**
