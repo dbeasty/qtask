@@ -141,9 +141,22 @@ Measured with 9,000 tasks, in-memory mode, one process:
 Pushdown helps by moving filtering to the server but the server still scans, so cost grows with
 namespace size. **Update:** on the 0.7.0 candidate a hash index on a schemaless namespace works
 (`CREATE INDEX … USING HASH`: 10.8 ms to 5.5 ms for the same query), and `COUNT(*)` is
-sub-millisecond; the store does not create such indexes yet. KDB's own disk benchmark covers
-`--durability sync` at 10k, 100k and 1M documents; qtask-shaped disk numbers are still untaken and
-should be before cutover.
+sub-millisecond.
+
+**Indexes now created (`DATA_KDB_DECLARE_INDEXES`, default on).** On connect the store declares the
+lookup indexes the Mongoose schemas declare: 27 paths (HASH, or BTREE for dates/numbers; a compound
+Mongo index becomes an index on its leading field; text indexes stay in-app, TTL indexes became
+server expiry, unique ones are constraints). Declaring is idempotent and they survive `kill -9`
+(`data-kdb-durability`). Reads: `find({userId})` on 2,000 tasks 6.2 ms to 0.4 ms.
+
+**Disk write cost (open, KDB-side).** With `--durability sync` and `--data-dir`, bulk load drops
+from 226 to 102 docs/s at 2,000 docs with the indexes on, and the first `connect()` on an empty
+namespace takes about 17 s (27 `CREATE INDEX`, about 640 ms each; a reconnect is 10 ms). Cause, from
+`go/kdb/server/index_wiring.go`: every 64 index-touching commits the provider rewrites *all* index
+snapshots (`registry.SaveAll`), so write cost grows with index count and size. Needs incremental or
+async snapshots in KDB; until then, size the backfill window accordingly or set
+`DATA_KDB_DECLARE_INDEXES=false` for the bulk load and declare afterwards. Steady-state qtask write
+rates are far below the bulk rate, but this must be measured on a production-sized copy before cutover.
 
 ### B3. Unique constraints across processes — resolved by KDB #147 (not yet released)
 
@@ -341,7 +354,7 @@ In rough order of value, none of it required for the migration:
 
 1. Merge and release the B1 fix (above); then per-collection namespaces and hash indexes on `userId`,
    `projectIds`, `taskId`, which turn linear reads into lookups.
-2. Create the hash indexes the schemas already declare (`userId`, `projectIds`, `taskId`) when the store connects.
+2. ~~Create the hash indexes the schemas already declare~~ Done; see B2 for the disk write-cost caveat.
 3. Server-side stemmed full-text and vector search in place of the in-process scoring and the
    embeddings path, accepting that rankings stop being backend-identical.
 4. `kdb-service --scrub-interval` for scheduled integrity checks, and peer sync for a warm replica.
