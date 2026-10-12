@@ -200,8 +200,22 @@ const NOTE_BITS = ['Waiting on a reply from {n}.', 'See ticket QT-{k} for the ba
 const NAMES = ['Priya', 'Tom', 'Maya', 'Jonas', 'Aisha', 'Lena', 'Carlos', 'Noor', 'Wei', 'Sam', 'Ingrid', 'Dev'];
 const TAGS = ['home', 'work', 'finance', 'health', 'errand', 'urgent', 'waiting', 'reading', 'admin', 'travel', 'planning', 'bug', 'review', 'family'];
 
-/** A task shaped like what people actually type: short imperative titles, sometimes a few sentences of notes. */
-export function realisticTask(i: number, seed = 7): Record<string, unknown> {
+const SYL = ['ba', 'ko', 'ri', 'mel', 'tan', 'dor', 'vi', 'lu', 'sen', 'pra', 'qui', 'zo', 'han', 'fe', 'ghi', 'wor', 'nu', 'cal', 'ste', 'ju', 'rem', 'ax', 'bri', 'pol', 'dis', 'ev', 'tro', 'lin', 'mo', 'ka'];
+let VOCAB: string[] | null = null;
+/** A 4,000-word pseudo-vocabulary with a Zipf-like frequency: a deliberately harder-to-compress stand-in for free text. */
+function vocab(): string[] {
+  if (VOCAB) return VOCAB;
+  const r = rng(99);
+  VOCAB = Array.from({ length: 4000 }, () => Array.from({ length: 1 + Math.floor(r() * 3) }, () => SYL[Math.floor(r() * SYL.length)]!).join(''));
+  return VOCAB;
+}
+
+/**
+ * A task shaped like what people actually type: short imperative titles, sometimes a few sentences of notes.
+ * `hard` adds longer free-text notes made of pseudo-words with a Zipf-like distribution and random reference
+ * numbers, which compress much worse than the template text above (so it is a more pessimistic wire-size case).
+ */
+export function realisticTask(i: number, seed = 7, hard = false): Record<string, unknown> {
   const r = rng(seed * 1_000_003 + i);
   const pick = <T>(a: T[]) => a[Math.floor(r() * a.length)]!;
   const title = `${pick(VERBS)} ${pick(OBJECTS)}${r() < 0.4 ? ` ${pick(TAILS)}` : ''}`;
@@ -221,13 +235,19 @@ export function realisticTask(i: number, seed = 7): Record<string, unknown> {
     n: i,
   };
   if (r() < 0.5) doc.dueDate = new Date(Date.UTC(2026, 9, 1 + Math.floor(r() * 120)));
+  if (hard) {
+    const v = vocab();
+    const words = Array.from({ length: r() < 0.6 ? 12 + Math.floor(r() * 60) : 0 }, () => v[Math.floor(v.length * Math.pow(r(), 2.2))]!);
+    if (words.length) doc.notes = `${notes} ${words.join(' ')} ref ${Math.floor(r() * 1e8)}`.trim();
+    doc.title = `${title} ${v[Math.floor(v.length * r())]} ${v[Math.floor(v.length * r())]}`;
+  }
   return doc;
 }
 
-export async function seedTasks(d: BleDevice, n: number, prefix = 'task-', offset = 0): Promise<number> {
+export async function seedTasks(d: BleDevice, n: number, prefix = 'task-', offset = 0, hard = false): Promise<number> {
   let bytes = 0;
   for (let i = 0; i < n; i++) {
-    const doc = realisticTask(i + offset);
+    const doc = realisticTask(i + offset, 7, hard);
     bytes += JSON.stringify(doc).length;
     await d.tasks().create({ _id: `${prefix}${i + offset}`, userId: 'u1', ...doc });
   }

@@ -8,11 +8,19 @@
 	hardened runtime. When it is, the loopback servers need network.server, the app's own
 	calls to them need network.client, and the bundled Node runs JIT-compiled code so it
 	needs the two memory entitlements. No other entitlement is requested: the app does not
-	use the camera, microphone, contacts, location, or Bluetooth in this phase.
+	use the camera, microphone, contacts or location.
+
+	Bluetooth (Phase 4): com.apple.security.device.bluetooth is the App Sandbox entitlement for
+	CoreBluetooth. It does nothing for this ad hoc, unsandboxed build, where the permission
+	prompt is driven by NSBluetoothAlwaysUsageDescription in Info.plist; it is declared now so
+	the sandboxed build does not have to remember it. (From Apple's documentation; not yet
+	exercised with a sandboxed build.)
 	-->
 	<key>com.apple.security.network.server</key>
 	<true/>
 	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.device.bluetooth</key>
 	<true/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>

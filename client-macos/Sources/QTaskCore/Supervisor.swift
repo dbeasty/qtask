@@ -8,6 +8,8 @@ public struct BackendEndpoint: Sendable {
   public let nodePid: Int32
   public let kdbPid: Int32
   public let kdbPort: Int
+  /// Loopback port of the backend's Bluetooth bridge, when it was started with one.
+  public var bleBridgePort: Int? = nil
 }
 
 public enum SupervisorError: Error, CustomStringConvertible {
@@ -98,7 +100,7 @@ public actor Supervisor {
     // Node.
     mark("node-spawn")
     let token = Launch.randomToken()
-    let ready: (port: Int, deviceId: String)
+    let ready: (port: Int, deviceId: String, bleBridgePort: Int?)
     do {
       ready = try await launchNode(deviceToken: token, kdbPort: kdbPort)
     } catch {
@@ -107,7 +109,8 @@ public actor Supervisor {
     }
     let result = BackendEndpoint(
       port: ready.port, deviceToken: token, deviceId: ready.deviceId,
-      nodePid: node!.processIdentifier, kdbPid: kdb!.processIdentifier, kdbPort: kdbPort)
+      nodePid: node!.processIdentifier, kdbPid: kdb!.processIdentifier, kdbPort: kdbPort,
+      bleBridgePort: ready.bleBridgePort)
     mark("node-ready")
     endpoint = result
     writePidFile(result)
@@ -130,13 +133,13 @@ public actor Supervisor {
     kdb = p
   }
 
-  private func launchNode(deviceToken: String, kdbPort: Int) async throws -> (port: Int, deviceId: String) {
+  private func launchNode(deviceToken: String, kdbPort: Int) async throws -> (port: Int, deviceId: String, bleBridgePort: Int?) {
     let p = Process()
     p.executableURL = layout.node
     p.arguments = [layout.serverScript.path]
     p.environment = Launch.nodeEnvironment(
       dataDir: paths.root, deviceToken: deviceToken, kdbPort: kdbPort,
-      kdbClientModule: layout.kdbClientModule, inherit: environment)
+      kdbClientModule: layout.kdbClientModule, bleBridge: environment["QTASK_BLE"] == "1", inherit: environment)
     p.currentDirectoryURL = paths.root
     // The pipe is node's lifeline: it exits when this end closes (we died).
     let stdin = Pipe()
@@ -343,12 +346,12 @@ public actor Supervisor {
 final class ReadyReader: @unchecked Sendable {
   private let lock = NSLock()
   private var buffer = Data()
-  private var _ready: (port: Int, deviceId: String)?
+  private var _ready: (port: Int, deviceId: String, bleBridgePort: Int?)?
   private let log: FileHandle
 
   init(log: FileHandle) { self.log = log }
 
-  var ready: (port: Int, deviceId: String)? {
+  var ready: (port: Int, deviceId: String, bleBridgePort: Int?)? {
     lock.lock()
     defer { lock.unlock() }
     return _ready
@@ -366,7 +369,7 @@ final class ReadyReader: @unchecked Sendable {
       if let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
         let port = obj["port"] as? Int, let id = obj["deviceId"] as? String
       {
-        _ready = (port, id)
+        _ready = (port, id, obj["bleBridgePort"] as? Int)
       }
     }
   }

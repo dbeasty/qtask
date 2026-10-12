@@ -28,6 +28,8 @@ let package = Package(
         .linkedFramework("WebKit"),
         .linkedFramework("AppKit"),
         .linkedFramework("Security"),
+        .linkedFramework("CoreBluetooth"),
+        .linkedFramework("Network"),
       ]
     ),
     .testTarget(name: "QTaskCoreTests", dependencies: ["QTaskCore"], path: "Tests/QTaskCoreTests"),

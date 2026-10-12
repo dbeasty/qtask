@@ -410,6 +410,13 @@ describe('tunnel: record decoder and info decoder (fuzz)', () => {
     assert.throws(() => new RecordDecoder(100).push(encodeVarint(101)), FramingError);
   });
 
+  it('info: golden bytes (the same vectors are asserted in client-macos BleTests.swift)', () => {
+    const nodeId = '000102030405060708090a0b0c0d0e0f';
+    const keyTag = 'a0a1a2a3a4a5a6a7';
+    assert.equal(encodeInfo({ nodeId, keyTag, pairing: false, name: 'ignored' }).toString('hex'), '0100000102030405060708090a0b0c0d0e0fa0a1a2a3a4a5a6a7');
+    assert.equal(encodeInfo({ nodeId, keyTag, pairing: true, name: 'Mac' }).toString('hex'), '0101000102030405060708090a0b0c0d0e0fa0a1a2a3a4a5a6a74d6163');
+  });
+
   it('info: round trip and rejection of malformed values', () => {
     const base = { nodeId: randomBytes(16).toString('hex'), keyTag: randomBytes(8).toString('hex') };
     const plain = decodeInfo(encodeInfo({ ...base, pairing: false, name: 'ignored' }));

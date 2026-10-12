@@ -32,6 +32,7 @@ public enum Launch {
     deviceToken: String,
     kdbPort: Int,
     kdbClientModule: URL,
+    bleBridge: Bool = false,
     inherit: [String: String] = ProcessInfo.processInfo.environment
   ) -> [String: String] {
     var env: [String: String] = [
@@ -48,6 +49,8 @@ public enum Launch {
       "KDB_NAMESPACE_PREFIX": kdbNamespace,
       "KDB_CLIENT_MODULE": kdbClientModule.path,
     ]
+    // Opt-in: the backend opens a loopback socket for the app's Bluetooth radio (src/sync/ble/bridge.ts).
+    if bleBridge { env["QTASK_BLE_BRIDGE"] = "1" }
     // Test hooks the e2e harness uses to point the backend elsewhere are not forwarded.
     env["NODE_NO_WARNINGS"] = "1"
     return env

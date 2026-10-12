@@ -8,6 +8,7 @@ import type { Server } from 'node:http';
 import { createApp } from '../app.js';
 import { disconnectDb } from '../db/connection.js';
 import { resolveLocalConfig } from './config.js';
+import { startBleBridgeIfEnabled, stopBleBridge } from './ble.js';
 import { loadOrCreateDeviceIdentity } from './device.js';
 
 /** The line the supervisor waits for on stdout. */
@@ -17,6 +18,8 @@ export interface ReadyInfo {
   port: number;
   pid: number;
   deviceId: string;
+  /** Loopback port for the app's Bluetooth radio; present only when the app asked for it. */
+  bleBridgePort?: number;
 }
 
 export async function startLocalServer(): Promise<{ server: Server; ready: ReadyInfo }> {
@@ -32,12 +35,15 @@ export async function startLocalServer(): Promise<{ server: Server; ready: Ready
   if (address === null || typeof address === 'string') throw new Error('server has no TCP address');
 
   const ready: ReadyInfo = { port: address.port, pid: process.pid, deviceId: identity.deviceId };
+  const ble = await startBleBridgeIfEnabled();
+  if (ble) ready.bleBridgePort = ble.port;
 
   let closing = false;
   const shutdown = async () => {
     if (closing) return;
     closing = true;
     server.close();
+    await stopBleBridge().catch(() => undefined);
     // Closing the data layer is what flushes the store; the supervisor waits for exit.
     await disconnectDb().catch((error) => console.error('disconnect failed', error));
     process.exit(0);

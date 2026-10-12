@@ -137,5 +137,13 @@ for inner in "$APP/Contents/Resources/backend/node" "$APP/Contents/Resources/bac
 done
 codesign --force --sign - --entitlements "$MAC/Resources/QTask.entitlements" "$APP" >/dev/null
 codesign --verify --deep --strict "$APP"
+
+# Bluetooth (Phase 4): the permission prompt needs the usage string in Info.plist, and the sandbox
+# entitlement is carried by the signature. Fail the build rather than ship an app that would be
+# killed by the OS the first time it touches CoreBluetooth.
+/usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" "$APP/Contents/Info.plist" >/dev/null \
+  || { echo "Info.plist lacks NSBluetoothAlwaysUsageDescription" >&2; exit 1; }
+codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "com.apple.security.device.bluetooth" \
+  || { echo "the signed app lacks com.apple.security.device.bluetooth" >&2; exit 1; }
 rm -rf "$OUT/stage"
 echo "app:     $APP ($(du -sh "$APP" | cut -f1))"

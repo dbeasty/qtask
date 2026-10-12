@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var endpointTask: Task<BackendEndpoint, Error>!
   private var errorView: NSView?
   private var terminating = false
+  private var bleBridge: BLEBridgeClient?
   private var signalSources: [DispatchSourceSignal] = []
   /// Wall-clock marks (epoch ms) of the start-up steps, for the e2e/perf suite.
   private(set) var timeline: [(String, Double)] = []
@@ -80,11 +81,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       }
       await MainActor.run {
         self.badge.start()
-        _ = endpoint
+        self.startBluetoothBridge(endpoint)
       }
     } catch {
       await MainActor.run { self.showFailure("\(error)", which: "start") }
     }
+  }
+
+  // MARK: Bluetooth
+
+  /// Opt-in (QTASK_BLE=1): connects the native radio to the backend's bridge. CoreBluetooth
+  /// is not touched, and no permission prompt appears, until the backend sends its first
+  /// radio command (when Bluetooth sync is switched on).
+  private func startBluetoothBridge(_ endpoint: BackendEndpoint) {
+    guard let port = endpoint.bleBridgePort else { return }
+    bleBridge?.stop()
+    bleBridge = BLEBridgeClient(port: port, token: endpoint.deviceToken, radio: CoreBluetoothRadio())
+    bleBridge?.start()
   }
 
   // MARK: window
@@ -190,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     if terminating { return .terminateNow }
     terminating = true
     badge?.stop()
+    bleBridge?.stop()
     let supervisor = self.supervisor!
     let done = DispatchSemaphore(value: 0)
     Task.detached {
