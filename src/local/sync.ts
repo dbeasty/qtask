@@ -239,7 +239,13 @@ export class LocalSync {
       role: 'device',
       derived: createDefaultDerived(),
       afterApply: async (touched) => {
-        if (touched.length > 0) this.bump();
+        if (touched.length === 0) return;
+        this.bump();
+        // Relay: what came from a peer goes on to the cloud, and what came from the cloud
+        // to the peers. (A peer that pushed to us is relayed to the other peers by the
+        // coordinator itself; one extra no-op round with the sender is the cost here.)
+        this.cloud?.notifyLocalChange();
+        this.scheduleRound();
       },
     });
     const started = Date.now();
@@ -417,6 +423,11 @@ export class LocalSync {
 
   private onLocalWrite(): void {
     this.cloud?.notifyLocalChange();
+    this.scheduleRound();
+  }
+
+  /** One round with every connected peer, WRITE_DEBOUNCE_MS after the first trigger. */
+  private scheduleRound(): void {
     if (!this.coordinator || this.writeTimer) return;
     this.writeTimer = setTimeout(() => {
       this.writeTimer = undefined;
@@ -809,7 +820,8 @@ export class LocalSync {
         transport: connected.get(p.nodeId) ?? null,
         links: (['wifi', 'bluetooth'] as LinkKind[]).filter((k) => standby.has(`${p.nodeId}:${k}`)),
         lastSyncedAt: c?.lastSyncedAt ?? null,
-        lastTransport: rt?.lastTransport ?? null,
+        // Rounds this device started record their link; a device that only served uses the live link.
+        lastTransport: rt?.lastTransport ?? connected.get(p.nodeId) ?? null,
         pendingChanges: c ? c.pendingChanges : engine.pendingChanges,
         lastError: rt?.lastError ?? null,
       };
