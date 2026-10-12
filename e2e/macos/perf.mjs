@@ -9,7 +9,8 @@
 // What is measured
 //   * cold start: first launch on an empty data folder, spawn -> first contentful paint and
 //     spawn -> shell on screen, N=COLD_RUNS fresh folders;
-//   * for each data size (SIZES, default 1000,10000,50000 tasks), on the same growing store:
+//   * for each data size (SIZES, default 1000,4000,8000 tasks; 10,000 and 50,000 are not
+//     measurable on this store, see the report's "Limits found" section), on the same growing store:
 //       - API latency p50/p95 for list, create, update, search (and the project list), at two
 //         layers: directly against the local server (the backend alone) and from the page
 //         through the bridge (what the UI pays);
@@ -17,7 +18,7 @@
 //         appeared with the app, at idle and after the load;
 //       - relaunch time (quit -> window with UI on screen), quit time, store size on disk.
 //
-// Environment: PERF_SIZES="1000,10000,50000"  PERF_COLD_RUNS=5  PERF_SEED_CONCURRENCY=24
+// Environment: PERF_SIZES="1000,4000,8000"  PERF_COLD_RUNS=5  PERF_SEED_CONCURRENCY=24
 import { execFileSync, spawn } from 'node:child_process';
 import net from 'node:net';
 import { taskFields } from './taskgen.mjs';
@@ -26,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Instance, ROOT, backendClient, helperPids, makeWork, prepareApp, rssKb, sleep } from './lib.mjs';
 
-const SIZES = (process.env.PERF_SIZES || '1000,10000,50000').split(',').map(Number);
+const SIZES = (process.env.PERF_SIZES || '1000,4000,8000').split(',').map(Number);
 const COLD_RUNS = Number(process.env.PERF_COLD_RUNS || 5);
 const SAMPLES = { list: 100, create: 100, update: 100, search: 60, projects: 50, deep: 30 };
 const BIG_SAMPLES = { list: 40, create: 30, update: 30, search: 30, projects: 20, deep: 10 };
@@ -150,7 +151,7 @@ async function pageLatencies(inst, ids) {
     const queries = ['zebra', 'invoice', 'garage budget'];
     out.search = await time(${SAMPLES.search}, (i) => fetch('/api/search?q=' + encodeURIComponent(queries[i % 3]), { headers: h }));
     return out;`;
-  const raw = await inst.js(src);
+  const raw = await inst.command('js', src, 30 * 60 * 1000);
   const out = {};
   for (const [k, v] of Object.entries(raw)) out[k] = summary(v);
   return out;
@@ -432,6 +433,35 @@ ${row('launch: spawn to shell on screen', (e) => e.launch && e.launch.spawnToShe
 ${row('first task page (200), asked right after that', (e) => e.launch && e.launch.firstListAfterLaunchMs)}
 
 ${sizes.some((s) => r.bySize[s].error) ? '## Failures\n\n' + sizes.filter((s) => r.bySize[s].error).map((s) => `- ${s} tasks: ${r.bySize[s].error.split('\n')[0]}`).join('\n') + '\n' : ''}
+
+## Limits found while measuring (manual runs outside this script; the numbers are as observed)
+
+The requested sizes of 10,000 and 50,000 tasks could not be measured, because the KDB store the
+app ships with does not hold them correctly. This is why the table stops at ${sizes[sizes.length - 1]} tasks.
+
+1. **Documents beyond 10,000 per store are invisible, silently.** kdb-service v0.6.2 (the build in the
+   app) caps a non-indexed scan at its first 10,000 documents *before* applying the \`WHERE\`, with no error
+   (this is the defect described in \`kdb/docs/kdb-scan-cap-plan.md\`, fixed on kdb's
+   \`fix/scan-cap-before-filter\`, not in the binary used here). One namespace holds every collection, so
+   tasks, projects, activity entries and users share the 10,000. Observed in the app: 10,000 tasks
+   imported, then \`GET /api/tasks\` reported \`total: 9998\` (the other two slots were the user and the
+   default project), and a task created afterwards was written but could not be read back
+   (\`GET\`/\`PATCH\` of it answered 404, 40 of 40 times). At 2,000, 4,000, 6,000 and 8,000 imported tasks the
+   same create-then-update check passed 40 of 40. The newer kdb behaviour turns the silent truncation into a
+   \`RESOURCE_EXHAUSTED\` error on any result over 10,000 rows, which would fail every list instead.
+   Either way the store's design (every query reads the whole collection and filters in Node, see the comment
+   at the top of \`src/data/kdb/store.ts\`) cannot go past 10,000 documents; it needs the SQL pushdown that
+   file calls \`DATA_KDB_PUSHDOWN\`, or another store.
+2. **Reopening a store costs time quadratic in its size.** Measured against a bare kdb-service (no qtask code),
+   one task per commit, seeded and then restarted with a clean SIGTERM: the first full read after the restart took
+   0.95 s at 1,000 documents, 3.6 s at 2,000, 8.0 s at 3,000 and 53 s at 8,000 (later reads: milliseconds). In
+   the app, the launch on a 10,000-task store took 117 s before the UI appeared (the page's first requests wait for
+   that read), and the kdb client's default 30 s deadline made those first requests fail until the app raised it
+   (\`KDB_REQUEST_TIMEOUT_MS\`, set by \`src/local/entry.ts\`). The \`--maintenance-interval 5s\` flag did not
+   change the 3,000-document result. Extrapolating this to 50,000 would be a guess, so none is given.
+3. Both are in KDB, which this work does not modify; they are reported to its owner with the recipe above
+   (\`SELECT\` after a restart; 12,000 upserts for the cap).
+
 ${sizes.some((s) => r.bySize[s].launchIsFirstAfterImport) ? 'At the largest size only one launch was measured (opening the store takes tens of minutes), so its "launch" rows are the first launch after the bulk import, not a steady-state launch.\n\n' : ''}Helper processes left running after the final quit: ${r.leftoverHelpers}.
 `;
 }

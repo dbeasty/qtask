@@ -1,0 +1,514 @@
+{
+ "machine": {
+  "model": "Mac15,9",
+  "chip": "Apple M3 Max",
+  "cores": 16,
+  "memoryGB": 48,
+  "macos": "26.5.2",
+  "disk": "Internal; Yes;"
+ },
+ "startedAt": "2026-10-11T23:42:22.066Z",
+ "sizes": [
+  1000,
+  4000,
+  8000
+ ],
+ "coldStart": [
+  {
+   "spawnToFirstContentfulPaintMs": 1595,
+   "spawnToShellOnScreenMs": 1620,
+   "spawnToWindowMs": 1113.52,
+   "spawnToBackendReadyMs": 1556.8,
+   "kdbStartMs": 72.9,
+   "nodeStartMs": 285.53,
+   "memoryIdle": {
+    "appMB": 100.61,
+    "nodeMB": 131.34,
+    "kdbMB": 29.38,
+    "webKitMB": 99.52,
+    "webKitProcesses": 3,
+    "totalMB": 360.84,
+    "totalWithoutWebKitMB": 261.33
+   }
+  },
+  {
+   "spawnToFirstContentfulPaintMs": 618,
+   "spawnToShellOnScreenMs": 646,
+   "spawnToWindowMs": 218.3,
+   "spawnToBackendReadyMs": 574.14,
+   "kdbStartMs": 57.18,
+   "nodeStartMs": 229.61,
+   "memoryIdle": {
+    "appMB": 100.23,
+    "nodeMB": 129.11,
+    "kdbMB": 30.59,
+    "webKitMB": 99.16,
+    "webKitProcesses": 3,
+    "totalMB": 359.09,
+    "totalWithoutWebKitMB": 259.94
+   }
+  },
+  {
+   "spawnToFirstContentfulPaintMs": 578,
+   "spawnToShellOnScreenMs": 605,
+   "spawnToWindowMs": 177.66,
+   "spawnToBackendReadyMs": 528.5,
+   "kdbStartMs": 55.44,
+   "nodeStartMs": 227.97,
+   "memoryIdle": {
+    "appMB": 99.67,
+    "nodeMB": 132.34,
+    "kdbMB": 29.98,
+    "webKitMB": 99.88,
+    "webKitProcesses": 3,
+    "totalMB": 361.88,
+    "totalWithoutWebKitMB": 262
+   }
+  },
+  {
+   "spawnToFirstContentfulPaintMs": 739,
+   "spawnToShellOnScreenMs": 794,
+   "spawnToWindowMs": 197.53,
+   "spawnToBackendReadyMs": 694.08,
+   "kdbStartMs": 128.57,
+   "nodeStartMs": 272.54,
+   "memoryIdle": {
+    "appMB": 100.55,
+    "nodeMB": 128.72,
+    "kdbMB": 29.5,
+    "webKitMB": 99.89,
+    "webKitProcesses": 3,
+    "totalMB": 358.66,
+    "totalWithoutWebKitMB": 258.77
+   }
+  },
+  {
+   "spawnToFirstContentfulPaintMs": 610,
+   "spawnToShellOnScreenMs": 660,
+   "spawnToWindowMs": 171.47,
+   "spawnToBackendReadyMs": 549.56,
+   "kdbStartMs": 67.57,
+   "nodeStartMs": 241.38,
+   "memoryIdle": {
+    "appMB": 100.63,
+    "nodeMB": 133.95,
+    "kdbMB": 29.52,
+    "webKitMB": 99.75,
+    "webKitProcesses": 3,
+    "totalMB": 363.84,
+    "totalWithoutWebKitMB": 264.09
+   }
+  }
+ ],
+ "bySize": {
+  "1000": {
+   "tasks": 1000,
+   "samples": {
+    "list": 100,
+    "create": 100,
+    "update": 100,
+    "search": 60,
+    "projects": 50,
+    "deep": 30
+   },
+   "seed": {
+    "seeded": 1000,
+    "seconds": 0.324,
+    "perSecond": 3086
+   },
+   "storeOnDiskMB": 1.07,
+   "launchAfterImport": {
+    "spawnToFirstContentfulPaintMs": 1851,
+    "spawnToShellOnScreenMs": 1873,
+    "spawnToWindowMs": 187.93,
+    "spawnToBackendReadyMs": 563.69,
+    "kdbStartMs": 58.24,
+    "nodeStartMs": 252.79
+   },
+   "launchIsFirstAfterImport": false,
+   "launch": {
+    "spawnToFirstContentfulPaintMs": 1935,
+    "spawnToShellOnScreenMs": 2001,
+    "spawnToWindowMs": 192.13,
+    "spawnToBackendReadyMs": 570.98,
+    "kdbStartMs": 68.79,
+    "nodeStartMs": 247.16,
+    "firstListAfterLaunchMs": 63
+   },
+   "memoryIdle": {
+    "appMB": 100.98,
+    "nodeMB": 241.39,
+    "kdbMB": 41.16,
+    "webKitMB": 124.73,
+    "webKitProcesses": 3,
+    "totalMB": 508.27,
+    "totalWithoutWebKitMB": 383.53
+   },
+   "actualTasksBefore": 1000,
+   "backend": {
+    "list": {
+     "n": 100,
+     "p50": 27.27,
+     "p95": 29.81,
+     "max": 35.86
+    },
+    "listDeepPage": {
+     "n": 30,
+     "p50": 26.42,
+     "p95": 27.63,
+     "max": 28.23
+    },
+    "projects": {
+     "n": 50,
+     "p50": 16.34,
+     "p95": 23.6,
+     "max": 24.02
+    },
+    "create": {
+     "n": 100,
+     "p50": 79.94,
+     "p95": 86.32,
+     "max": 96.15
+    },
+    "update": {
+     "n": 100,
+     "p50": 73.65,
+     "p95": 100.03,
+     "max": 111.07
+    },
+    "search": {
+     "n": 60,
+     "p50": 33.59,
+     "p95": 38.35,
+     "max": 61.95
+    }
+   },
+   "page": {
+    "search": {
+     "n": 60,
+     "p50": 38,
+     "p95": 47,
+     "max": 57
+    },
+    "list": {
+     "n": 100,
+     "p50": 31,
+     "p95": 33,
+     "max": 38
+    },
+    "update": {
+     "n": 100,
+     "p50": 78,
+     "p95": 84,
+     "max": 122
+    },
+    "projects": {
+     "n": 50,
+     "p50": 20,
+     "p95": 22,
+     "max": 27
+    },
+    "create": {
+     "n": 100,
+     "p50": 89,
+     "p95": 97,
+     "max": 100
+    }
+   },
+   "memoryAfterLoad": {
+    "appMB": 95.16,
+    "nodeMB": 432.52,
+    "kdbMB": 51.3,
+    "webKitMB": 126.28,
+    "webKitProcesses": 3,
+    "totalMB": 705.25,
+    "totalWithoutWebKitMB": 578.97
+   },
+   "actualTasksAfter": 1200,
+   "quitMs": 308,
+   "quitExitCode": 0,
+   "relaunchAfterUse": {
+    "spawnToFirstContentfulPaintMs": 6299,
+    "spawnToShellOnScreenMs": 6330,
+    "spawnToWindowMs": 211.12,
+    "spawnToBackendReadyMs": 907.99,
+    "kdbStartMs": 132.44,
+    "nodeStartMs": 465.06
+   }
+  },
+  "4000": {
+   "tasks": 4000,
+   "samples": {
+    "list": 100,
+    "create": 100,
+    "update": 100,
+    "search": 60,
+    "projects": 50,
+    "deep": 30
+   },
+   "seed": {
+    "seeded": 2800,
+    "seconds": 1.977,
+    "perSecond": 1416
+   },
+   "storeOnDiskMB": 6.1,
+   "launchAfterImport": {
+    "spawnToFirstContentfulPaintMs": 19253,
+    "spawnToShellOnScreenMs": 19271,
+    "spawnToWindowMs": 198.48,
+    "spawnToBackendReadyMs": 682.35,
+    "kdbStartMs": 147.22,
+    "nodeStartMs": 262.45
+   },
+   "launchIsFirstAfterImport": false,
+   "launch": {
+    "spawnToFirstContentfulPaintMs": 25710,
+    "spawnToShellOnScreenMs": 25917,
+    "spawnToWindowMs": 209.86,
+    "spawnToBackendReadyMs": 723.25,
+    "kdbStartMs": 148.38,
+    "nodeStartMs": 254.15,
+    "firstListAfterLaunchMs": 310
+   },
+   "memoryIdle": {
+    "appMB": 81.89,
+    "nodeMB": 639.53,
+    "kdbMB": 66.33,
+    "webKitMB": 84.88,
+    "webKitProcesses": 3,
+    "totalMB": 872.63,
+    "totalWithoutWebKitMB": 787.75
+   },
+   "actualTasksBefore": 4000,
+   "backend": {
+    "list": {
+     "n": 100,
+     "p50": 112.67,
+     "p95": 247.18,
+     "max": 277.23
+    },
+    "listDeepPage": {
+     "n": 30,
+     "p50": 108.77,
+     "p95": 130.49,
+     "max": 134.73
+    },
+    "projects": {
+     "n": 50,
+     "p50": 56.91,
+     "p95": 62.54,
+     "max": 65.32
+    },
+    "create": {
+     "n": 100,
+     "p50": 254.05,
+     "p95": 277.94,
+     "max": 305.79
+    },
+    "update": {
+     "n": 100,
+     "p50": 207.51,
+     "p95": 230.6,
+     "max": 236.4
+    },
+    "search": {
+     "n": 60,
+     "p50": 120.42,
+     "p95": 138.89,
+     "max": 145.16
+    }
+   },
+   "page": {
+    "search": {
+     "n": 60,
+     "p50": 127,
+     "p95": 153,
+     "max": 199
+    },
+    "list": {
+     "n": 100,
+     "p50": 114,
+     "p95": 138,
+     "max": 140
+    },
+    "update": {
+     "n": 100,
+     "p50": 226,
+     "p95": 255,
+     "max": 291
+    },
+    "projects": {
+     "n": 50,
+     "p50": 61,
+     "p95": 70,
+     "max": 71
+    },
+    "create": {
+     "n": 100,
+     "p50": 272,
+     "p95": 296,
+     "max": 322
+    }
+   },
+   "memoryAfterLoad": {
+    "appMB": 87.45,
+    "nodeMB": 862.69,
+    "kdbMB": 74.11,
+    "webKitMB": 174.88,
+    "webKitProcesses": 3,
+    "totalMB": 1199.13,
+    "totalWithoutWebKitMB": 1024.25
+   },
+   "actualTasksAfter": 4200,
+   "quitMs": 279,
+   "quitExitCode": 0,
+   "relaunchAfterUse": {
+    "spawnToFirstContentfulPaintMs": 30887,
+    "spawnToShellOnScreenMs": 30935,
+    "spawnToWindowMs": 202.47,
+    "spawnToBackendReadyMs": 691.93,
+    "kdbStartMs": 162.28,
+    "nodeStartMs": 228.27
+   }
+  },
+  "8000": {
+   "tasks": 8000,
+   "samples": {
+    "list": 100,
+    "create": 100,
+    "update": 100,
+    "search": 60,
+    "projects": 50,
+    "deep": 30
+   },
+   "seed": {
+    "seeded": 3800,
+    "seconds": 2.8,
+    "perSecond": 1357
+   },
+   "storeOnDiskMB": 11.68,
+   "launchAfterImport": {
+    "spawnToFirstContentfulPaintMs": 92511,
+    "spawnToShellOnScreenMs": 92554,
+    "spawnToWindowMs": 200.29,
+    "spawnToBackendReadyMs": 725.96,
+    "kdbStartMs": 217.95,
+    "nodeStartMs": 229.98
+   },
+   "launchIsFirstAfterImport": false,
+   "launch": {
+    "spawnToFirstContentfulPaintMs": 92945,
+    "spawnToShellOnScreenMs": 92978,
+    "spawnToWindowMs": 204.85,
+    "spawnToBackendReadyMs": 723.12,
+    "kdbStartMs": 220.25,
+    "nodeStartMs": 227.98,
+    "firstListAfterLaunchMs": 701
+   },
+   "memoryIdle": {
+    "appMB": 101.86,
+    "nodeMB": 872.8,
+    "kdbMB": 113.63,
+    "webKitMB": 100.06,
+    "webKitProcesses": 3,
+    "totalMB": 1188.34,
+    "totalWithoutWebKitMB": 1088.28
+   },
+   "actualTasksBefore": 8000,
+   "backend": {
+    "list": {
+     "n": 100,
+     "p50": 231.58,
+     "p95": 578.27,
+     "max": 607.67
+    },
+    "listDeepPage": {
+     "n": 30,
+     "p50": 229.16,
+     "p95": 258.95,
+     "max": 266.14
+    },
+    "projects": {
+     "n": 50,
+     "p50": 108.98,
+     "p95": 120.48,
+     "max": 125.88
+    },
+    "create": {
+     "n": 100,
+     "p50": 512.37,
+     "p95": 542.78,
+     "max": 559.41
+    },
+    "update": {
+     "n": 100,
+     "p50": 415.3,
+     "p95": 439.33,
+     "max": 451.99
+    },
+    "search": {
+     "n": 60,
+     "p50": 248.38,
+     "p95": 267.56,
+     "max": 270.44
+    }
+   },
+   "page": {
+    "search": {
+     "n": 60,
+     "p50": 253,
+     "p95": 271,
+     "max": 420
+    },
+    "list": {
+     "n": 100,
+     "p50": 239,
+     "p95": 271,
+     "max": 276
+    },
+    "update": {
+     "n": 100,
+     "p50": 421,
+     "p95": 451,
+     "max": 468
+    },
+    "projects": {
+     "n": 50,
+     "p50": 117,
+     "p95": 128,
+     "max": 129
+    },
+    "create": {
+     "n": 100,
+     "p50": 530,
+     "p95": 565,
+     "max": 898
+    }
+   },
+   "memoryAfterLoad": {
+    "appMB": 102.31,
+    "nodeMB": 2044.81,
+    "kdbMB": 116.14,
+    "webKitMB": 287.17,
+    "webKitProcesses": 3,
+    "totalMB": 2550.44,
+    "totalWithoutWebKitMB": 2263.27
+   },
+   "actualTasksAfter": 8200,
+   "quitMs": 715,
+   "quitExitCode": 0,
+   "relaunchAfterUse": {
+    "spawnToFirstContentfulPaintMs": 111932,
+    "spawnToShellOnScreenMs": 111966,
+    "spawnToWindowMs": 192.01,
+    "spawnToBackendReadyMs": 744.17,
+    "kdbStartMs": 247.49,
+    "nodeStartMs": 230.44
+   }
+  }
+ },
+ "versions": "node:        v22.0.0 (/Users/davidj/.gradle/nodejs/node-v22.0.0-darwin-arm64/bin/node)\nkdb-service: 0.6.2 (commit b039218-dirty, built 2026-10-11T22:37:28Z, go1.26.3 darwin/arm64) (/Users/davidj/devel/kdb/go/bin/kdb-service)\nkdb-client:  /Users/davidj/devel/kdb/packages/kdb-client/src/index.ts\nkdb commit:  37d7f98ce6c1 \nqtask:       0.1.61 ff4fd596e3ee-dirty\n",
+ "appSizeMB": 153.87,
+ "leftoverHelpers": 0,
+ "finishedAt": "2026-10-11T23:57:35.687Z"
+}

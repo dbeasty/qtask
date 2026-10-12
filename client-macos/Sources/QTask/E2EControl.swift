@@ -68,8 +68,8 @@ import WebKit
     }
 
     private func watchdog(_ n: Int) {
-      DispatchQueue.main.asyncAfter(deadline: .now() + 180) {
-        self.answer(n, .failure(E2EError("no answer in 180 s")))
+      DispatchQueue.main.asyncAfter(deadline: .now() + 3600) {
+        self.answer(n, .failure(E2EError("no answer in 3600 s")))
       }
     }
 
