@@ -9,20 +9,16 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 
-const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../kdb');
-const CLIENT_MODULE = process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
 const PORT = Number(process.env.KDB_TEST_PORT_PUSHDOWN ?? 7812);
-const skip = !existsSync(SERVICE_BIN) || !existsSync(CLIENT_MODULE) ? `kdb not available at ${KDB_ROOT}` : undefined;
+const skip = kdbUnavailable;
 
 import { buildWhere } from '../src/data/kdb/pushdown.ts';
 import { matchesFilter } from '../src/data/query/filter.ts';

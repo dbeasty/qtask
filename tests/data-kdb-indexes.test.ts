@@ -9,18 +9,14 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 
-const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../kdb');
-const CLIENT_MODULE = process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
 const PORT = Number(process.env.KDB_TEST_PORT_INDEXES ?? 7920);
 const NS = 'qtaskidx/docs';
 // Config is read once, when the store module is first imported - which the first describe does -
@@ -31,7 +27,7 @@ process.env.DATA_KDB_PUSHDOWN = 'true';
 process.env.KDB_CLIENT_MODULE = CLIENT_MODULE;
 process.env.KDB_ADDR = `tcp://127.0.0.1:${PORT}`;
 process.env.KDB_NAMESPACE_PREFIX = NS;
-const skip = !existsSync(SERVICE_BIN) || !existsSync(CLIENT_MODULE) ? `kdb not available at ${KDB_ROOT}` : undefined;
+const skip = kdbUnavailable;
 
 import { matchesFilter } from '../src/data/query/filter.ts';
 import type { Collection, DataStore, Doc, Filter } from '../src/data/types.ts';

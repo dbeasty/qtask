@@ -16,9 +16,8 @@
 import { after, before, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { resolve } from 'node:path';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 
 import type { DataStore, Doc } from '../src/data/types.ts';
@@ -27,16 +26,10 @@ import type { ShadowDataStore } from '../src/data/shadow/store.ts';
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 
-const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../kdb');
-const CLIENT_MODULE =
-  process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
 const PORT = Number(process.env.KDB_SHADOW_TEST_PORT ?? 7813);
 
 function unavailable(): string | undefined {
-  if (!existsSync(SERVICE_BIN)) return `kdb-service not built at ${SERVICE_BIN}`;
-  if (!existsSync(CLIENT_MODULE)) return `@kdb/client not found at ${CLIENT_MODULE}`;
-  return undefined;
+  return kdbUnavailable;
 }
 
 let mongo: MongoMemoryServer;

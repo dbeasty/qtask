@@ -8,29 +8,20 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { resolve } from 'node:path';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 import { runDataStoreConformance } from './helpers/dataStoreSpec.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 
 // Defaults assume kdb is checked out beside qtask, which is how it is developed.
-// Both are overridable, and the suite skips with a reason when neither resolves —
-// CI without a kdb checkout reports "skipped", not a failure.
-const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../kdb');
-const CLIENT_MODULE =
-  process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
 const PORT = Number(process.env.KDB_TEST_PORT ?? 7811);
 
 let service: ChildProcess | undefined;
 
 function unavailable(): string | undefined {
-  if (!existsSync(SERVICE_BIN)) return `kdb-service not built at ${SERVICE_BIN}`;
-  if (!existsSync(CLIENT_MODULE)) return `@kdb/client not found at ${CLIENT_MODULE}`;
-  return undefined;
+  return kdbUnavailable;
 }
 
 runDataStoreConformance({

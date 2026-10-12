@@ -29,22 +29,17 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { connect, createServer } from 'node:net';
-import { resolve } from 'node:path';
 import mongoose from 'mongoose';
 import { after } from 'node:test';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './kdbRelease.ts';
 import { installMongooseOnDataLayer } from './mongooseOnDataLayer.ts';
 
 // The test runner's parent process receives the same --import flags as its children but runs
 // no tests; it must not start a server (nor wait on one).
 const MODE = process.env.QTASK_TEST_BACKEND;
 if ((MODE === 'kdb' || MODE === 'shadow') && !process.execArgv.includes('--test')) {
-  const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../../kdb');
-  const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
-  const CLIENT_MODULE = process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-  if (!existsSync(SERVICE_BIN)) throw new Error(`QTASK_TEST_BACKEND=${MODE}: no kdb-service at ${SERVICE_BIN} (set KDB_ROOT or KDB_SERVICE_BIN)`);
-  if (!existsSync(CLIENT_MODULE)) throw new Error(`QTASK_TEST_BACKEND=${MODE}: no @kdb/client at ${CLIENT_MODULE} (set KDB_CLIENT_MODULE)`);
+  if (kdbUnavailable) throw new Error(`QTASK_TEST_BACKEND=${MODE}: ${kdbUnavailable}`);
 
   const port = await freePort();
   const namespace = `qtask/e2e${process.pid}`;
@@ -53,7 +48,6 @@ if ((MODE === 'kdb' || MODE === 'shadow') && !process.execArgv.includes('--test'
     [
       '--memory',
       '--namespace', namespace,
-      // v0.6.2 binds these by default; a second instance on the host would not start.
       '--peer-addr', '',
       '--stream-addr', '',
       '--sql-addr', `tcp://127.0.0.1:${port}?bind=true`,
