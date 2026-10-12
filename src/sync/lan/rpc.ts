@@ -140,7 +140,7 @@ export class LinkRpc implements SyncTransport {
   }
 }
 
-interface SyncServiceLike {
+export interface SyncServiceLike {
   hello(req: HelloRequest): Promise<HelloResponse>;
   pull(req: PullRequest): Promise<PullResponse>;
   push(req: PushRequest): Promise<PushResponse>;
@@ -164,6 +164,14 @@ export interface LanSyncOptions {
   passiveFallbackMs?: number;
   /** Timer source for the passive fallback (virtual time in tests). Default: real timers. */
   timers?: { setTimeout(fn: () => void, ms: number): unknown };
+  /**
+   * What answers the peer's requests. Default: `engine.service()` (fully trusted). A
+   * host can wrap it, for example to exchange extra hello fields or to persist state
+   * before an answer leaves the device.
+   */
+  service?: SyncServiceLike;
+  /** Wraps the client side of each link before the engine uses it (same purpose as `service`). */
+  wrapTransport?: (rpc: SyncTransport, link: SyncPeerLink) => SyncTransport;
 }
 
 /**
@@ -173,6 +181,8 @@ export interface LanSyncOptions {
  */
 export class LanSyncCoordinator {
   private readonly rpcs = new Map<string, LinkRpc>();
+  private readonly clients = new Map<string, SyncTransport>();
+  private readonly linkKinds = new Map<string, SyncPeerLink['transport']>();
   private readonly running = new Map<string, Promise<void>>();
   private readonly again = new Set<string>();
   private stopped = false;
@@ -186,7 +196,7 @@ export class LanSyncCoordinator {
 
   start(): void {
     this.transport.onPeerUp((link) => {
-      const rpc = new LinkRpc(link, this.engine.service(), {
+      const rpc = new LinkRpc(link, this.options.service ?? this.engine.service(), {
         onServed: (op) => {
           this.served.add(link.peerId);
           // A peer pushed us changes: relay them to everyone else.
@@ -194,6 +204,8 @@ export class LanSyncCoordinator {
         },
       });
       this.rpcs.set(link.peerId, rpc);
+      this.clients.set(link.peerId, this.options.wrapTransport ? this.options.wrapTransport(rpc, link) : rpc);
+      this.linkKinds.set(link.peerId, link.transport);
       this.served.delete(link.peerId);
       if (this.options.shouldInitiate && !this.options.shouldInitiate(link)) {
         // The peer is expected to start the round; do it ourselves only if it never does.
@@ -210,11 +222,23 @@ export class LanSyncCoordinator {
     });
     this.transport.onPeerDown((peerId) => {
       this.rpcs.delete(peerId);
+      this.clients.delete(peerId);
+      this.linkKinds.delete(peerId);
     });
   }
 
   stop(): void {
     this.stopped = true;
+  }
+
+  /** Peers with a live link, and the kind of link the coordinator is using for each. */
+  connected(): Array<{ peerId: string; transport: SyncPeerLink['transport'] }> {
+    return [...this.rpcs.keys()].map((peerId) => ({ peerId, transport: this.linkKinds.get(peerId)! }));
+  }
+
+  /** Syncs with one peer now (if it is connected). */
+  syncWithPeer(peerId: string): Promise<void> {
+    return this.syncPeer(peerId);
   }
 
   /** Call after local writes. Resolves when every peer round has finished. */
@@ -235,7 +259,7 @@ export class LanSyncCoordinator {
     const run = (async () => {
       do {
         this.again.delete(peerId);
-        const rpc = this.rpcs.get(peerId);
+        const rpc = this.clients.get(peerId);
         if (!rpc || this.stopped) return;
         try {
           const result = await this.engine.syncWith(rpc, { headersFirst: this.options.headersFirst !== false });

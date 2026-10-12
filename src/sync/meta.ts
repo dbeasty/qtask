@@ -175,6 +175,14 @@ export class MemoryMetaStore implements MetaStore {
 
   markDirty(key: string, at: number = Date.now()): void {
     this.dirty.set(key, at);
+    this.onDirty?.(key);
+  }
+
+  private onDirty?: (key: string) => void;
+
+  /** Called whenever a write marks a document dirty (used to schedule a sync after local writes). */
+  setDirtyListener(listener: ((key: string) => void) | undefined): void {
+    this.onDirty = listener;
   }
 
   takeDirty(): Array<[string, number]> {
@@ -294,22 +302,39 @@ export class MemoryMetaStore implements MetaStore {
 /**
  * Debounced JSON persistence for a MemoryMetaStore. The write is atomic (temp file +
  * rename), so a crash leaves the previous snapshot rather than a torn one.
+ *
+ * With `durable` the temp file and the directory are fsynced around the rename, so a
+ * snapshot that `flush()` reported as written survives power loss and `kill -9`, not
+ * just a clean exit. A device that tells a peer about a record (a pull answer, a push)
+ * must flush first: otherwise a crash could roll back its change sequence below a
+ * cursor the peer already holds, or forget a record whose tombstone the peer needs.
+ * `flushIfChanged()` is the cheap form of that: it writes only when something changed
+ * since the last write.
  */
 export class FileMetaPersistence {
   private timer?: NodeJS.Timeout;
   private writing: Promise<void> = Promise.resolve();
+  /** Bumped on every change notification; `written` is the generation last persisted. */
+  private generation = 0;
+  private written = 0;
+  /** Snapshots written, for tests and measurements. */
+  writes = 0;
 
   constructor(
     private readonly meta: MemoryMetaStore,
     private readonly path: string,
-    private readonly debounceMs = 1000
+    private readonly debounceMs = 1000,
+    private readonly durable = false
   ) {
-    meta.setChangeListener(() => this.schedule());
+    meta.setChangeListener(() => {
+      this.generation += 1;
+      this.schedule();
+    });
   }
 
   static async open(
     path: string,
-    options: { nodeId?: string; debounceMs?: number } = {}
+    options: { nodeId?: string; debounceMs?: number; durable?: boolean } = {}
   ): Promise<{ meta: MemoryMetaStore; persistence: FileMetaPersistence }> {
     let meta: MemoryMetaStore;
     try {
@@ -319,16 +344,27 @@ export class FileMetaPersistence {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       meta = new MemoryMetaStore({ nodeId: options.nodeId });
     }
-    return { meta, persistence: new FileMetaPersistence(meta, path, options.debounceMs) };
+    return { meta, persistence: new FileMetaPersistence(meta, path, options.debounceMs, options.durable) };
   }
 
   private schedule(): void {
     if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.flush();
+      void this.flush().catch(() => undefined);
     }, this.debounceMs);
     this.timer.unref();
+  }
+
+  /** True when there are changes not yet written. */
+  get pending(): boolean {
+    return this.generation !== this.written;
+  }
+
+  /** Writes only if something changed since the last write (or a write is in flight). */
+  async flushIfChanged(): Promise<void> {
+    if (this.pending) await this.flush();
+    else await this.writing;
   }
 
   async flush(): Promise<void> {
@@ -336,12 +372,34 @@ export class FileMetaPersistence {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
+    const generation = this.generation;
     const body = JSON.stringify(this.meta.snapshot());
     this.writing = this.writing.then(async () => {
       await fs.mkdir(dirname(this.path), { recursive: true });
       const tmp = `${this.path}.${process.pid}.tmp`;
-      await fs.writeFile(tmp, body);
-      await fs.rename(tmp, this.path);
+      if (this.durable) {
+        const handle = await fs.open(tmp, 'w', 0o600);
+        try {
+          await handle.writeFile(body);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await fs.rename(tmp, this.path);
+        const dir = await fs.open(dirname(this.path), 'r');
+        try {
+          await dir.sync();
+        } catch {
+          // Some file systems refuse fsync on a directory; the rename is still atomic.
+        } finally {
+          await dir.close();
+        }
+      } else {
+        await fs.writeFile(tmp, body);
+        await fs.rename(tmp, this.path);
+      }
+      this.writes += 1;
+      if (generation > this.written) this.written = generation;
     });
     await this.writing;
   }
