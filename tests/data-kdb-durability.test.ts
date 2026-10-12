@@ -126,6 +126,41 @@ describe('KDB durability across a hard kill', { skip }, () => {
     );
   });
 
+  it('keeps its lookup indexes across a hard kill, and they still answer correctly', async () => {
+    const store = await openStore();
+    const tasks = store.collection('tasks');
+    for (let i = 0; i < 40; i++) await tasks.create({ userId: `idx-u${i % 4}`, title: `indexed-${i}`, status: 'todo', projectIds: i % 2 ? ['px'] : [] });
+    const expected = (await tasks.find({ userId: 'idx-u1' })).length;
+    assert.equal(expected, 10);
+
+    await hardKill();
+    await start();
+    const after = await openStore(); // declares them again; a restored index makes that a no-op
+
+    // The server's own answer to "is it there": stating it again is refused as a repeat.
+    const { declaredIndexes } = await import('../src/data/kdb/store.ts');
+    const raw = (await import(CLIENT_MODULE)) as { connect(a: string, t: string): Promise<{ exec(ns: string, sql: string): Promise<void>; close(): Promise<void> }> };
+    const client = await raw.connect(process.env.KDB_ADDR!, '');
+    try {
+      for (const [path, kind] of declaredIndexes()) {
+        await assert.rejects(
+          client.exec(NS, `CREATE INDEX qtask_i_${path.replace(/[^A-Za-z0-9_]/g, '_')} ON docs (${path}) USING ${kind}`),
+          /already registered/,
+          `${path} should have survived the restart`
+        );
+      }
+    } finally {
+      await client.close();
+    }
+
+    const reread = after.collection('tasks');
+    assert.equal((await reread.find({ userId: 'idx-u1' })).length, expected);
+    assert.equal((await reread.find({ projectIds: 'px' })).length, 20);
+    // ...and the restored index is kept up to date by writes after the restart.
+    await reread.create({ userId: 'idx-u1', title: 'after restart', status: 'todo' });
+    assert.equal((await reread.find({ userId: 'idx-u1' })).length, expected + 1);
+  });
+
   it('keeps expiring documents after a restart', async () => {
     const store = await openStore();
     const codes = store.collection('userOAuthAuthCodes');
