@@ -129,32 +129,37 @@ export class SimClock implements Timers {
     return a.at < b.at || (a.at === b.at && a.seq < b.seq);
   }
 
-  private pop(): Ev | undefined {
+  private popRaw(): Ev | undefined {
     const h = this.heap;
-    while (h.length) {
-      const top = h[0]!;
-      const last = h.pop()!;
-      if (h.length) {
-        h[0] = last;
-        let i = 0;
-        for (;;) {
-          const l = 2 * i + 1;
-          const r = l + 1;
-          let m = i;
-          if (l < h.length && this.less(h[l]!, h[m]!)) m = l;
-          if (r < h.length && this.less(h[r]!, h[m]!)) m = r;
-          if (m === i) break;
-          [h[m], h[i]] = [h[i]!, h[m]!];
-          i = m;
-        }
+    if (!h.length) return undefined;
+    const top = h[0]!;
+    const last = h.pop()!;
+    if (h.length) {
+      h[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < h.length && this.less(h[l]!, h[m]!)) m = l;
+        if (r < h.length && this.less(h[r]!, h[m]!)) m = r;
+        if (m === i) break;
+        [h[m], h[i]] = [h[i]!, h[m]!];
+        i = m;
       }
-      if (!top.cancelled) return top;
     }
-    return undefined;
+    return top;
+  }
+
+  private pop(): Ev | undefined {
+    for (;;) {
+      const e = this.popRaw();
+      if (!e || !e.cancelled) return e;
+    }
   }
 
   private peek(): Ev | undefined {
-    while (this.heap.length && this.heap[0]!.cancelled) this.pop();
+    while (this.heap.length && this.heap[0]!.cancelled) this.popRaw();
     return this.heap[0];
   }
 
@@ -271,7 +276,7 @@ class SimConnection {
     c2p: { freeAt: 0, queued: 0, writable: [] },
     p2c: { freeAt: 0, queued: 0, writable: [] },
   };
-  readonly stats = { c2pBytes: 0, p2cBytes: 0, c2pChunks: 0, p2cChunks: 0, dropped: 0 };
+  readonly stats = { c2pBytes: 0, p2cBytes: 0, c2pChunks: 0, p2cChunks: 0, dropped: 0, refused: 0 };
   central!: SimEndpoint;
   peripheral!: SimEndpoint;
   constructor(
@@ -332,7 +337,10 @@ class SimEndpoint implements GattLink {
     if (chunk.length < 1 || chunk.length > this.maxChunk) throw new Error(`chunk of ${chunk.length} bytes exceeds ${this.maxChunk}`);
     const d = this.out;
     const p = c.params;
-    if (d.queued >= p.txQueue) return false;
+    if (d.queued >= p.txQueue) {
+      c.stats.refused++;
+      return false;
+    }
     const clock = c.world.clock;
     const now = clock.now();
     d.queued++;
@@ -712,21 +720,18 @@ export class SimWorld {
   }
 
   /** Bytes and chunks that crossed the air, all connections, both directions (live and closed ones are summed by the caller if needed). */
-  airStats(): { bytes: number; chunks: number; dropped: number } {
+  airStats(): { bytes: number; chunks: number; dropped: number; refused: number } {
     let bytes = 0;
     let chunks = 0;
     let dropped = 0;
-    for (const s of this.closedStats) {
+    let refused = 0;
+    for (const s of [...this.closedStats, ...[...this.connections].map((c) => c.stats)]) {
       bytes += s.c2pBytes + s.p2cBytes;
       chunks += s.c2pChunks + s.p2cChunks;
       dropped += s.dropped;
+      refused += s.refused;
     }
-    for (const c of this.connections) {
-      bytes += c.stats.c2pBytes + c.stats.p2cBytes;
-      chunks += c.stats.c2pChunks + c.stats.p2cChunks;
-      dropped += c.stats.dropped;
-    }
-    return { bytes, chunks, dropped };
+    return { bytes, chunks, dropped, refused };
   }
   private closedStats: SimConnection['stats'][] = [];
 }

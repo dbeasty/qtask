@@ -229,13 +229,26 @@ export class PeerStore {
     const p = this.ingest(rec);
     if (!p) throw new Error('invalid pairing record');
     await this.persist();
+    this.notify();
     return p;
   }
 
   async remove(nodeId: string): Promise<boolean> {
     const had = this.peers.delete(nodeId);
-    if (had) await this.persist();
+    if (had) {
+      await this.persist();
+      this.notify();
+    }
     return had;
+  }
+
+  private listeners: Array<() => void> = [];
+  /** Called after a peer was added or removed, by whichever transport did it. */
+  onChange(h: () => void): void {
+    this.listeners.push(h);
+  }
+  private notify(): void {
+    for (const h of this.listeners) h();
   }
 
   get(nodeId: string): PairedPeer | undefined {

@@ -72,6 +72,8 @@ export interface BleTransportOptions {
   keepAliveMs?: number;
   /** Restart the scan this often while a paired peer is missing (OS scans report each device once per session). */
   rescanMs?: number;
+  /** A higher node id waits this long before dialing a device it knows, so the lower id connects first. */
+  higherIdDelayMs?: number;
   /** After reading a device that is not a paired peer, leave it alone for this long. */
   unpairedIgnoreMs?: number;
   /** Unauthenticated inbound connections allowed at once. */
@@ -277,6 +279,11 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
       onSecurity: (e) => this.emit('security', e satisfies BleSecurityEvent),
       allow: (id) => !this.suppressed.has(id),
     };
+    // A device paired over Wi-Fi (or unpaired) changes who we look for.
+    o.peers.onChange(() => {
+      for (const [id, l] of [...this.live]) if (!o.peers.get(id)) l.close();
+      this.updateScan();
+    });
   }
 
   get self(): DeviceInfo {
@@ -421,8 +428,15 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
   private enqueue(deviceId: string): void {
     if (this.queued.has(deviceId)) return;
     this.queued.add(deviceId);
-    this.queue.push(deviceId);
-    void this.drain();
+    // Two devices that see each other at the same moment would both connect. A short random
+    // pause (and a longer one for the higher node id when we know whom the device is) makes
+    // one side win; if both still connect, `register` keeps the lower initiator's link.
+    const known = this.byDevice.get(deviceId);
+    const delay = Math.random() * 300 + (known && this.self.nodeId > known ? this.o.higherIdDelayMs ?? 1500 : 0);
+    this.timers.setTimeout(() => {
+      this.queue.push(deviceId);
+      void this.drain();
+    }, delay);
   }
 
   /** One outbound connection at a time: connection setup is the radio's scarcest operation. */
@@ -433,6 +447,8 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
       while (this.queue.length && this.started) {
         const id = this.queue.shift()!;
         this.queued.delete(id);
+        const peerId = this.byDevice.get(id);
+        if (!this.locator && peerId && (this.live.has(peerId) || this.suppressed.has(peerId))) continue;
         try {
           await this.tryDevice(id);
         } catch (e) {
