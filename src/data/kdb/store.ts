@@ -61,6 +61,15 @@ interface KdbClient {
   exec(ns: string, sql: string, args?: unknown[]): Promise<void>;
   /** Keyed read. Rejects with an error named KdbNotFoundError when there is no such document. */
   get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
+  /** Keyed read plus the content hash a conditional write compares against. */
+  getWithHash(ns: string, docId: string): Promise<{ body: unknown; contentHash: string }>;
+  /** Wholesale replacement: keys the new body omits are gone, in one commit. */
+  replace(ns: string, docId: string, body: unknown): Promise<string>;
+  /** Wholesale replacement that the server applies only if the document still hashes to
+   *  `expectedContentHash`; otherwise it rejects with an error named KdbPreconditionError. */
+  replaceIf(ns: string, docId: string, body: unknown, expectedContentHash: string): Promise<string>;
+  /** Keyed delete: a commit, not a scan, so it is not bounded by anything about the namespace. */
+  delete(ns: string, docId: string): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -91,6 +100,18 @@ class SerializedDmlClient implements KdbClient {
   }
   get(ns: string, docId: string) {
     return this.inner.get(ns, docId);
+  }
+  getWithHash(ns: string, docId: string) {
+    return this.inner.getWithHash(ns, docId);
+  }
+  replace(ns: string, docId: string, body: unknown) {
+    return this.inner.replace(ns, docId, body);
+  }
+  replaceIf(ns: string, docId: string, body: unknown, expectedContentHash: string) {
+    return this.inner.replaceIf(ns, docId, body, expectedContentHash);
+  }
+  delete(ns: string, docId: string) {
+    return this.inner.delete(ns, docId);
   }
   close(): Promise<void> {
     return this.inner.close();
@@ -227,6 +248,9 @@ async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
  *  retry means another writer changed the candidate away from the filter, so the answer is
  *  almost always "nothing matches any more" within one or two. */
 const MAX_CLAIM_ATTEMPTS = 8;
+
+/** Re-reads allowed when the server rejects a conditional write because the document changed. */
+const MAX_PRECONDITION_RETRIES = 25;
 
 class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private readonly unique: Array<{ fields: string[]; sparse: boolean }>;
@@ -392,7 +416,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         }
         return { matched: 0, modified: 0 };
       }
-      const claimed = await this.claim(candidate._id as string, filter, (fresh) => this.applyToDocument(fresh, update, filter));
+      const claimed = await this.claim(candidate._id as string, filter, (fresh, guard) => this.applyToDocument(fresh, update, filter, guard));
       if (claimed.hit) return { matched: 1, modified: claimed.value.changed ? 1 : 0 };
     }
     return { matched: 0, modified: 0 };
@@ -403,7 +427,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     let matched = 0;
     let modified = 0;
     for (const target of targets) {
-      const claimed = await this.claim(target._id as string, filter, (fresh) => this.applyToDocument(fresh, update, filter));
+      const claimed = await this.claim(target._id as string, filter, (fresh, guard) => this.applyToDocument(fresh, update, filter, guard));
       if (!claimed.hit) continue;
       matched++;
       if (claimed.value.changed) modified++;
@@ -419,9 +443,9 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         const created = await this.upsertFrom(filter, update);
         return options.returnDocument === 'before' ? null : (created as T);
       }
-      const claimed = await this.claim(candidate._id as string, filter, async (fresh) => {
+      const claimed = await this.claim(candidate._id as string, filter, async (fresh, guard) => {
         const before = structuredCloneDoc(fresh);
-        const { doc } = await this.applyToDocument(fresh, update, filter);
+        const { doc } = await this.applyToDocument(fresh, update, filter, guard);
         return options.returnDocument === 'before' ? (before as T) : (doc as T);
       });
       if (claimed.hit) return claimed.value;
@@ -437,7 +461,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter);
       if (!candidate) return { matched: 0, modified: 0 };
-      const claimed = await this.claim(candidate._id as string, filter, async (target) => {
+      const claimed = await this.claim(candidate._id as string, filter, async (target, guard) => {
         const { _id: _ignored, ...body } = doc;
         const replacement = normalizeDocument(this.schema, body, { isCreate: true });
         replacement._id = target._id;
@@ -445,7 +469,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         const stamped = touchUpdatedAt(this.schema, replacement);
 
         await this.assertUnique(stamped, target._id as string);
-        await this.writeDocument(stamped, target);
+        await this.writeDocument(stamped, target, guard);
       });
       if (claimed.hit) return { matched: 1, modified: 1 };
     }
@@ -509,9 +533,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   async importDocument(doc: Doc): Promise<void> {
     if (typeof doc._id !== 'string') throw new Error(`${this.name}: cannot import a document without a string _id`);
-    // Keyed, so a bulk copy neither scans per document nor hits the scan cap.
-    const previous = await this.fetchById(doc._id);
-    await this.writeDocument(doc, previous);
+    // A wholesale replace: idempotent, drops stale keys from an earlier copy, and needs no read.
+    await this.writeDocument(doc, null);
   }
 
   // --- write helpers -------------------------------------------------------------
@@ -528,20 +551,48 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    * somebody changed or removed it between the caller finding it and now - the caller looks
    * again rather than acting on a stale reading.
    */
-  private claim<R>(id: string, filter: Filter, fn: (fresh: T) => Promise<R>): Promise<{ hit: true; value: R } | { hit: false }> {
+  private claim<R>(
+    id: string,
+    filter: Filter,
+    fn: (fresh: T, guard: { hash: string }) => Promise<R>
+  ): Promise<{ hit: true; value: R } | { hit: false }> {
     return this.guardUnique(() =>
       withLock(`${this.namespace}/${this.name}/${id}`, async () => {
-        const fresh = await this.fetchById(id);
-        if (!fresh || !matchesFilter(fresh, filter)) return { hit: false as const };
-        return { hit: true as const, value: await fn(fresh) };
+        // The lock orders writers within this process; the guard makes the server refuse a write
+        // based on a stale reading, which is what covers a second process. A refusal means the
+        // document moved under us, so read it again and re-check the filter.
+        for (let attempt = 0; attempt < MAX_PRECONDITION_RETRIES; attempt++) {
+          const read = await this.fetchWithHash(id);
+          if (!read || !matchesFilter(read.doc, filter)) return { hit: false as const };
+          try {
+            return { hit: true as const, value: await fn(read.doc, { hash: read.hash }) };
+          } catch (error) {
+            if ((error as Error).constructor.name !== 'KdbPreconditionError') throw error;
+          }
+        }
+        throw new Error(`${this.name}: ${id} kept changing under a conditional write; gave up after ${MAX_PRECONDITION_RETRIES} attempts`);
       })
     );
+  }
+
+  /** One document and the content hash a conditional write must quote, or null when absent
+   *  or belonging to another collection. */
+  private async fetchWithHash(id: string): Promise<{ doc: T; hash: string } | null> {
+    let read: { body: unknown; contentHash: string };
+    try {
+      read = await this.client().getWithHash(this.namespace, toDocumentUuid(id));
+    } catch (error) {
+      if ((error as Error).constructor.name === 'KdbNotFoundError') return null;
+      throw error;
+    }
+    const stored = read.body as Doc;
+    return stored._c === this.name ? { doc: this.decode(stored), hash: read.contentHash } : null;
   }
 
   /** Applies an update to one document and writes it back. Returns the stored result
    *  and whether anything actually changed — `modified` must not count a no-op
    *  update, which is how a caller tells "already in that state" from "wrote it". */
-  private async applyToDocument(target: T, update: Update, filter: Filter): Promise<{ doc: Doc; changed: boolean }> {
+  private async applyToDocument(target: T, update: Update, filter: Filter, guard?: { hash: string }): Promise<{ doc: Doc; changed: boolean }> {
     // The filter is what the positional operator (`list.$.field`) resolves against.
     const updated = applyUpdate(target, update, false, filter);
     if (!isOperatorUpdate(update)) updated._id = target._id;
@@ -554,7 +605,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
     const stamped = touchUpdatedAt(this.schema, normalized);
     await this.assertUnique(stamped, target._id as string);
-    await this.writeDocument(stamped, target);
+    await this.writeDocument(stamped, target, guard);
     return { doc: stamped, changed: true };
   }
 
@@ -574,21 +625,19 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   /**
-   * Writes a document, deleting first when the new body drops a top-level key.
+   * Writes a document wholesale, in one commit.
    *
-   * KDB applies a write as a shallow root-level merge, so a key absent from the new
-   * body survives from the old one — `$unset` and whole-document replacement would
-   * silently do nothing. Delete-then-write is the documented workaround until a
-   * replace-capable document op exists; it is not atomic, which is why it is used
-   * only when a key actually went away rather than on every write.
+   * `replace` drops keys the body omits (a write used to be a shallow merge, so `$unset` and
+   * replacement needed delete-then-write, which is two commits and loses the document if the
+   * process dies between them). With a `guard` the server applies it only if the document is
+   * still the one that was read - the cross-process half of atomicity that the in-process lock
+   * cannot give. A rejected guard is a KdbPreconditionError, which `claim` retries.
    */
-  private async writeDocument(doc: Doc, previous: Doc | null): Promise<void> {
-    const id = doc._id as string;
-    if (previous) {
-      const removed = Object.keys(previous).filter((key) => !(key in doc));
-      if (removed.length > 0) await this.removeById(previous._id as string);
-    }
-    await this.client().upsert(this.namespace, toDocumentUuid(id), { ...doc, _c: this.name, ...this.expiry(doc) });
+  private async writeDocument(doc: Doc, _previous: Doc | null, guard?: { hash: string }): Promise<void> {
+    const key = toDocumentUuid(doc._id as string);
+    const body = { ...doc, _c: this.name, ...this.expiry(doc) };
+    if (guard) await this.client().replaceIf(this.namespace, key, body, guard.hash);
+    else await this.client().replace(this.namespace, key, body);
   }
 
   /** The deadline the server's expiry sweeper reads, for collections whose Mongo
@@ -601,21 +650,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   private async removeById(id: string): Promise<void> {
-    await this.client().exec(
-      this.namespace,
-      `DELETE FROM ${this.table} WHERE kdb_id = '${toDocumentUuid(id)}'`
-    );
-    // The client has no delete operation, so this is a SQL DELETE - a scan, and
-    // therefore subject to the scan cap (KdbScanCapError): past it the statement
-    // reports success and removes nothing. A keyed read costs one round trip and turns
-    // that silent failure into an error, which matters because the caller goes on to
-    // tell the user the document is gone.
-    if ((await this.fetchById(id)) !== null) {
-      throw new Error(
-        `${this.name}: delete of ${id} had no effect - the namespace is past the KDB server's scan cap ` +
-          '(docs/KDB_MIGRATION.md, blocker B1)'
-      );
-    }
+    await this.client().delete(this.namespace, toDocumentUuid(id));
   }
 
   /**
