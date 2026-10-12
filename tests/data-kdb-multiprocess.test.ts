@@ -66,13 +66,42 @@ describe('KDB atomicity across processes', { skip }, () => {
     assert.equal(claims.reduce((a, b) => a + b, 0), 1, `exactly one process may win the claim, got ${JSON.stringify(claims)}`);
     assert.match(String(final.description), /^claimed-by-\d+$/);
   });
+
+  it('lets exactly one of several processes register the same email, the rest getting a duplicate key', async () => {
+    const outcomes = await Promise.all(
+      Array.from({ length: 5 }, () => runWorker('', 0, { WORKER_MODE: 'create-user', WORKER_EMAIL: 'mp-race@example.com' }))
+    );
+    const results = outcomes.map((o) => o.outcome as string);
+    assert.deepEqual(
+      results.filter((r) => r !== 'created' && r !== 'duplicate'),
+      [],
+      `unexpected outcomes: ${JSON.stringify(results)}`
+    );
+    assert.equal(results.filter((r) => r === 'created').length, 1, `exactly one process may create it: ${JSON.stringify(results)}`);
+    assert.equal(await store.collection('users').countDocuments({ email: 'mp-race@example.com' }), 1);
+  });
+
+  it('scopes a constraint to its collection: a repeated clientId is fine on codes, not on clients', async () => {
+    const clients = store.collection('mcpOAuthClients');
+    const codes = store.collection('mcpOAuthAuthorizationCodes');
+    await clients.create({ clientId: 'c1', name: 'one', source: 'dcr' });
+    await assert.rejects(clients.create({ clientId: 'c1', name: 'two', source: 'dcr' }), (e: { code?: number }) => e.code === 11000);
+    // Authorization codes carry the same clientId many times over, and must be allowed to.
+    for (const hash of ['h1', 'h2', 'h3']) {
+      await codes.create({
+        codeHash: hash, clientId: 'c1', userId: 'u', redirectUri: 'https://x', scope: 's', codeChallenge: 'c',
+        codeChallengeMethod: 'S256', resource: 'r', expiresAt: new Date(Date.now() + 60_000),
+      });
+    }
+    assert.equal(await codes.countDocuments({ clientId: 'c1' }), 3);
+  });
 });
 
-function runWorker(docId: string, rounds: number): Promise<{ pid: number; claimed: number }> {
+function runWorker(docId: string, rounds: number, extra: Record<string, string> = {}): Promise<any> {
   return new Promise((done, fail) => {
     const child = spawn(process.execPath, ['--import', 'tsx', 'tests/helpers/kdbClaimWorker.ts'], {
       cwd: resolve(import.meta.dirname, '..'),
-      env: { ...process.env, WORKER_DOC_ID: docId, WORKER_ROUNDS: String(rounds) },
+      env: { ...process.env, WORKER_DOC_ID: docId, WORKER_ROUNDS: String(rounds), ...extra },
     });
     let out = '';
     let err = '';

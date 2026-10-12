@@ -180,8 +180,15 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
     if (result.upsertedId) {
       // The primary created this document and gave it an id. Replaying the upsert would make the
       // shadow mint a different one, leaving the same row under two identities for good.
-      const created = snap(await this.primary.findById(result.upsertedId));
-      if (created) this.mirror('updateOne:upsert', () => this.copyAcross(created));
+      //
+      // Queued at once and read when it runs, not read here first: awaiting before queueing lets
+      // a later write to the same key reach the queue ahead of this one, and the shadow then
+      // creates the row under a new id before this copy arrives and collides with it.
+      const id = result.upsertedId;
+      this.mirror('updateOne:upsert', async () => {
+        const created = await this.primary.findById(id);
+        if (created) await this.copyAcross(created);
+      });
       return result;
     }
     this.mirror('updateOne', () => this.shadow.updateOne(args.filter, args.update, args.options));
@@ -262,8 +269,12 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
     if (plain.length > 0) this.mirror('bulkWrite', () => this.shadow.bulkWrite(plain));
     for (const op of upserts) {
       const filter = op.updateOne.filter;
-      const current = snap(await this.primary.findOne(filter));
-      if (current) this.mirror('bulkWrite:upsert', () => this.copyAcross(current));
+      // Queued now, read when it runs (see updateOne): the order of the queue is the order of the
+      // calls, and a read made before queueing would let a later write overtake it.
+      this.mirror('bulkWrite:upsert', async () => {
+        const current = await this.primary.findOne(filter);
+        if (current) await this.copyAcross(current);
+      });
     }
     return result;
   }

@@ -13,6 +13,21 @@ const store = new KdbDataStore();
 await store.connect();
 const tasks = store.collection('tasks');
 
+if (process.env.WORKER_MODE === 'create-user') {
+  // Race to register one email. The in-process uniqueness check is check-then-write, so several
+  // processes can all pass it; only a constraint held by the server can let exactly one in.
+  let outcome: string;
+  try {
+    await store.collection('users').create({ email: process.env.WORKER_EMAIL, displayName: 'racer', passwordHash: 'x' });
+    outcome = 'created';
+  } catch (error) {
+    outcome = (error as { code?: number }).code === 11000 ? 'duplicate' : `error: ${(error as Error).message}`;
+  }
+  await store.disconnect();
+  console.log(`WORKER_RESULT ${JSON.stringify({ pid: process.pid, outcome })}`);
+  process.exit(0);
+}
+
 const id = process.env.WORKER_DOC_ID!;
 const rounds = Number(process.env.WORKER_ROUNDS ?? 10);
 let claimed = 0;

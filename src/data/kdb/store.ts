@@ -255,6 +255,9 @@ const MAX_PRECONDITION_RETRIES = 25;
 class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private readonly unique: Array<{ fields: string[]; sparse: boolean }>;
   private readonly ttl: { path: string; graceMs: number } | null;
+  /** Unique constraints the server enforces, each carried on a synthetic field only this
+   *  collection's documents have (see declareConstraints). */
+  private readonly serverKeys: Array<{ field: string; paths: string[] }>;
 
   constructor(
     readonly name: CollectionName,
@@ -265,6 +268,9 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   ) {
     this.unique = uniqueConstraints(schema);
     this.ttl = ttlSpec(schema);
+    this.serverKeys = this.unique
+      .filter((constraint) => !constraint.fields.some((field) => isArrayPath(schema, field)))
+      .map((constraint) => ({ field: serverKeyField(name, constraint.fields), paths: constraint.fields }));
   }
 
   /** Every document in the collection. The only read primitive: filtering happens
@@ -300,7 +306,9 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
   /** A stored body back to the application's document: bookkeeping fields off, dates revived. */
   private decode(stored: Doc): T {
-    const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, ...body } = stored;
+    const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, ...withKeys } = stored;
+    // The synthetic fields that carry unique constraints are the store's, not the document's.
+    const body = Object.fromEntries(Object.entries(withKeys).filter(([key]) => !key.startsWith('_u_')));
     return reviveDates(this.schema, body) as T;
   }
 
@@ -635,9 +643,23 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   private async writeDocument(doc: Doc, _previous: Doc | null, guard?: { hash: string }): Promise<void> {
     const key = toDocumentUuid(doc._id as string);
-    const body = { ...doc, _c: this.name, ...this.expiry(doc) };
-    if (guard) await this.client().replaceIf(this.namespace, key, body, guard.hash);
-    else await this.client().replace(this.namespace, key, body);
+    const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
+    for (const { field, paths } of this.serverKeys) {
+      const value = serverKeyValue(doc, paths);
+      if (value !== undefined) body[field] = value;
+    }
+    try {
+      if (guard) await this.client().replaceIf(this.namespace, key, body, guard.hash);
+      else await this.client().replace(this.namespace, key, body);
+    } catch (error) {
+      // The server's unique constraint, which no in-process check can pre-empt, reports the same
+      // thing the in-process check does: a duplicate key, code 11000, which authService turns
+      // into a 409.
+      if ((error as { code?: string }).code === 'UNIQUE_VIOLATION') {
+        throw new DuplicateKeyError(`${this.name}: duplicate value for a unique field (${(error as Error).message})`);
+      }
+      throw error;
+    }
   }
 
   /** The deadline the server's expiry sweeper reads, for collections whose Mongo
@@ -695,6 +717,54 @@ export class KdbDataStore implements DataStore {
     const { connect } = await loadClient();
     capCheck.at = undefined;
     this.client = new SerializedDmlClient(await connect(config.kdb.addr, config.kdb.token));
+    if (config.kdb.declareConstraints) {
+      try {
+        await this.declareConstraints();
+      } catch (error) {
+        // A connection left open by a failed connect() keeps the process alive after the error
+        // that should have ended it.
+        await this.client.close().catch(() => undefined);
+        this.client = undefined;
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Hands the schema's unique constraints to the server, which enforces them at commit.
+   *
+   * The in-process check (assertUnique, under a lock) is check-then-write, so two *processes*
+   * could both pass it. A constraint the server holds cannot be raced.
+   *
+   * Every collection lives in one namespace and a server constraint binds every document that has
+   * the field, so a bare `UNIQUE clientId` would also bind the authorization codes, which repeat
+   * the same clientId by design (and prefixing `_c` would not help: all the codes share both).
+   * Each constraint is instead carried on a field only its collection's documents have, a
+   * synthetic `_u_<collection>_<fields>` holding the tuple's value; the store writes it and
+   * strips it on read. A document missing a part gets no key and claims nothing, the sparse
+   * behaviour the schemas declare.
+   *
+   * Idempotent: stating a constraint the server already holds does nothing. It fails if existing
+   * data already violates one, which is the right place to find out. A constraint over array
+   * elements (a user's linked identity providers) cannot be a field tuple and stays in-process.
+   *
+   * Needs a server that installs constraints for CREATE UNIQUE INDEX (KDB 0.7.0 + #147). An older
+   * one accepts the statement and enforces nothing; the in-process check still stands, so that
+   * costs the extra guarantee, not the existing one.
+   */
+  private async declareConstraints(): Promise<void> {
+    for (const name of Object.keys(MODEL_BY_COLLECTION) as CollectionName[]) {
+      for (const { field, paths } of (this.collection(name) as unknown as { serverKeys: Array<{ field: string; paths: string[] }> }).serverKeys) {
+        try {
+          await this.client!.exec(config.kdb.namespacePrefix, `CREATE UNIQUE INDEX qtask_${field} ON docs (${field})`);
+        } catch (error) {
+          // Stating a constraint the server already holds is the normal case after the first
+          // start; only a refusal for another reason (existing data violating it) is a problem.
+          if (/already registered/i.test((error as Error).message)) continue;
+          throw new Error(`KDB refused the unique constraint on ${name}(${paths.join(', ')}): ${(error as Error).message}`);
+        }
+      }
+    }
   }
 
   async ping(): Promise<void> {
@@ -752,6 +822,33 @@ function sameDocument(a: Doc, b: Doc): boolean {
   const bKeys = Object.keys(b).sort();
   if (aKeys.length !== bKeys.length || aKeys.some((key, i) => key !== bKeys[i])) return false;
   return aKeys.every((key) => valuesEqual(a[key], b[key]));
+}
+
+/** The field that carries one collection's unique constraint on the server. */
+function serverKeyField(collection: string, fields: string[]): string {
+  return `_u_${collection}_${fields.join('_').replace(/[^A-Za-z0-9_]/g, '_')}`;
+}
+
+/** A constraint tuple's value as one comparable string, or undefined when any part is missing
+ *  (a document that lacks a part claims nothing). Dates compare by instant, as in the engine. */
+function serverKeyValue(doc: Doc, fields: string[]): string | undefined {
+  const parts: unknown[] = [];
+  for (const field of fields) {
+    const value = getPath(doc, field);
+    if (value === undefined || value === null) return undefined;
+    parts.push(value instanceof Date ? value.toISOString() : value);
+  }
+  return JSON.stringify(parts);
+}
+
+/** Whether a dotted path passes through an array, which a field tuple cannot express. */
+function isArrayPath(schema: Schema, path: string): boolean {
+  const segments = path.split('.');
+  for (let i = 1; i <= segments.length; i++) {
+    const type = schema.path(segments.slice(0, i).join('.')) as unknown as { instance?: string } | undefined;
+    if (type?.instance === 'Array') return true;
+  }
+  return false;
 }
 
 function schemaFor(modelName: string): Schema {

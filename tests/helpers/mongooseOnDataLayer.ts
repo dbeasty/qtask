@@ -128,6 +128,7 @@ function callerIsTest(): boolean {
 export function installMongooseOnDataLayer(options: { mongoConnected?: boolean } = {}): void {
   const M = mongoose.Model as unknown as Record<string, unknown>;
   const originals = Object.fromEntries(ROUTED.map((name) => [name, M[name]])) as Record<string, (...args: unknown[]) => unknown>;
+  const originalsMongo = options.mongoConnected ? originals : undefined;
 
   M.create = async function (this: ModelLike, docs: unknown, ...rest: unknown[]) {
     const coll = await collectionOf(this);
@@ -182,6 +183,9 @@ export function installMongooseOnDataLayer(options: { mongoConnected?: boolean }
   });
 
   M.updateOne = function (this: ModelLike, filter: Filter, update: Doc, options?: { upsert?: boolean; timestamps?: boolean }) {
+    // `{ timestamps: false }` is a Mongoose feature the data layer does not have. With MongoDB
+    // really connected (shadow mode) the real method does exactly that, so use it.
+    if (options?.timestamps === false && originalsMongo) return originalsMongo.updateOne.apply(this, [filter, update, options]);
     return new Query(async () => {
       const coll = await collectionOf(this);
       const result = updateResult(await coll.updateOne(plain(filter), asUpdate(update), options));
