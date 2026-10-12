@@ -20,8 +20,10 @@ import { projectService } from '../services/projectService.js';
 import { DEVICE_TOKEN_HEADER } from './config.js';
 import type { UserDoc } from '../data/documents.js';
 
-/** Fixed e-mail of the local user. It is not a mailbox and never receives mail. */
-export const LOCAL_USER_EMAIL = 'local@device.qtask.invalid';
+import { LOCAL_USER_EMAIL } from './owner.js';
+import { currentOwnerId } from './sync.js';
+
+export { LOCAL_USER_EMAIL };
 
 export function tokensMatch(presented: unknown, expected: string): boolean {
   if (typeof presented !== 'string' || presented.length === 0) return false;
@@ -67,6 +69,20 @@ export function ensureLocalUser(): Promise<UserDoc> {
 
 async function findOrCreateLocalUser(): Promise<UserDoc> {
   const users = collection<UserDoc>('users');
+  // With device sync on, the user is the device owner (the same id on every paired
+  // device; see owner.ts), created when sync was installed.
+  const ownerId = currentOwnerId();
+  if (ownerId) {
+    let owner = await users.findById(ownerId);
+    if (!owner) {
+      const { installOwnerUser } = await import('./owner.js');
+      const { connectData } = await import('../data/index.js');
+      await installOwnerUser(await connectData(), ownerId);
+      owner = await users.findById(ownerId);
+    }
+    await projectService.ensureDefaultProject(ownerId);
+    return owner!;
+  }
   let user = await users.findOne({ email: LOCAL_USER_EMAIL });
   if (!user) {
     user = await users.create({
