@@ -114,7 +114,8 @@ merge · `engine.ts` capture/apply/delta · `transport.ts` · `hub.ts` · `clien
   `SyncDataStore` and register the hub engine; `/api/sync/*` is mounted in
   `src/app.ts`. `QTASK_SYNC_META_PATH=/path/meta.json` persists the sync records
   (debounced atomic JSON snapshot); without it a restart re-baselines every document.
-* Device (Phase 1): build `MemoryMetaStore`/`FileMetaPersistence.open(path)`,
+* Device (local mode): **wired** in `src/local/sync.ts` (see `src/local/README.md`, "Device sync").
+  The recipe it follows: build `MemoryMetaStore`/`FileMetaPersistence.open(path)`,
   `new SyncDataStore(localStore, meta)` and hand **that** store to the services, then
   `new SyncEngine({store, meta, role: 'device', derived: createDefaultDerived()})`,
   `await engine.init()` (baselines existing local data), and a `DeviceSyncClient`.

@@ -32,6 +32,23 @@
 	<string>NSApplication</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>QTask uses Bluetooth to sync your tasks with your other paired devices when no network is available. It is only used after you turn on Bluetooth sync, and only talks to devices you have paired.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>QTask syncs your tasks with your other paired devices on this network. Only devices you have paired can connect, and nothing is shared with anyone else on the network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_qtask._tcp</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.qtask.mac.pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>qtask</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>Limidus</string>
 </dict>

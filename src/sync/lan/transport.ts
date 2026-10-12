@@ -268,6 +268,21 @@ export class LanTransport extends EventEmitter implements PeerLinkTransport {
   constructor(private readonly o: LanTransportOptions) {
     super();
     this.log = o.log ?? (() => undefined);
+    // Unpairing ends the relationship at once: drop the live link and stop dialing.
+    o.peers.onChange(() => {
+      for (const [id, l] of [...this.live]) if (!o.peers.get(id)) l.close();
+      for (const [id, d] of [...this.dials]) {
+        if (o.peers.get(id)) continue;
+        if (d.timer) clearTimeout(d.timer);
+        this.dials.delete(id);
+        this.addrs.delete(id);
+      }
+    });
+  }
+
+  /** Last known address of each peer (manual, from pairing or from mDNS), to persist across restarts. */
+  knownAddresses(): Array<{ nodeId: string; host: string; port: number }> {
+    return [...this.addrs].map(([nodeId, a]) => ({ nodeId, ...a }));
   }
 
   get self(): DeviceInfo {

@@ -10,6 +10,7 @@ import { disconnectDb } from '../db/connection.js';
 import { resolveLocalConfig } from './config.js';
 import { startBleBridgeIfEnabled, stopBleBridge } from './ble.js';
 import { loadOrCreateDeviceIdentity } from './device.js';
+import { startLocalSync, stopLocalSync } from './sync.js';
 
 /** The line the supervisor waits for on stdout. */
 export const READY_PREFIX = 'QTASK_READY ';
@@ -37,12 +38,16 @@ export async function startLocalServer(): Promise<{ server: Server; ready: Ready
   const ready: ReadyInfo = { port: address.port, pid: process.pid, deviceId: identity.deviceId };
   const ble = await startBleBridgeIfEnabled();
   if (ble) ready.bleBridgePort = ble.port;
+  // Device sync runs beside the API, never in front of it: a transport that cannot start
+  // is reported in /api/local-sync/status, and the app keeps working on its own data.
+  await startLocalSync().catch((error) => console.error('device sync failed to start', error));
 
   let closing = false;
   const shutdown = async () => {
     if (closing) return;
     closing = true;
     server.close();
+    await stopLocalSync().catch(() => undefined);
     await stopBleBridge().catch(() => undefined);
     // Closing the data layer is what flushes the store; the supervisor waits for exit.
     await disconnectDb().catch((error) => console.error('disconnect failed', error));

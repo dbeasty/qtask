@@ -156,7 +156,13 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   // No rate limit on a private loopback service: the only caller is the app itself.
   app.use('/api/auth', ...(local ? [] : [authLimiter]), authRouter);
 
-  app.use('/api/sync', requireAuth, express.json({ limit: '32mb' }), createSyncRouter());
+  // The cloud hub's sync protocol. A device never serves it (it is a client of a hub),
+  // so it is not mounted in local mode; the device's own controls are /api/local-sync.
+  if (!local) app.use('/api/sync', requireAuth, express.json({ limit: '32mb' }), createSyncRouter());
+  if (local) {
+    const { createLocalSyncRouter } = await import('./local/sync-routes.js');
+    app.use('/api/local-sync', createLocalSyncRouter());
+  }
   app.use('/api/tasks', requireAuth, tasksRouter);
   app.use('/api/projects', requireAuth, projectsRouter);
   app.use('/api/search', requireAuth, searchRouter);

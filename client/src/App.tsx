@@ -19,6 +19,8 @@ import { RegisterPage } from './pages/RegisterPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { TasksPage } from './pages/TasksPage';
 import { SearchPage } from './pages/SearchPage';
+import { DevicesPage } from './pages/DevicesPage';
+import { localSync } from './api/localSync';
 import type { Selection } from './components/TaskHierarchyTree';
 import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
@@ -26,7 +28,7 @@ import { WelcomePage } from './pages/WelcomePage';
 import { NotificationBell } from './components/NotificationBell';
 import { InviteAcceptPage } from './pages/InviteAcceptPage';
 import { checkHealth, listInvites, listProjects } from './api/client';
-import { isLocalMode } from './runtime';
+import { ensureLocalSession, isLocalMode } from './runtime';
 import {
   captureInviteTokenFromUrl,
   clearPendingInviteToken,
@@ -47,7 +49,7 @@ import {
 import '../../shared/theme-tokens.css';
 import './styles.css';
 
-type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about';
+type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about' | 'devices';
 
 interface SessionRestore {
   tasks?: {
@@ -134,6 +136,7 @@ export function App() {
   const [sessionRestore, setSessionRestore] = useState<SessionRestore | null>(null);
   const [agentWorking, setAgentWorking] = useState(false);
   const [newProjectRequest, setNewProjectRequest] = useState(0);
+  const [pairRequest, setPairRequest] = useState(0);
 
   const preferences = getUserPreferences(user);
   // The Mac app runs offline with no account: hide what needs a server, a network or
@@ -389,6 +392,43 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [user, searchQuery]);
 
+  // Device sync (Mac app): when another device's changes are applied here, reload the
+  // task and project views. A long poll on the backend's revision counter: it answers as
+  // soon as a sync applied something (or after 25 s with nothing). When the device's owner
+  // changed (it signed in, or adopted a paired device's account) the session is renewed.
+  useEffect(() => {
+    if (!user || !local) return;
+    const controller = new AbortController();
+    let stopped = false;
+    void (async () => {
+      let revision: number | undefined;
+      let ownerRevision: number | undefined;
+      while (!stopped) {
+        try {
+          const next = await localSync.revision(revision, revision === undefined ? 0 : 25_000, controller.signal);
+          if (ownerRevision !== undefined && next.ownerRevision !== ownerRevision) {
+            await ensureLocalSession();
+            window.location.reload();
+            return;
+          }
+          if (revision !== undefined && next.revision !== revision) {
+            setTasksVersion((v) => v + 1);
+            setProjectsVersion((v) => v + 1);
+          }
+          revision = next.revision;
+          ownerRevision = next.ownerRevision;
+        } catch {
+          if (stopped) return;
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+      }
+    })();
+    return () => {
+      stopped = true;
+      controller.abort();
+    };
+  }, [user, local]);
+
   // Menu commands from the Mac app (File > New Task, Find, ...). The bridge turns the
   // native message into a `qtask:command` event; on the web nothing ever dispatches it.
   useEffect(() => {
@@ -413,11 +453,18 @@ export function App() {
         setAppView('projects');
       } else if (command === 'view-tasks') {
         setAppView('tasks');
+      } else if (command === 'view-devices' && local) {
+        setAppView('devices');
+      } else if (command === 'pair-device' && local) {
+        setAppView('devices');
+        setPairRequest((n) => n + 1);
+      } else if (command === 'sync-now' && local) {
+        void localSync.syncNow().catch(() => undefined);
       }
     };
     window.addEventListener('qtask:command', onCommand);
     return () => window.removeEventListener('qtask:command', onCommand);
-  }, [user, setAppView]);
+  }, [user, setAppView, local]);
 
   if (loading) {
     return (
@@ -626,7 +673,7 @@ export function App() {
 
         <div className="header-row header-row-bottom">
           <p className="header-tagline muted">
-            {local ? 'Offline on this Mac · your tasks stay on this device' : 'AI-native task management · MCP server'}
+            {local ? 'Works offline · your tasks live on this Mac and your paired devices' : 'AI-native task management · MCP server'}
           </p>
           <nav className="header-views-nav" aria-label="Views" data-demo-step="header-views">
             <span className="header-views-label">Views</span>
@@ -653,6 +700,15 @@ export function App() {
             >
               Tasks
             </button>
+            {local ? (
+              <button
+                type="button"
+                className={view === 'devices' ? 'nav-active' : ''}
+                onClick={() => setAppView('devices')}
+              >
+                Devices
+              </button>
+            ) : null}
           </nav>
         </div>
       </header>
@@ -758,6 +814,8 @@ export function App() {
             aiVersion={aiVersion}
             onBack={() => setAppView('projects')}
           />
+        ) : view === 'devices' && local ? (
+          <DevicesPage pairRequest={pairRequest} onBack={() => setAppView('projects')} />
         ) : view === 'tasks' ? (
           <TasksPage
             editsDisabled={deploymentReadOnly}

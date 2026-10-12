@@ -83,7 +83,7 @@ async function main() {
     assert(!ui.agent, 'Agent view must be hidden');
     assert(!ui.bell, 'notification bell must be hidden');
     assert(!ui.login, 'no sign-in UI');
-    assert(/Offline/.test(ui.tagline || ''), 'local tagline');
+    assert(/offline/i.test(ui.tagline || ''), 'local tagline');
   });
 
   await step('the user menu has no sign-out, password, MCP or feedback entries', async () => {
@@ -242,17 +242,28 @@ async function main() {
     assert(s.bridgeRefused >= 6, `the bridge should have refused the hand-made requests, refused ${s.bridgeRefused}`);
   });
 
-  await step('only loopback sockets are open, and only for the two children', async () => {
+  await step('only the children listen: API, store and Bluetooth bridge on loopback, device sync on the LAN', async () => {
     const s = await inst.state();
     const out = execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', [s.appPid, s.nodePid, s.kdbPid].join(',')], { encoding: 'utf8' });
     const lines = out.split('\n').slice(1).filter(Boolean);
     assert(lines.length >= 2, `expected the two children listening, got:\n${out}`);
+    // Device sync listens on every interface for paired devices (TLS with pinned
+    // certificates; an unpaired client is dropped before a byte is sent). Its port is the
+    // one /api/local-sync/status reports; everything else stays on loopback.
+    const sync = await backendClient(s).call('GET', '/api/local-sync/status');
+    const syncPort = sync.body?.wifi?.port;
+    assert(syncPort > 0, `device sync reports no port: ${JSON.stringify(sync.body?.wifi)}`);
+    const loopback = [];
     for (const l of lines) {
-      assert(/127\.0\.0\.1:\d+ \(LISTEN\)/.test(l), `non-loopback listener: ${l}`);
       assert(!l.startsWith('QTask '), `the app itself must not listen: ${l}`);
+      const m = l.match(/(127\.0\.0\.1|\*|\[::\]):(\d+) \(LISTEN\)/);
+      assert(m, `unexpected listener: ${l}`);
+      if (m[1] === '127.0.0.1') loopback.push(Number(m[2]));
+      else eq(Number(m[2]), syncPort, `the only non-loopback listener is device sync: ${l}`);
     }
-    const ports = lines.map((l) => Number(l.match(/127\.0\.0\.1:(\d+)/)[1])).sort();
-    eq(ports, [s.kdbPort, s.port].sort(), 'listening ports');
+    const expected = [s.kdbPort, s.port, ...(s.bleBridgePort ? [s.bleBridgePort] : [])].sort();
+    for (const p of expected) assert(loopback.includes(p), `missing loopback listener ${p}: ${loopback}`);
+    for (const p of loopback) assert(expected.includes(p), `unexpected loopback listener ${p}`);
   });
 
   await step('the local server refuses requests without this launch\'s device token', async () => {

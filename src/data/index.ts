@@ -108,6 +108,14 @@ export async function connectData(): Promise<DataStore> {
     connected = await installHubSync(connected);
     store = connected;
     await initHubSync();
+  } else if (isLocalMode()) {
+    // A device: wrap the store for change tracking and open its sync records, so paired
+    // devices and the cloud can sync with it (src/local/sync.ts). QTASK_LOCAL_SYNC=0 opts out.
+    const { installLocalSync, localSyncEnabled } = await import('../local/sync.js');
+    if (localSyncEnabled()) {
+      const { resolveDataDir } = await import('../local/config.js');
+      connected = await installLocalSync(connected, resolveDataDir());
+    }
   }
   store = connected;
   return store;
@@ -154,6 +162,10 @@ async function connectBackends(): Promise<DataStore> {
 
 export async function disconnectData(): Promise<void> {
   if (!store) return;
+  if (isLocalMode()) {
+    const { closeLocalSync } = await import('../local/sync.js');
+    await closeLocalSync();
+  }
   if (hubSyncEnabled()) {
     const { flushHubSync, setHubEngine } = await import('../sync/runtime.js');
     await flushHubSync();

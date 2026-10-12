@@ -1,4 +1,6 @@
 import { isValidObjectId } from 'mongoose';
+import { isLocalMode } from '../local/config.js';
+import { DEFAULT_PROJECT_CREATED_AT, defaultProjectIdFor } from '../local/owner.js';
 import { collection } from '../data/index.js';
 import type {
   CommentDoc,
@@ -253,7 +255,15 @@ export class ProjectService {
         return String(existing!._id);
       }
 
+      // On a device the default project's id is derived from the owner, so two devices
+      // that each made one before they paired converge on one project (src/local/owner.ts).
+      const deviceDefault = isLocalMode()
+        ? { _id: defaultProjectIdFor(userId), createdAt: DEFAULT_PROJECT_CREATED_AT }
+        : {};
+      const existingDefault = deviceDefault._id ? await projectDocs().findById(deviceDefault._id) : null;
+      if (existingDefault) return String(existingDefault._id);
       const project = await projectDocs().create({
+        ...deviceDefault,
         userId,
         name: DEFAULT_PROJECT_NAME,
         collaborators: [],

@@ -53,3 +53,7 @@ The Node process owns the protocol. The app shell must:
 ## Not covered
 
 Real multi-device Wi-Fi behaviour (client isolation, IGMP snooping, roaming, power save), IPv6-only networks (the mDNS implementation is IPv4; the TLS transport accepts IPv6 addresses), and iOS/Android. The Phase 2 engine integration is untested: all sync behaviour above is tested against a small stand-in engine in `tests/helpers/lww-store.ts`.
+
+## In the app (local mode)
+
+`src/local/sync.ts` runs this transport in the Mac app's backend: listener on `0.0.0.0` (port remembered across launches), mDNS on, identity from the device key, pairing through `/api/local-sync/pair/*` and the Devices & Sync page, the Swift items from "What the Swift side must expose" 1, 2 and 5 done (Info.plist keys, entitlements, pairing UI, `qtask://` scheme). Not done: Keychain `SecretStore`, the native `NWBrowser` and the 5 s "nothing found" hint. Engine over this transport between two real backend processes: `tests/local-sync-e2e.test.ts`; two app copies: `e2e/macos/sync.mjs`.

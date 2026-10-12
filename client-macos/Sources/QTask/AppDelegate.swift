@@ -82,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       await MainActor.run {
         self.badge.start()
         self.startBluetoothBridge(endpoint)
+        self.refreshSyncState()
       }
     } catch {
       await MainActor.run { self.showFailure("\(error)", which: "start") }
@@ -90,9 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   // MARK: Bluetooth
 
-  /// Opt-in (QTASK_BLE=1): connects the native radio to the backend's bridge. CoreBluetooth
+  /// Connects the native radio to the backend's bridge (opened unless QTASK_BLE=0). CoreBluetooth
   /// is not touched, and no permission prompt appears, until the backend sends its first
-  /// radio command (when Bluetooth sync is switched on).
+  /// radio command: that happens only when the user turns on "Sync over Bluetooth" (Devices &
+  /// Sync, or File > Sync over Bluetooth), which the backend remembers across launches.
   private func startBluetoothBridge(_ endpoint: BackendEndpoint) {
     guard let port = endpoint.bleBridgePort else { return }
     bleBridge?.stop()
@@ -185,6 +187,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   @objc func find(_ sender: Any?) { web.sendCommand("find") }
   @objc func showProjects(_ sender: Any?) { web.sendCommand("view-projects") }
   @objc func showTasks(_ sender: Any?) { web.sendCommand("view-tasks") }
+  @objc func showDevices(_ sender: Any?) {
+    window.makeKeyAndOrderFront(nil)
+    web.sendCommand("view-devices")
+  }
+  @objc func pairDevice(_ sender: Any?) {
+    window.makeKeyAndOrderFront(nil)
+    web.sendCommand("pair-device")
+  }
+
+  // MARK: device sync (src/local/sync-routes.ts; device token only, no session needed)
+
+  /// `qtask://pair?...` / `qtask://pairble?...` opened from a QR scan or a link: join that
+  /// pairing and show Devices & Sync, where the result (or the code to confirm) appears.
+  func application(_ application: NSApplication, open urls: [URL]) {
+    for url in urls where url.scheme == "qtask" && (url.host == "pair" || url.host == "pairble") {
+      let http = self.http!
+      let body = try? JSONSerialization.data(withJSONObject: ["link": url.absoluteString])
+      showDevices(nil)
+      Task {
+        _ = try? await http.send(
+          method: "POST", path: "/api/local-sync/pair/join", headers: ["content-type": "application/json"], body: body)
+      }
+    }
+  }
+
+  /// Last known state of the Bluetooth toggle, for the menu checkmark. nil until read.
+  private var bluetoothSyncOn: Bool?
+
+  @objc func syncNow(_ sender: Any?) {
+    let http = self.http!
+    Task { _ = try? await http.send(method: "POST", path: "/api/local-sync/now", headers: [:], body: nil) }
+  }
+
+  @objc func toggleBluetoothSync(_ sender: Any?) {
+    let http = self.http!
+    let wanted = !(bluetoothSyncOn ?? false)
+    Task { [weak self] in
+      let body = try? JSONSerialization.data(withJSONObject: ["enabled": wanted])
+      let r = try? await http.send(
+        method: "POST", path: "/api/local-sync/bluetooth", headers: ["content-type": "application/json"], body: body)
+      await MainActor.run {
+        if r?.status == 200 { self?.bluetoothSyncOn = wanted } else { self?.showDevices(nil) }
+      }
+    }
+  }
+
+  /// Reads the Bluetooth toggle once the backend is up, so the menu shows the right state.
+  private func refreshSyncState() {
+    let http = self.http!
+    Task { [weak self] in
+      guard let r = try? await http.send(method: "GET", path: "/api/local-sync/status", headers: [:], body: nil),
+        r.status == 200,
+        let obj = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any],
+        let ble = obj["bluetooth"] as? [String: Any]
+      else { return }
+      let on = ble["enabled"] as? Bool ?? false
+      await MainActor.run { self?.bluetoothSyncOn = on }
+    }
+  }
+
+  @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    if item.action == Selector(("toggleBluetoothSync:")) {
+      item.state = bluetoothSyncOn == true ? .on : .off
+      // The page refreshes this too; re-read in the background so the next open is right.
+      refreshSyncState()
+    }
+    return true
+  }
   @objc func reloadPage(_ sender: Any?) { web.reload() }
   @objc func zoomIn(_ sender: Any?) { web.webView.pageZoom = min(web.webView.pageZoom + 0.1, 3) }
   @objc func zoomOut(_ sender: Any?) { web.webView.pageZoom = max(web.webView.pageZoom - 0.1, 0.5) }
@@ -243,6 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       out["nodePid"] = e.nodePid
       out["kdbPid"] = e.kdbPid
       out["kdbPort"] = e.kdbPort
+      if let ble = e.bleBridgePort { out["bleBridgePort"] = ble }
     }
     out["supervisorTimeline"] = await supervisor.timeline.map { ["name": $0.0, "t": $0.1] }
     return out
