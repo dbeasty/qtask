@@ -165,6 +165,43 @@ final class ChunkQueueTests: XCTestCase {
 }
 
 final class BleLaunchTests: XCTestCase {
+  func testBridgeIsOpenUnlessSwitchedOffAndTheToggleDecidesUse() {
+    XCTAssertTrue(Launch.bleBridgeWanted(environment: [:]))
+    XCTAssertTrue(Launch.bleBridgeWanted(environment: ["QTASK_BLE": "1"]))
+    XCTAssertFalse(Launch.bleBridgeWanted(environment: ["QTASK_BLE": "0"]))
+  }
+
+  func testDeviceNameIsPassedTrimmedAndBounded() {
+    let env = Launch.nodeEnvironment(
+      dataDir: URL(fileURLWithPath: "/d"), deviceToken: "t", kdbPort: 1, kdbClientModule: URL(fileURLWithPath: "/k.mjs"),
+      deviceName: "  Dana's MacBook  ", inherit: [:])
+    XCTAssertEqual(env["QTASK_DEVICE_NAME"], "Dana's MacBook")
+    let long = Launch.nodeEnvironment(
+      dataDir: URL(fileURLWithPath: "/d"), deviceToken: "t", kdbPort: 1, kdbClientModule: URL(fileURLWithPath: "/k.mjs"),
+      deviceName: String(repeating: "x", count: 200), inherit: [:])
+    XCTAssertEqual(long["QTASK_DEVICE_NAME"]?.count, 60)
+    let none = Launch.nodeEnvironment(
+      dataDir: URL(fileURLWithPath: "/d"), deviceToken: "t", kdbPort: 1, kdbClientModule: URL(fileURLWithPath: "/k.mjs"), inherit: [:])
+    XCTAssertNil(none["QTASK_DEVICE_NAME"])
+  }
+
+  /// Without both keys macOS blocks Bonjour and LAN connections after the first prompt.
+  func testInfoPlistDeclaresLocalNetworkAndBonjour() throws {
+    let plist = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Resources/Info.plist")
+    let obj = try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as? [String: Any]
+    XCTAssertFalse((obj?["NSLocalNetworkUsageDescription"] as? String ?? "").isEmpty)
+    XCTAssertEqual(obj?["NSBonjourServices"] as? [String], ["_qtask._tcp"])
+    XCTAssertFalse((obj?["NSBluetoothAlwaysUsageDescription"] as? String ?? "").isEmpty)
+    let schemes = (obj?["CFBundleURLTypes"] as? [[String: Any]])?.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
+    XCTAssertEqual(schemes, ["qtask"])
+    let ent = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Resources/QTask.entitlements")
+    let e = try PropertyListSerialization.propertyList(from: Data(contentsOf: ent), format: nil) as? [String: Any]
+    XCTAssertEqual(e?["com.apple.security.network.client"] as? Bool, true)
+    XCTAssertEqual(e?["com.apple.security.network.server"] as? Bool, true)
+  }
+
   func testBridgeIsOptInAndNeverInherited() {
     let base = Launch.nodeEnvironment(
       dataDir: URL(fileURLWithPath: "/d"), deviceToken: "t", kdbPort: 1, kdbClientModule: URL(fileURLWithPath: "/k.mjs"),

@@ -10,6 +10,11 @@
 	needs the two memory entitlements. No other entitlement is requested: the app does not
 	use the camera, microphone, contacts or location.
 
+	Device sync over Wi-Fi: the backend listens on every interface for paired devices (TLS,
+	pinned certificates) and sends mDNS multicast, which is network.server + network.client;
+	the Local Network prompt itself is driven by NSLocalNetworkUsageDescription and
+	NSBonjourServices in Info.plist.
+
 	Bluetooth (Phase 4): com.apple.security.device.bluetooth is the App Sandbox entitlement for
 	CoreBluetooth. It does nothing for this ad hoc, unsandboxed build, where the permission
 	prompt is driven by NSBluetoothAlwaysUsageDescription in Info.plist; it is declared now so

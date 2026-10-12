@@ -143,6 +143,13 @@ codesign --verify --deep --strict "$APP"
 # killed by the OS the first time it touches CoreBluetooth.
 /usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" "$APP/Contents/Info.plist" >/dev/null \
   || { echo "Info.plist lacks NSBluetoothAlwaysUsageDescription" >&2; exit 1; }
+# Wi-Fi sync: without both keys macOS silently blocks Bonjour and LAN connections after the first prompt.
+/usr/libexec/PlistBuddy -c "Print :NSLocalNetworkUsageDescription" "$APP/Contents/Info.plist" >/dev/null \
+  || { echo "Info.plist lacks NSLocalNetworkUsageDescription" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c "Print :NSBonjourServices:0" "$APP/Contents/Info.plist" | grep -qx "_qtask._tcp" \
+  || { echo "Info.plist lacks NSBonjourServices _qtask._tcp" >&2; exit 1; }
+codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "com.apple.security.network.server" \
+  || { echo "the signed app lacks com.apple.security.network.server" >&2; exit 1; }
 codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "com.apple.security.device.bluetooth" \
   || { echo "the signed app lacks com.apple.security.device.bluetooth" >&2; exit 1; }
 rm -rf "$OUT/stage"

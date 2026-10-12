@@ -139,7 +139,8 @@ public actor Supervisor {
     p.arguments = [layout.serverScript.path]
     p.environment = Launch.nodeEnvironment(
       dataDir: paths.root, deviceToken: deviceToken, kdbPort: kdbPort,
-      kdbClientModule: layout.kdbClientModule, bleBridge: environment["QTASK_BLE"] == "1", inherit: environment)
+      kdbClientModule: layout.kdbClientModule, bleBridge: Launch.bleBridgeWanted(environment: environment),
+      deviceName: environment["QTASK_DEVICE_NAME"] ?? Host.current().localizedName, inherit: environment)
     p.currentDirectoryURL = paths.root
     // The pipe is node's lifeline: it exits when this end closes (we died).
     let stdin = Pipe()

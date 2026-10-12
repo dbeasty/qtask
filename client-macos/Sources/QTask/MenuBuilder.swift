@@ -56,6 +56,10 @@ enum MenuBuilder {
     add(m, "New Task", Selector(("newTask:")), "n")
     add(m, "New Project", Selector(("newProject:")), "n", [.command, .shift])
     m.addItem(.separator())
+    add(m, "Pair Device…", Selector(("pairDevice:")), "", [])
+    add(m, "Sync Now", Selector(("syncNow:")), "s", [.command, .option])
+    add(m, "Sync over Bluetooth", Selector(("toggleBluetoothSync:")), "", [])
+    m.addItem(.separator())
     add(m, "Close Window", #selector(NSWindow.performClose(_:)), "w")
     return m
   }
@@ -78,6 +82,7 @@ enum MenuBuilder {
     let m = NSMenu(title: "View")
     add(m, "Projects", Selector(("showProjects:")), "1")
     add(m, "Tasks", Selector(("showTasks:")), "2")
+    add(m, "Devices & Sync", Selector(("showDevices:")), "3")
     m.addItem(.separator())
     add(m, "Actual Size", Selector(("zoomReset:")), "0")
     add(m, "Zoom In", Selector(("zoomIn:")), "+")
