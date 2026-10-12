@@ -22,6 +22,11 @@ jobs:
       - name: Install API dependencies
         run: npm ci
 
+      # The KDB tests run against the released kdb-service that @kdb/client is pinned to;
+      # without it they skip, and CI would say nothing about the KDB backend.
+      - name: Fetch the pinned kdb-service release
+        run: npm run kdb:fetch
+
       - name: Audit dependencies
         run: npm audit --audit-level=high
 

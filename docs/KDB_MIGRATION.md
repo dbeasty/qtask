@@ -149,14 +149,12 @@ Mongo index becomes an index on its leading field; text indexes stay in-app, TTL
 server expiry, unique ones are constraints). Declaring is idempotent and they survive `kill -9`
 (`data-kdb-durability`). Reads: `find({userId})` on 2,000 tasks 6.2 ms to 0.4 ms.
 
-**Disk write cost (open, KDB-side).** With `--durability sync` and `--data-dir`, bulk load drops
-from 226 to 102 docs/s at 2,000 docs with the indexes on, and the first `connect()` on an empty
-namespace takes about 17 s (27 `CREATE INDEX`, about 640 ms each; a reconnect is 10 ms). Cause, from
-`go/kdb/server/index_wiring.go`: every 64 index-touching commits the provider rewrites *all* index
-snapshots (`registry.SaveAll`), so write cost grows with index count and size. Needs incremental or
-async snapshots in KDB; until then, size the backfill window accordingly or set
-`DATA_KDB_DECLARE_INDEXES=false` for the bulk load and declare afterwards. Steady-state qtask write
-rates are far below the bulk rate, but this must be measured on a production-sized copy before cutover.
+**Disk write cost: fixed in KDB #157 (after 0.7.1).** On v0.7.1, with `--durability sync`, every
+64th commit rewrote every index snapshot under the write gate, and each `CREATE INDEX` rewrote all
+of them twice: bulk load halved (226 to 102 docs/s at 2,000 docs here) and a first `connect()` on an
+empty namespace took about 17 s. #157 writes snapshots in the background, only for indexes that
+changed: per-commit p99 584-662 ms to 16-18 ms, `CREATE INDEX` x27 15-21 s to 0.3 s. Until it is
+released, backfill with `DATA_KDB_DECLARE_INDEXES=false` and declare the indexes afterwards.
 
 ### B3. Unique constraints across processes — resolved by KDB #147 (not yet released)
 
@@ -172,7 +170,7 @@ email: exactly one wins and the rest get a duplicate key, which `authService` tu
 The constraint over array elements (a user's linked identity providers: one Google or Microsoft
 login may belong to one account) is now held by the server too. The store carries it as an array
 of per-element keys, one per linked login, and KDB treats an array under a unique constraint as
-multikey, as MongoDB does (KDB `feat/multikey-unique`, for the release after 0.7.1). Proven with
+multikey, as MongoDB does (KDB #157, for the release after 0.7.1). Proven with
 five processes racing to link one login to five accounts: exactly one wins. On a server without
 multikey support the in-process check still stands, and only the cross-process guarantee for this
 one rule is lost.

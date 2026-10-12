@@ -7,6 +7,7 @@
  * wrong: no increment is lost, and exactly one process wins a "claim if unclaimed".
  */
 
+import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { connect } from 'node:net';
 import { resolve } from 'node:path';
@@ -78,7 +79,8 @@ describe('KDB atomicity across processes', { skip }, () => {
     assert.equal(await store.collection('users').countDocuments({ email: 'mp-race@example.com' }), 1);
   });
 
-  it('lets exactly one of several processes link the same external login', async () => {
+  it('lets exactly one of several processes link the same external login', async (t) => {
+    if (!(await serverHasMultikeyUnique())) return t.skip('this kdb-service treats an array as one value under a unique constraint (multikey arrives after 0.7.1)');
     const outcomes = await Promise.all(
       Array.from({ length: 5 }, () => runWorker('', 0, { WORKER_MODE: 'link-login', WORKER_LOGIN: 'g-race' }))
     );
@@ -88,7 +90,8 @@ describe('KDB atomicity across processes', { skip }, () => {
     assert.equal(await store.collection('users').countDocuments({ 'identityProviders.providerUserId': 'g-race' }), 1);
   });
 
-  it('holds a linked login per element: overlap refused, own relink fine, an unlinked login is free', async () => {
+  it('holds a linked login per element: overlap refused, own relink fine, an unlinked login is free', async (t) => {
+    if (!(await serverHasMultikeyUnique())) return t.skip('this kdb-service treats an array as one value under a unique constraint (multikey arrives after 0.7.1)');
     const users = store.collection('users');
     const login = (provider: string, providerUserId: string) => ({ provider, providerUserId });
     const holder = await users.create({
@@ -129,6 +132,37 @@ describe('KDB atomicity across processes', { skip }, () => {
     assert.equal(await codes.countDocuments({ clientId: 'c1' }), 3);
   });
 });
+
+/** Whether the server holds each array element as its own unique claim. Asked of the server
+ *  itself, on a field no collection uses, rather than read off a version number. */
+let multikey: Promise<boolean> | undefined;
+function serverHasMultikeyUnique(): Promise<boolean> {
+  return (multikey ??= probeMultikeyUnique());
+}
+
+async function probeMultikeyUnique(): Promise<boolean> {
+  const raw = (await import(CLIENT_MODULE)) as {
+    connect(a: string, t: string): Promise<{
+      exec(ns: string, sql: string): Promise<unknown>;
+      replace(ns: string, id: string, body: object): Promise<unknown>;
+      close(): Promise<void>;
+    }>;
+  };
+  const client = await raw.connect(process.env.KDB_ADDR!, '');
+  try {
+    await client.exec(NS, 'CREATE UNIQUE INDEX qtask_probe_multikey ON docs (_probe_multikey)').catch(() => undefined);
+    await client.replace(NS, randomUUID(), { _probe_multikey: ['x', 'shared'] });
+    try {
+      await client.replace(NS, randomUUID(), { _probe_multikey: ['shared', 'y'] });
+      return false;
+    } catch (error) {
+      if ((error as { code?: string }).code === 'UNIQUE_VIOLATION') return true;
+      throw error;
+    }
+  } finally {
+    await client.close();
+  }
+}
 
 function runWorker(docId: string, rounds: number, extra: Record<string, string> = {}): Promise<any> {
   return new Promise((done, fail) => {
