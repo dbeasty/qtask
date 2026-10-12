@@ -28,6 +28,8 @@
  * docs/perf/phase4.md for what that means for the numbers.
  */
 
+import { createHook } from 'node:async_hooks';
+import { workTracker } from '../framing.js';
 import {
   ATT_MTU_MAX,
   ATT_MTU_MIN,
@@ -91,7 +93,81 @@ interface Ev {
 }
 
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const tick = () => new Promise<void>((r) => setImmediate(r));
+
+// --- knowing when the program is idle ---------------------------------------------------------------
+//
+// Computation (crypto, deflate, the engine applying documents) costs zero VIRTUAL time, so the
+// clock must not move while the program still has work in flight. "Idle" is defined with
+// async_hooks: no promise has been created, no compression job is running and no short real timer
+// is pending, for two consecutive event-loop turns. Without this, a far-away timer fires while an async apply is
+// still running and the run reports tens of seconds of "radio time" that were really CPU.
+
+// Compression jobs on the thread pool are tracked through `workTracker` in framing.ts (async_hooks
+// cannot say when a streaming zlib job is finished, it calls back once per chunk).
+let BUSY = 0;
+workTracker.track = <T>(p: Promise<T>): Promise<T> => {
+  BUSY++;
+  return p.finally(() => {
+    BUSY--;
+  });
+};
+const NATIVE_PENDING = new Set<number>();
+const NATIVE_TYPES = new Map<number, string>();
+let ACTIVITY = 0;
+let hookOn = false;
+function enableActivityHook(): void {
+  if (hookOn) return;
+  hookOn = true;
+  createHook({
+    init(id, type, _trigger, resource) {
+      if (type === 'PROMISE') ACTIVITY++;
+      else if (type === 'Timeout') {
+        // A short real timer is code yielding to the event loop (setTimeout(0) between batches):
+        // work in flight. Long ones (request timeouts, keep-alives) are not.
+        const ms = (resource as { _idleTimeout?: number } | undefined)?._idleTimeout;
+        if (typeof ms === 'number' && ms <= 50) {
+          ACTIVITY++;
+          NATIVE_PENDING.add(id);
+          NATIVE_TYPES.set(id, 'Timeout');
+        }
+      } else if (type !== 'Immediate' && type !== 'TickObject' && type !== 'TIMERWRAP') ACTIVITY++;
+    },
+    before(id) {
+      NATIVE_PENDING.delete(id);
+    },
+    destroy(id) {
+      NATIVE_PENDING.delete(id);
+    },
+  }).enable();
+}
+
+/** Resolves once the program has been idle for two consecutive event-loop turns (bounded). */
+function quiesce(maxRealMs = 5000): Promise<void> {
+  enableActivityHook();
+  return new Promise<void>((resolve) => {
+    const deadline = Date.now() + maxRealMs;
+    let quiet = 0;
+    let last = ACTIVITY;
+    const step = () => {
+      if (ACTIVITY === last && NATIVE_PENDING.size === 0 && BUSY === 0) {
+        if (++quiet >= 2) return resolve();
+      } else {
+        quiet = 0;
+        last = ACTIVITY;
+      }
+      if (Date.now() > deadline) {
+        if (process.env.SIM_DEBUG) console.error('quiesce deadline; pending', [...NATIVE_PENDING].map((i) => NATIVE_TYPES.get(i)));
+        return resolve();
+      }
+      if (NATIVE_PENDING.size || BUSY) {
+        if (process.env.SIM_DEBUG === '2') console.error('waiting for', [...NATIVE_PENDING].map((i) => NATIVE_TYPES.get(i)));
+        setTimeout(step, 1);
+      }
+      else setImmediate(step);
+    };
+    setImmediate(step);
+  });
+}
 
 export class SimClock implements Timers {
   private t = 0;
@@ -99,6 +175,10 @@ export class SimClock implements Timers {
   private heap: Ev[] = [];
   /** Events executed, for diagnostics. */
   events = 0;
+
+  constructor() {
+    enableActivityHook();
+  }
 
   now(): number {
     return this.t;
@@ -163,17 +243,9 @@ export class SimClock implements Timers {
     return this.heap[0];
   }
 
-  /**
-   * Lets already-runnable promise chains finish. Timer events get a stronger settle (real
-   * threadpool work such as deflate may still be in flight, and a timeout must not fire
-   * ahead of it).
-   */
-  private async settle(strong: boolean): Promise<void> {
-    await tick();
-    if (strong) {
-      await realSleep(1);
-      await tick();
-    }
+  /** Waits until the program is idle, so work in flight finishes before time moves. */
+  private async settle(_strong: boolean): Promise<void> {
+    await quiesce();
   }
 
   /**
@@ -206,6 +278,7 @@ export class SimClock implements Timers {
       if (next.kind === 'timer') await this.settle(true);
       const e = this.pop();
       if (!e) continue;
+      if (process.env.SIM_DEBUG === '3' && e.at - this.t > 1000) console.error(`jump ${Math.round(this.t)} -> ${Math.round(e.at)} kind ${e.kind} pending ${NATIVE_PENDING.size} activity ${ACTIVITY}`);
       this.t = Math.max(this.t, e.at);
       this.events++;
       e.fn();

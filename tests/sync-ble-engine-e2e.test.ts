@@ -85,7 +85,8 @@ describe('engine over Bluetooth: three devices', () => {
     void b!.coordinator.syncNow();
     await w.advance(20_000);
     await converged(w, [a!, b!, c!], 0);
-    for (const d of [a!, b!, c!]) assert.deepEqual(d.errors, [], `no sync errors on ${d.name}`);
+    // A round cut short by the transport dropping the duplicate of a simultaneously opened link is expected and retried.
+    for (const d of [a!, b!, c!]) assert.deepEqual(d.errors.filter((e) => !/link closed/.test(e)), [], `no sync errors on ${d.name}`);
   });
 
   it('a device that was out of range catches up when it returns, and its own edits are not lost', async () => {
@@ -123,10 +124,8 @@ describe('engine over Bluetooth: three devices', () => {
     const b = await makeBleDevice(w, 'B', o);
     const c = await makeBleDevice(w, 'C', o);
     await seedTasks(a, 1000);
-    await pairAll([a, b]);
-    await linked(w, a, b);
     const t0 = w.clock.now();
-    void a.coordinator.syncNow();
+    await pairAll([a, b]);
     await converged(w, [a, b], 1000);
     const initial = w.clock.now() - t0;
     const da = await a.digest();
@@ -134,9 +133,9 @@ describe('engine over Bluetooth: three devices', () => {
     const bIn = b.ble.wireStats().frameBytesIn;
     await pairAll([a, c]);
     await pairAll([b, c]);
+    await converged(w, [a, b, c], 1000);
     await linked(w, a, c);
     await linked(w, b, c);
-    await converged(w, [a, b, c], 1000);
     await w.advance(5000);
     const cIn = c.ble.wireStats().frameBytesIn;
     // With one initiator per link, a document crosses each link at most once, so C (two neighbours
@@ -144,7 +143,7 @@ describe('engine over Bluetooth: three devices', () => {
     // tell one neighbour that another is already sending the same document (documented limit).
     assert.ok(cIn < bIn * 2.3, `C received ${cIn} framed bytes, B received ${bIn} for the same data`);
     for (const d of [a, b, c]) assert.deepEqual(d.errors.filter((e) => !/closed/.test(e)), []);
-    console.log(`  1k docs over BLE (MTU 185, 60 KB/s, 50 ms): ${Math.round(initial / 100) / 10} s virtual; C received ${cIn} framed B vs ${bIn} B for B itself`);
+    console.log(`  1k docs over BLE (MTU 185, 60 KB/s, 50 ms), from pairing to converged incl. discovery and connect: ${Math.round(initial / 100) / 10} s virtual; C received ${cIn} framed B vs ${bIn} B for B itself`);
   });
 
   it('with a single initiator per link, the other end starts its own round if the initiator never does', async () => {

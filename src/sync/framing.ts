@@ -41,6 +41,12 @@ export const FLAG_PING = 0x08;
 export const FLAG_PONG = 0x10;
 const KNOWN_FLAGS = FLAG_DEFLATE | FLAG_MORE | FLAG_CREDIT | FLAG_PING | FLAG_PONG;
 
+/**
+ * Test seam. Compression runs on the thread pool, so a virtual-time simulator cannot tell from
+ * the outside that a job is in flight; it installs a tracker here. Production leaves it alone.
+ */
+export const workTracker: { track<T>(p: Promise<T>): Promise<T> } = { track: (p) => p };
+
 export class FramingError extends Error {
   constructor(message: string) {
     super(message);
@@ -257,7 +263,7 @@ export class FramedChannel {
     let body = msg;
     let flags = 0;
     if (msg.length >= this.o.compressThreshold) {
-      const z = await deflateAsync(msg);
+      const z = await workTracker.track(deflateAsync(msg));
       if (z.length < msg.length) {
         body = z;
         flags = FLAG_DEFLATE;
@@ -340,7 +346,7 @@ export class FramedChannel {
     this.pendingDelivery += body.length;
     // Credit for the final frame is returned once the app has had its chance to consume.
     const prep: Promise<Buffer> = compressed
-      ? inflateAsync(body, { maxOutputLength: this.o.maxMessageSize })
+      ? workTracker.track(inflateAsync(body, { maxOutputLength: this.o.maxMessageSize }))
       : Promise.resolve(body);
     this.deliverChain = this.deliverChain.then(async () => {
       let msg: Buffer;
