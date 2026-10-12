@@ -54,11 +54,21 @@ export interface DeviceOptions {
   mtu?: number;
   batchSize?: number;
   headersFirst?: boolean;
+  /** Only the lower node id starts a round when a link comes up (the other end serves, with a fallback). */
+  singleInitiator?: boolean;
   ble?: Partial<BleTransportOptions>;
   /** Wrap or replace the transport the coordinator runs over (for example a TransportSelector). */
   transport?: (ble: BleTransport, d: { name: string; identity: DeviceIdentity; peers: PeerStore }) => PeerLinkTransport;
   /** Do not start the coordinator and transport yet. */
   deferStart?: boolean;
+}
+
+const created: BleDevice[] = [];
+
+/** Stops every device made since the last call: closes links so no pending request timer outlives its test. */
+export async function stopAll(): Promise<void> {
+  const devs = created.splice(0);
+  await Promise.all(devs.map((d) => d.transport.stop().catch(() => undefined)));
 }
 
 export async function makeBleDevice(world: SimWorld, name: string, o: DeviceOptions = {}): Promise<BleDevice> {
@@ -105,12 +115,14 @@ export async function makeBleDevice(world: SimWorld, name: string, o: DeviceOpti
   };
   dev.coordinator = new LanSyncCoordinator(engine, transport, {
     headersFirst: o.headersFirst,
+    ...(o.singleInitiator ? { shouldInitiate: (l: { peerId: string }) => identity.info.nodeId < l.peerId, timers: world.clock, passiveFallbackMs: 15_000 } : {}),
     onResult: (_p, r) => {
       dev.rounds++;
       dev.results.push({ pulled: r.pulled, pushed: r.pushed, conflicts: r.conflicts });
     },
     onError: (_p, e) => void dev.errors.push(e.message),
   });
+  created.push(dev);
   if (!o.deferStart) await startDevice(dev);
   return dev;
 }
@@ -162,6 +174,8 @@ export async function linked(w: SimWorld, a: BleDevice, b: BleDevice) {
   await w.until(() => a.transport.links().some((l) => l.peerId === b.identity.info.nodeId) && b.transport.links().some((l) => l.peerId === a.identity.info.nodeId), {
     what: `${a.name}<->${b.name} link`,
   });
+  // Let a simultaneous-connect race settle so tests do not grab a link that is about to be replaced.
+  await w.advance(2500);
 }
 
 // --- realistic task text -------------------------------------------------------------------------

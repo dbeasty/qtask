@@ -72,8 +72,8 @@ export interface BleTransportOptions {
   keepAliveMs?: number;
   /** Restart the scan this often while a paired peer is missing (OS scans report each device once per session). */
   rescanMs?: number;
-  /** A higher node id waits this long before dialing a device it knows, so the lower id connects first. */
-  higherIdDelayMs?: number;
+  /** After connecting out to a lower node id, wait this long for it to connect to us instead (avoids two links). */
+  higherIdWaitMs?: number;
   /** After reading a device that is not a paired peer, leave it alone for this long. */
   unpairedIgnoreMs?: number;
   /** Unauthenticated inbound connections allowed at once. */
@@ -431,8 +431,7 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
     // Two devices that see each other at the same moment would both connect. A short random
     // pause (and a longer one for the higher node id when we know whom the device is) makes
     // one side win; if both still connect, `register` keeps the lower initiator's link.
-    const known = this.byDevice.get(deviceId);
-    const delay = Math.random() * 300 + (known && this.self.nodeId > known ? this.o.higherIdDelayMs ?? 1500 : 0);
+    const delay = Math.random() * 300;
     this.timers.setTimeout(() => {
       this.queue.push(deviceId);
       void this.drain();
@@ -507,6 +506,16 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
       link.close();
       return;
     }
+    // Both devices may have connected to each other at once. The link opened by the lower node
+    // id wins (see `register`), so the higher id gives the other side a moment to get through
+    // before spending a handshake on a link that would be discarded.
+    if (this.self.nodeId > peer.nodeId) {
+      await this.waitForLive(peer.nodeId, this.o.higherIdWaitMs ?? 1500);
+      if (this.live.has(peer.nodeId) || this.suppressed.has(peer.nodeId)) {
+        link.close();
+        return;
+      }
+    }
     const pipe = new RecordPipe(link, this.timers);
     let tunnel: SecureTunnel;
     try {
@@ -516,6 +525,17 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
       throw e;
     }
     this.register(this.makeLink(tunnel, peer, this.self.nodeId, deviceId));
+  }
+
+  private liveWaiters = new Map<string, Array<() => void>>();
+  private waitForLive(peerId: string, ms: number): Promise<void> {
+    if (this.live.has(peerId)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const t = this.timers.setTimeout(resolve, ms);
+      const list = this.liveWaiters.get(peerId) ?? [];
+      list.push(() => (this.timers.clearTimeout(t), resolve()));
+      this.liveWaiters.set(peerId, list);
+    });
   }
 
   private makeLink(tunnel: SecureTunnel, peer: PairedPeer, initiatorId: string, deviceId: string | null): BleLink {
@@ -609,6 +629,7 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
       }
     });
     this.updateScan();
+    for (const w of this.liveWaiters.get(link.peerId)?.splice(0) ?? []) w();
     this.log(`peer up ${link.peerId.slice(0, 8)}`);
     for (const h of this.upHandlers) h(link);
   }

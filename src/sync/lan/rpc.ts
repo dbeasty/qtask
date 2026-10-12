@@ -141,6 +141,17 @@ export interface LanSyncOptions {
   headersFirst?: boolean;
   onResult?: (peerId: string, result: SyncResult) => void;
   onError?: (peerId: string, error: Error) => void;
+  /**
+   * Which end starts the round when a link comes up. A round is bidirectional (pull and
+   * push), so when both ends start one the data crosses the link twice, which is cheap on
+   * Wi-Fi and expensive on Bluetooth. Default: both start. For a scarce link pass e.g.
+   * `(link) => selfNodeId < link.peerId`; the other end only serves, and starts its own
+   * round after `passiveFallbackMs` if the peer never did.
+   */
+  shouldInitiate?: (link: SyncPeerLink) => boolean;
+  passiveFallbackMs?: number;
+  /** Timer source for the passive fallback (virtual time in tests). Default: real timers. */
+  timers?: { setTimeout(fn: () => void, ms: number): unknown };
 }
 
 /**
@@ -153,6 +164,7 @@ export class LanSyncCoordinator {
   private readonly running = new Map<string, Promise<void>>();
   private readonly again = new Set<string>();
   private stopped = false;
+  private readonly served = new Set<string>();
 
   constructor(
     private readonly engine: SyncEngine,
@@ -164,11 +176,23 @@ export class LanSyncCoordinator {
     this.transport.onPeerUp((link) => {
       const rpc = new LinkRpc(link, this.engine.service(), {
         onServed: (op) => {
+          this.served.add(link.peerId);
           // A peer pushed us changes: relay them to everyone else.
           if (op === 'push') this.syncAllExcept(link.peerId);
         },
       });
       this.rpcs.set(link.peerId, rpc);
+      this.served.delete(link.peerId);
+      if (this.options.shouldInitiate && !this.options.shouldInitiate(link)) {
+        // The peer is expected to start the round; do it ourselves only if it never does.
+        const fire = () => {
+          if (!this.stopped && this.rpcs.get(link.peerId) === rpc && !this.served.has(link.peerId)) void this.syncPeer(link.peerId);
+        };
+        const ms = this.options.passiveFallbackMs ?? 15_000;
+        if (this.options.timers) this.options.timers.setTimeout(fire, ms);
+        else setTimeout(fire, ms).unref();
+        return;
+      }
       // Both ends see peerUp and both start a round; `running` collapses overlaps.
       void this.syncPeer(link.peerId);
     });
