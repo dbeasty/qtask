@@ -358,6 +358,62 @@ export function runDataStoreConformance(backend: BackendHarness): void {
         assert.equal(await users.countDocuments({ emailVerificationTokenHash: 'secret-hash' }), 0);
       });
 
+      it('stores undefined inside a Mixed value set by an update as null, as Mongo does', async () => {
+        // `$set: { pendingProposals: [...] }` with `toolCallIndex: undefined` inside: what the
+        // MCP session service does when it stages a proposal.
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({ userId: 'u1', pendingProposals: [] });
+        await conversations.updateOne(
+          { _id: created._id },
+          { $set: { pendingProposals: [{ id: 'a', status: 'pending', toolCallIndex: undefined }] } }
+        );
+        const found = (await conversations.findById(created._id as string))!;
+        const proposal = (found.pendingProposals as Array<Record<string, unknown>>)[0];
+        assert.equal(proposal.toolCallIndex, null);
+        assert.equal('toolCallIndex' in proposal, true);
+      });
+
+      it('drops fields the schema does not declare, at every depth (strict mode)', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({
+          userId: 'u1',
+          notInTheSchema: 'x',
+          messages: [{ role: 'user', content: 'hi', alsoNotInTheSchema: { a: 1 } }],
+        });
+        const found = (await conversations.findById(created._id as string))!;
+        assert.equal('notInTheSchema' in found, false);
+        const message = (found.messages as Array<Record<string, unknown>>)[0];
+        assert.equal(message.content, 'hi');
+        assert.equal('alsoNotInTheSchema' in message, false);
+      });
+
+      it('does not store an empty object for a field defaulting to one (minimize)', async () => {
+        const feedback = store.collection('feedback');
+        const created = await feedback.create({ userId: 'u1', message: 'm', category: 'bug' });
+        const found = (await feedback.findById(created._id as string))!;
+        assert.equal('context' in found, false, 'Mongoose minimizes an empty {} away');
+      });
+
+      it('drops an empty object inside an element pushed by an update, but keeps a $set of one', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({ userId: 'u1' });
+        await conversations.updateOne(
+          { _id: created._id },
+          { $push: { messages: { $each: [{ role: 'assistant', content: 'x', toolCalls: [{ id: 't', function: { name: 'f', arguments: {} } }] }] } } }
+        );
+        const found = (await conversations.findById(created._id as string))!;
+        const call = (found.messages as Array<{ toolCalls: Array<{ function: Record<string, unknown> }> }>)[0].toolCalls[0];
+        assert.equal(call.function.name, 'f');
+        assert.equal('arguments' in call.function, false, 'Mongoose minimizes the empty object inside a pushed element');
+      });
+
+      it('returns documents in creation order when the query asks for no order', async () => {
+        const ids: string[] = [];
+        for (let i = 0; i < 6; i++) ids.push((await tasks.create({ userId: 'order-user', title: `o${i}` }))._id as string);
+        const found = await tasks.find({ userId: 'order-user' });
+        assert.deepEqual(found.map((t) => t._id), ids);
+      });
+
       it('replaces a whole document', async () => {
         const [alpha] = await seed();
         const result = await tasks.replaceOne(

@@ -177,6 +177,13 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
   async updateOne(filter: Filter, update: Update, options?: UpdateOptions): Promise<UpdateResult> {
     const args = snap({ filter, update, options });
     const result = await this.primary.updateOne(filter, update, options);
+    if (result.upsertedId) {
+      // The primary created this document and gave it an id. Replaying the upsert would make the
+      // shadow mint a different one, leaving the same row under two identities for good.
+      const created = snap(await this.primary.findById(result.upsertedId));
+      if (created) this.mirror('updateOne:upsert', () => this.copyAcross(created));
+      return result;
+    }
     this.mirror('updateOne', () => this.shadow.updateOne(args.filter, args.update, args.options));
     return result;
   }
@@ -247,8 +254,25 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
   async bulkWrite(operations: BulkOperation[]): Promise<UpdateResult> {
     const replay = snap(operations);
     const result = await this.primary.bulkWrite(operations);
-    this.mirror('bulkWrite', () => this.shadow.bulkWrite(replay));
+    // An upsert may have created documents, and replaying it would mint different ids on the
+    // shadow. Those operations are mirrored by copying the primary's resulting document; the
+    // rest are replayed as written.
+    const plain = replay.filter((op) => !op.updateOne.upsert);
+    const upserts = replay.filter((op) => op.updateOne.upsert);
+    if (plain.length > 0) this.mirror('bulkWrite', () => this.shadow.bulkWrite(plain));
+    for (const op of upserts) {
+      const filter = op.updateOne.filter;
+      const current = snap(await this.primary.findOne(filter));
+      if (current) this.mirror('bulkWrite:upsert', () => this.copyAcross(current));
+    }
     return result;
+  }
+
+  /** Makes the shadow hold exactly this document, creating it under the primary's id if absent. */
+  private async copyAcross(doc: T): Promise<void> {
+    const existing = await this.shadow.findById(String(doc._id));
+    if (existing) await this.shadow.replaceOne({ _id: doc._id }, doc);
+    else await this.shadow.create(doc);
   }
 
   private mirror(operation: string, run: () => Promise<unknown>): void {

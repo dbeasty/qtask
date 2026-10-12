@@ -208,6 +208,23 @@ describe('shadow writes', () => {
     assert.equal((replay.args[0] as Record<string, unknown>)._id, created._id);
   });
 
+  it('carries the primary\'s id across an updateOne upsert instead of letting the shadow mint its own', async () => {
+    const result = await store
+      .collection('tasks')
+      .updateOne({ userId: 'u9', title: 'upserted' }, { $set: { status: 'todo' } }, { upsert: true });
+    assert.ok(result.upsertedId, 'the primary should have created the document');
+    await store.drainShadow();
+
+    const created = shadow.tasks().calls.find((c) => c.op === 'create');
+    assert.ok(created, 'the shadow should have been given the created document');
+    assert.equal((created.args[0] as Record<string, unknown>)._id, result.upsertedId);
+    assert.equal(
+      shadow.tasks().calls.some((c) => c.op === 'updateOne'),
+      false,
+      'replaying the upsert would let the shadow mint a different id'
+    );
+  });
+
   it('answers reads from the primary and never asks the shadow', async () => {
     await store.collection('tasks').create({ userId: 'u1', title: 'read me' });
     await store.drainShadow();

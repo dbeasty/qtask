@@ -67,6 +67,10 @@ export function normalizeDocument(schema: Schema, input: Doc, options: Normalize
   // store did not treat it as removed, JSON then dropped it on the way out, and the old value
   // survived KDB's merge-write: a retired one-time token stayed valid.
   stripUndefined(out);
+  // Mongoose's `minimize`: a document saved with an empty object for a field drops the field.
+  // (Only on create and replace; an update's $set of {} is stored as given.)
+  if (options.isCreate) minimizeEmpty(out);
+  else minimizeInsideArrays(out);
 
   if (hasTimestamps(schema)) {
     const now = new Date();
@@ -83,6 +87,37 @@ export function normalizeDocument(schema: Schema, input: Doc, options: Normalize
 }
 
 let collecting: string[] | null = null;
+
+/**
+ * On an update, Mongoose minimizes the elements it casts into an array (a pushed sub-document
+ * with `arguments: {}` loses that key) but stores a `$set` of `{}` as given. So only objects
+ * reached through an array are minimized.
+ */
+function minimizeInsideArrays(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) minimizeEmpty(item);
+    return;
+  }
+  if (value === null || typeof value !== 'object' || value instanceof Date) return;
+  for (const inner of Object.values(value as Record<string, unknown>)) minimizeInsideArrays(inner);
+}
+
+/** Removes own properties that are empty plain objects, at every depth (children first). */
+function minimizeEmpty(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) minimizeEmpty(item);
+    return;
+  }
+  if (value === null || typeof value !== 'object' || value instanceof Date) return;
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    const inner = record[key];
+    minimizeEmpty(inner);
+    if (inner !== null && typeof inner === 'object' && !Array.isArray(inner) && !(inner instanceof Date) && Object.keys(inner as object).length === 0) {
+      delete record[key];
+    }
+  }
+}
 
 /** Removes own properties whose value is undefined, at every depth. */
 function stripUndefined(value: unknown): void {
@@ -150,6 +185,19 @@ function applySchema(schema: Schema, doc: Doc, options: NormalizeOptions, prefix
       }
       throw error;
     }
+  }
+
+  // Strict mode, as Mongoose has it: a field the schema does not declare is dropped rather than
+  // stored, at the top level and inside sub-documents. Without this the KDB side kept data the
+  // MongoDB side silently discarded (an `entityLinkSource` snapshot nobody declared).
+  if ((schema as unknown as { options?: { strict?: unknown } }).options?.strict !== false) {
+    const declared = new Set<string>(['_id', '__v']);
+    for (const path of Object.keys(schema.paths)) declared.add(path.split('.')[0]!);
+    if (hasTimestamps(schema)) {
+      declared.add('createdAt');
+      declared.add('updatedAt');
+    }
+    for (const key of Object.keys(out)) if (!declared.has(key)) delete out[key];
   }
 
   return out;
@@ -323,4 +371,35 @@ export function ttlSpec(schema: Schema): { path: string; graceMs: number } | nul
     if (typeof seconds === 'number' && keys.length === 1) return { path: keys[0], graceMs: seconds * 1000 };
   }
   return null;
+}
+
+
+/**
+ * MongoDB stores `undefined` inside a Mixed value as null when it arrives through an update
+ * (`$set: { pendingProposals: [{ toolCallIndex: undefined }] }`), whereas a create or a typed
+ * field drops it. Applied to the result of an update, before normalization strips the rest, so
+ * the stored shape matches and `=== undefined` checks in the application see the same thing on
+ * either backend.
+ */
+export function mixedUndefinedToNull(schema: Schema, doc: Doc): Doc {
+  for (const [path, type] of Object.entries(schema.paths)) {
+    if (path.includes('.') || doc[path] === undefined || doc[path] === null) continue;
+    const t = type as unknown as { instance?: string; caster?: { instance?: string }; $embeddedSchemaType?: { instance?: string } };
+    const element = t.caster ?? t.$embeddedSchemaType;
+    if (t.instance === 'Mixed' || (t.instance === 'Array' && element?.instance === 'Mixed')) {
+      doc[path] = nullify(doc[path]);
+    }
+  }
+  return doc;
+}
+
+function nullify(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (Array.isArray(value)) return value.map(nullify);
+  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) out[key] = nullify(inner);
+    return out;
+  }
+  return value;
 }

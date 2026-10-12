@@ -37,7 +37,7 @@ import { valuesEqual } from '../query/compare.js';
 import { getPath, setPath } from '../query/paths.js';
 import { generateObjectId, toDocumentUuid } from './ids.js';
 import { buildWhere } from './pushdown.js';
-import { DuplicateKeyError, EXPIRE_FIELD, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints } from './schema.js';
+import { DuplicateKeyError, EXPIRE_FIELD, mixedUndefinedToNull, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints } from './schema.js';
 import type {
   BulkOperation,
   Collection,
@@ -267,6 +267,10 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
       }
     }
+    // A scan has no inherent order. MongoDB's natural order is insertion order, which ObjectId
+    // order tracks, and callers that sorted nothing (or sorted on ties) see it. Returning it here
+    // makes an unsorted read stable and the same as the other backend's.
+    docs.sort((a, b) => (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0));
     return docs;
   }
 
@@ -543,7 +547,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (!isOperatorUpdate(update)) updated._id = target._id;
     // Cast and validate what the update produced; an update can set an enum field to
     // a value the schema forbids exactly as a create can.
-    const normalized = normalizeDocument(this.schema, updated, { isCreate: false });
+    const normalized = normalizeDocument(this.schema, mixedUndefinedToNull(this.schema, updated), { isCreate: false });
 
     const changed = !sameDocument(target, normalized);
     if (!changed) return { doc: target, changed: false };
