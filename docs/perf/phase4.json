@@ -1,0 +1,728 @@
+{
+  "note": "virtual time on the simulated radio; see docs/perf/phase4.md",
+  "node": "v26.0.0",
+  "machine": "darwin/arm64",
+  "mtu185-20KBps-100ms": {
+    "profile": "MTU 185, 20 KB/s, 100 ms",
+    "initialSync": {
+      "1000 docs | headersFirst+deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1690,
+        "syncMs": 6035,
+        "airKB": 111.3,
+        "aToBFrameKB": 103.2,
+        "bToAFrameKB": 5.2,
+        "chunks": 722,
+        "refusedWrites": 587,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "1000 docs | headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1667,
+        "syncMs": 62158,
+        "airKB": 1271.4,
+        "aToBFrameKB": 1194.7,
+        "bToAFrameKB": 51.1,
+        "chunks": 8120,
+        "refusedWrites": 7439,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "1000 docs | no headersFirst, deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1371,
+        "syncMs": 5479,
+        "airKB": 101,
+        "aToBFrameKB": 98,
+        "bToAFrameKB": 0.5,
+        "chunks": 654,
+        "refusedWrites": 603,
+        "messages": 12,
+        "creditStalls": 0
+      },
+      "1000 docs | no headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1630,
+        "syncMs": 57470,
+        "airKB": 1129.2,
+        "aToBFrameKB": 1104.6,
+        "bToAFrameKB": 2,
+        "chunks": 7202,
+        "refusedWrites": 6647,
+        "messages": 12,
+        "creditStalls": 0
+      },
+      "10000 docs | headersFirst+deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1795,
+        "syncMs": 72180,
+        "airKB": 1397.5,
+        "aToBFrameKB": 1315.3,
+        "bToAFrameKB": 51,
+        "chunks": 9027,
+        "refusedWrites": 7359,
+        "messages": 164,
+        "creditStalls": 0
+      },
+      "10000 docs | headersFirst, no deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1509,
+        "syncMs": 793141,
+        "airKB": 16171,
+        "aToBFrameKB": 15319.7,
+        "bToAFrameKB": 534.9,
+        "chunks": 103158,
+        "refusedWrites": 94591,
+        "messages": 164,
+        "creditStalls": 0
+      },
+      "10000 docs | no headersFirst, deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1631,
+        "syncMs": 65669,
+        "airKB": 1295,
+        "aToBFrameKB": 1262.2,
+        "bToAFrameKB": 4.9,
+        "chunks": 8346,
+        "refusedWrites": 7645,
+        "messages": 84,
+        "creditStalls": 0
+      },
+      "10000 docs | no headersFirst, no deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1571,
+        "syncMs": 745254,
+        "airKB": 14710.2,
+        "aToBFrameKB": 14399.6,
+        "bToAFrameKB": 24.1,
+        "chunks": 93811,
+        "refusedWrites": 86489,
+        "messages": 84,
+        "creditStalls": 0
+      }
+    },
+    "initialSync1kHarderText": {
+      "headersFirst+deflate": {
+        "docs": 1000,
+        "rawJsonKB": 367.3,
+        "deflateRatioOfDocs": 0.23800000000000002,
+        "connectMs": 1753,
+        "syncMs": 12072,
+        "airKB": 230.5,
+        "aToBFrameKB": 220,
+        "bToAFrameKB": 5.4,
+        "chunks": 1481,
+        "refusedWrites": 1289,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 367.3,
+        "deflateRatioOfDocs": 0.23800000000000002,
+        "connectMs": 1588,
+        "syncMs": 75362,
+        "airKB": 1530,
+        "aToBFrameKB": 1448.1,
+        "bToAFrameKB": 51.5,
+        "chunks": 9766,
+        "refusedWrites": 8957,
+        "messages": 20,
+        "creditStalls": 0
+      }
+    },
+    "batchSizes1k": {
+      "batchSize 25": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1492,
+        "syncMs": 22108,
+        "airKB": 233.2,
+        "aToBFrameKB": 198.5,
+        "bToAFrameKB": 18.9,
+        "chunks": 1908,
+        "refusedWrites": 4,
+        "messages": 324,
+        "creditStalls": 0
+      },
+      "batchSize 100": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1590,
+        "syncMs": 9785,
+        "airKB": 157.8,
+        "aToBFrameKB": 144.1,
+        "bToAFrameKB": 7.9,
+        "chunks": 1081,
+        "refusedWrites": 601,
+        "messages": 84,
+        "creditStalls": 0
+      },
+      "batchSize 500": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1653,
+        "syncMs": 6022,
+        "airKB": 111,
+        "aToBFrameKB": 103,
+        "bToAFrameKB": 5.2,
+        "chunks": 721,
+        "refusedWrites": 587,
+        "messages": 20,
+        "creditStalls": 0
+      }
+    },
+    "singleChange": {
+      "docsOnDevice": 1000,
+      "aToB": {
+        "p50": 540,
+        "p95": 540,
+        "max": 540
+      },
+      "bToA": {
+        "p50": 540,
+        "p95": 540,
+        "max": 540
+      },
+      "airBytesPerChange": 1162
+    },
+    "reconnect": {
+      "firstLinkMs": 1568,
+      "trials": 10,
+      "sameAddress": {
+        "linkP50": 1315,
+        "linkP95": 1667,
+        "linkMax": 1667,
+        "syncedP50": 1866,
+        "syncedMax": 2221
+      },
+      "addressRotated": {
+        "linkP50": 1552,
+        "linkP95": 1877,
+        "linkMax": 1877,
+        "syncedP50": 2102,
+        "syncedMax": 2425
+      },
+      "idleAirBytesPer5Min": 1200
+    },
+    "thirdDeviceJoin1k": {
+      "headersFirst, both ends initiate": {
+        "cJoinToCompleteMs": 8425,
+        "cReceivedFrameKB": 175.1,
+        "bReceivedFrameKBFromOneNeighbour": 136.1
+      },
+      "headersFirst, single initiator": {
+        "cJoinToCompleteMs": 7325,
+        "cReceivedFrameKB": 109.6,
+        "bReceivedFrameKBFromOneNeighbour": 67.9
+      },
+      "no headersFirst, both ends initiate": {
+        "cJoinToCompleteMs": 6800,
+        "cReceivedFrameKB": 261.6,
+        "bReceivedFrameKBFromOneNeighbour": 130.5
+      }
+    }
+  },
+  "mtu185-60KBps-50ms": {
+    "profile": "MTU 185, 60 KB/s, 50 ms",
+    "initialSync": {
+      "1000 docs | headersFirst+deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1387,
+        "syncMs": 2138,
+        "airKB": 111.8,
+        "aToBFrameKB": 103.3,
+        "bToAFrameKB": 5.2,
+        "chunks": 726,
+        "refusedWrites": 597,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "1000 docs | headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1279,
+        "syncMs": 20771,
+        "airKB": 1271.5,
+        "aToBFrameKB": 1194.7,
+        "bToAFrameKB": 51.1,
+        "chunks": 8113,
+        "refusedWrites": 7442,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "1000 docs | no headersFirst, deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1239,
+        "syncMs": 1861,
+        "airKB": 102,
+        "aToBFrameKB": 97.7,
+        "bToAFrameKB": 0.5,
+        "chunks": 659,
+        "refusedWrites": 617,
+        "messages": 12,
+        "creditStalls": 0
+      },
+      "1000 docs | no headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1200,
+        "syncMs": 19250,
+        "airKB": 1128.7,
+        "aToBFrameKB": 1104.6,
+        "bToAFrameKB": 2,
+        "chunks": 7192,
+        "refusedWrites": 6645,
+        "messages": 12,
+        "creditStalls": 0
+      },
+      "10000 docs | headersFirst+deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1370,
+        "syncMs": 24780,
+        "airKB": 1397.6,
+        "aToBFrameKB": 1315.3,
+        "bToAFrameKB": 51,
+        "chunks": 9019,
+        "refusedWrites": 7362,
+        "messages": 164,
+        "creditStalls": 0
+      },
+      "10000 docs | headersFirst, no deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1442,
+        "syncMs": 264433,
+        "airKB": 16170,
+        "aToBFrameKB": 15319.6,
+        "bToAFrameKB": 534.8,
+        "chunks": 103060,
+        "refusedWrites": 94552,
+        "messages": 164,
+        "creditStalls": 0
+      },
+      "10000 docs | no headersFirst, deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1222,
+        "syncMs": 21953,
+        "airKB": 1295.6,
+        "aToBFrameKB": 1262.3,
+        "bToAFrameKB": 4.9,
+        "chunks": 8342,
+        "refusedWrites": 7651,
+        "messages": 84,
+        "creditStalls": 0
+      },
+      "10000 docs | no headersFirst, no deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1205,
+        "syncMs": 248520,
+        "airKB": 14709.3,
+        "aToBFrameKB": 14399.6,
+        "bToAFrameKB": 24.1,
+        "chunks": 93717,
+        "refusedWrites": 86449,
+        "messages": 84,
+        "creditStalls": 0
+      }
+    },
+    "initialSync1kHarderText": {
+      "headersFirst+deflate": {
+        "docs": 1000,
+        "rawJsonKB": 367.3,
+        "deflateRatioOfDocs": 0.23800000000000002,
+        "connectMs": 1176,
+        "syncMs": 4199,
+        "airKB": 230.9,
+        "aToBFrameKB": 220.1,
+        "bToAFrameKB": 5.4,
+        "chunks": 1483,
+        "refusedWrites": 1296,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 367.3,
+        "deflateRatioOfDocs": 0.23800000000000002,
+        "connectMs": 1160,
+        "syncMs": 25190,
+        "airKB": 1530.2,
+        "aToBFrameKB": 1448.1,
+        "bToAFrameKB": 51.5,
+        "chunks": 9760,
+        "refusedWrites": 8960,
+        "messages": 20,
+        "creditStalls": 0
+      }
+    },
+    "batchSizes1k": {
+      "batchSize 25": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1145,
+        "syncMs": 10055,
+        "airKB": 233.1,
+        "aToBFrameKB": 198.4,
+        "bToAFrameKB": 18.9,
+        "chunks": 1906,
+        "refusedWrites": 4,
+        "messages": 324,
+        "creditStalls": 0
+      },
+      "batchSize 100": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1178,
+        "syncMs": 3697,
+        "airKB": 158,
+        "aToBFrameKB": 144.1,
+        "bToAFrameKB": 7.9,
+        "chunks": 1081,
+        "refusedWrites": 508,
+        "messages": 84,
+        "creditStalls": 0
+      },
+      "batchSize 500": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1070,
+        "syncMs": 2180,
+        "airKB": 111.5,
+        "aToBFrameKB": 103.1,
+        "bToAFrameKB": 5.2,
+        "chunks": 723,
+        "refusedWrites": 594,
+        "messages": 20,
+        "creditStalls": 0
+      }
+    },
+    "singleChange": {
+      "docsOnDevice": 1000,
+      "aToB": {
+        "p50": 280,
+        "p95": 280,
+        "max": 280
+      },
+      "bToA": {
+        "p50": 280,
+        "p95": 280,
+        "max": 280
+      },
+      "airBytesPerChange": 1159
+    },
+    "reconnect": {
+      "firstLinkMs": 1317,
+      "trials": 10,
+      "sameAddress": {
+        "linkP50": 955,
+        "linkP95": 1478,
+        "linkMax": 1478,
+        "syncedP50": 1186,
+        "syncedMax": 1700
+      },
+      "addressRotated": {
+        "linkP50": 1054,
+        "linkP95": 1487,
+        "linkMax": 1487,
+        "syncedP50": 1273,
+        "syncedMax": 1717
+      },
+      "idleAirBytesPer5Min": 1200
+    },
+    "thirdDeviceJoin1k": {
+      "headersFirst, both ends initiate": {
+        "cJoinToCompleteMs": 3300,
+        "cReceivedFrameKB": 142.3,
+        "bReceivedFrameKBFromOneNeighbour": 136.1
+      },
+      "headersFirst, single initiator": {
+        "cJoinToCompleteMs": 4375,
+        "cReceivedFrameKB": 74,
+        "bReceivedFrameKBFromOneNeighbour": 68
+      },
+      "no headersFirst, both ends initiate": {
+        "cJoinToCompleteMs": 2900,
+        "cReceivedFrameKB": 262,
+        "bReceivedFrameKBFromOneNeighbour": 130.6
+      }
+    }
+  },
+  "mtu512-150KBps-30ms": {
+    "profile": "MTU 512, 150 KB/s, 30 ms",
+    "initialSync": {
+      "1000 docs | headersFirst+deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1184,
+        "syncMs": 941,
+        "airKB": 114.1,
+        "aToBFrameKB": 105.1,
+        "bToAFrameKB": 5.2,
+        "chunks": 349,
+        "refusedWrites": 246,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "1000 docs | headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1000,
+        "syncMs": 8375,
+        "airKB": 1272.3,
+        "aToBFrameKB": 1194.7,
+        "bToAFrameKB": 51.1,
+        "chunks": 3756,
+        "refusedWrites": 3063,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "1000 docs | no headersFirst, deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1288,
+        "syncMs": 787,
+        "airKB": 103.5,
+        "aToBFrameKB": 100,
+        "bToAFrameKB": 0.5,
+        "chunks": 318,
+        "refusedWrites": 269,
+        "messages": 12,
+        "creditStalls": 0
+      },
+      "1000 docs | no headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1254,
+        "syncMs": 7721,
+        "airKB": 1130.2,
+        "aToBFrameKB": 1104.6,
+        "bToAFrameKB": 2,
+        "chunks": 3330,
+        "refusedWrites": 2779,
+        "messages": 12,
+        "creditStalls": 0
+      },
+      "10000 docs | headersFirst+deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1081,
+        "syncMs": 10344,
+        "airKB": 1398,
+        "aToBFrameKB": 1316.2,
+        "bToAFrameKB": 51,
+        "chunks": 4237,
+        "refusedWrites": 2840,
+        "messages": 164,
+        "creditStalls": 0
+      },
+      "10000 docs | headersFirst, no deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1123,
+        "syncMs": 105802,
+        "airKB": 16169.7,
+        "aToBFrameKB": 15319.6,
+        "bToAFrameKB": 534.8,
+        "chunks": 47658,
+        "refusedWrites": 38999,
+        "messages": 164,
+        "creditStalls": 0
+      },
+      "10000 docs | no headersFirst, deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 1102,
+        "syncMs": 8848,
+        "airKB": 1296.3,
+        "aToBFrameKB": 1263.7,
+        "bToAFrameKB": 4.9,
+        "chunks": 3919,
+        "refusedWrites": 3222,
+        "messages": 84,
+        "creditStalls": 0
+      },
+      "10000 docs | no headersFirst, no deflate": {
+        "docs": 10000,
+        "rawJsonKB": 2027.9,
+        "deflateRatioOfDocs": 0.1,
+        "connectMs": 949,
+        "syncMs": 99451,
+        "airKB": 14709.1,
+        "aToBFrameKB": 14399.5,
+        "bToAFrameKB": 24.1,
+        "chunks": 43304,
+        "refusedWrites": 36046,
+        "messages": 84,
+        "creditStalls": 0
+      }
+    },
+    "initialSync1kHarderText": {
+      "headersFirst+deflate": {
+        "docs": 1000,
+        "rawJsonKB": 367.3,
+        "deflateRatioOfDocs": 0.23800000000000002,
+        "connectMs": 1208,
+        "syncMs": 1767,
+        "airKB": 231.9,
+        "aToBFrameKB": 220,
+        "bToAFrameKB": 5.4,
+        "chunks": 695,
+        "refusedWrites": 535,
+        "messages": 20,
+        "creditStalls": 0
+      },
+      "headersFirst, no deflate": {
+        "docs": 1000,
+        "rawJsonKB": 367.3,
+        "deflateRatioOfDocs": 0.23800000000000002,
+        "connectMs": 1044,
+        "syncMs": 10131,
+        "airKB": 1532.1,
+        "aToBFrameKB": 1450.1,
+        "bToAFrameKB": 51.5,
+        "chunks": 4520,
+        "refusedWrites": 3701,
+        "messages": 20,
+        "creditStalls": 0
+      }
+    },
+    "batchSizes1k": {
+      "batchSize 25": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1214,
+        "syncMs": 5636,
+        "airKB": 233.2,
+        "aToBFrameKB": 198.6,
+        "bToAFrameKB": 18.9,
+        "chunks": 1119,
+        "refusedWrites": 0,
+        "messages": 324,
+        "creditStalls": 0
+      },
+      "batchSize 100": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1308,
+        "syncMs": 1792,
+        "airKB": 157.7,
+        "aToBFrameKB": 144.2,
+        "bToAFrameKB": 7.9,
+        "chunks": 544,
+        "refusedWrites": 0,
+        "messages": 84,
+        "creditStalls": 0
+      },
+      "batchSize 500": {
+        "docs": 1000,
+        "rawJsonKB": 201.9,
+        "deflateRatioOfDocs": 0.10400000000000001,
+        "connectMs": 1143,
+        "syncMs": 932,
+        "airKB": 112.7,
+        "aToBFrameKB": 103.2,
+        "bToAFrameKB": 5.2,
+        "chunks": 345,
+        "refusedWrites": 243,
+        "messages": 20,
+        "creditStalls": 0
+      }
+    },
+    "singleChange": {
+      "docsOnDevice": 1000,
+      "aToB": {
+        "p50": 160,
+        "p95": 160,
+        "max": 160
+      },
+      "bToA": {
+        "p50": 160,
+        "p95": 160,
+        "max": 160
+      },
+      "airBytesPerChange": 1159
+    },
+    "reconnect": {
+      "firstLinkMs": 1174,
+      "trials": 10,
+      "sameAddress": {
+        "linkP50": 812,
+        "linkP95": 1288,
+        "linkMax": 1288,
+        "syncedP50": 946,
+        "syncedMax": 1420
+      },
+      "addressRotated": {
+        "linkP50": 812,
+        "linkP95": 1020,
+        "linkMax": 1020,
+        "syncedP50": 951,
+        "syncedMax": 1156
+      },
+      "idleAirBytesPer5Min": 1200
+    },
+    "thirdDeviceJoin1k": {
+      "headersFirst, both ends initiate": {
+        "cJoinToCompleteMs": 2000,
+        "cReceivedFrameKB": 142.1,
+        "bReceivedFrameKBFromOneNeighbour": 135.9
+      },
+      "headersFirst, single initiator": {
+        "cJoinToCompleteMs": 3250,
+        "cReceivedFrameKB": 70.9,
+        "bReceivedFrameKBFromOneNeighbour": 68
+      },
+      "no headersFirst, both ends initiate": {
+        "cJoinToCompleteMs": 1850,
+        "cReceivedFrameKB": 262,
+        "bReceivedFrameKBFromOneNeighbour": 130.6
+      }
+    }
+  }
+}

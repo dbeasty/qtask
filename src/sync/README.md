@@ -95,6 +95,12 @@ Dials out only when a token exists; exponential backoff with jitter on failure.
 `adoptLocalAccount(engine, localUserId, accountUserId)` re-owns local documents on
 first sign-in.
 
+## Transports
+
+* `src/sync/lan/`: Wi-Fi (pinned mutual TLS, mDNS, QR/six-digit pairing). `docs/sync-lan-transport.md`.
+* `src/sync/ble/`: Bluetooth LE (Phase 4): a tunnel (X25519 + Ed25519 signatures from the existing pairing records + ChaCha20-Poly1305) over unpaired GATT links, a `BleTransport`, a `TransportSelector` that prefers Wi-Fi, a simulated radio and a JSON bridge to the Mac app's CoreBluetooth. `docs/sync-ble-transport.md`, measurements in `docs/perf/phase4.md`. **Never run on a real radio.**
+* `LanSyncCoordinator` (`lan/rpc.ts`) runs the engine over any `PeerLinkTransport`, including the selector; `shouldInitiate` lets only one end start the round on a scarce link.
+
 ## Files
 
 `clock.ts` HLC · `codec.ts` value encoding/hash · `policy.ts` what replicates ·

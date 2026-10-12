@@ -452,6 +452,24 @@ describe('tunnel: record decoder and info decoder (fuzz)', () => {
     }
   });
 
+  it('pairAsInviter rejects arbitrary PAIR_HELLO bodies and closes the link', async () => {
+    const { pairAsInviter, T_PAIR_HELLO } = await import('../src/sync/ble/tunnel.ts');
+    const r = await rig();
+    for (let i = 0; i < 100; i++) {
+      const { central, peripheral } = memoryLinks(r.clock);
+      const pa = new RecordPipe(central, r.clock);
+      const pb = new RecordPipe(peripheral, r.clock);
+      const body = Buffer.concat([Buffer.from([T_PAIR_HELLO, i % 4 === 0 ? 1 : Math.floor(Math.random() * 256)]), randomBytes(i % 5 === 0 ? 33 : Math.floor(Math.random() * 60))]);
+      const ctx = { ...r.ctxB, handshakeTimeoutMs: 200 };
+      const p = pairAsInviter(pb, ctx, body, { secret: randomBytes(16), confirmSas: async () => true });
+      p.catch(() => undefined);
+      pa.send(randomBytes(20)).catch(() => undefined); // garbage instead of the sealed hello
+      await assert.rejects(r.clock.drive(p, { maxVirtualMs: 5000 }));
+      assert.ok(pb.closed);
+    }
+    assert.equal(r.b.peers.list().length, 1, 'no pairing was stored');
+  });
+
   it('writeChunked splits at the link chunk size and honours backpressure', async () => {
     const clock = new SimClock();
     const { central, peripheral } = memoryLinks(clock, { mtu: 23 });

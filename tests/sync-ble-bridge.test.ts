@@ -71,6 +71,25 @@ describe('bridge: the whole stack through the app<->node protocol', () => {
   });
 });
 
+describe('bridge: fuzz', () => {
+  it('BridgeRadio.feed survives random structured messages and keeps working afterwards', () => {
+    const r = new BridgeRadio((): void => undefined);
+    r.attach(() => undefined);
+    const types = ['state', 'discovered', 'connected', 'connect.failed', 'incoming', 'data', 'acked', 'closed', 'info', 'info.failed', 'hello', 'x'];
+    const vals = () => {
+      const pick = [null, 0, 1, -1, 2 ** 40, 1.5, '', 'L1', 'on', 'AAAA', 'x'.repeat(5000), [], {}, true, 23, 517, 518];
+      return pick[Math.floor(Math.random() * pick.length)];
+    };
+    for (let i = 0; i < 5000; i++) {
+      const m: Record<string, unknown> = { t: types[Math.floor(Math.random() * types.length)] };
+      for (const k of ['req', 'link', 'mtu', 'data', 'n', 'state', 'device', 'error', 'rssi']) if (Math.random() < 0.6) m[k] = vals();
+      assert.doesNotThrow(() => r.feed(m as never));
+    }
+    r.feed({ t: 'state', state: 'on' });
+    assert.equal(r.state, 'on');
+  });
+});
+
 describe('bridge: server on loopback', () => {
   async function client(port: number) {
     const s = tcpConnect(port, '127.0.0.1');

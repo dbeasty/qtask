@@ -41,6 +41,10 @@ KDB is only read: its binary is copied and its client bundled as they are.
 `device.json` + `device.key` the device identity, `secrets.json` session secrets, `uploads/`,
 `logs/node.log`, `logs/kdb.log`, `run/children.json`. Owner-only permissions throughout.
 
+## Bluetooth (Phase 4, opt-in, never run on a radio)
+
+`Sources/QTask/BLE/` holds `CoreBluetoothRadio` (peripheral + central roles, no OS pairing) and `BLEBridgeClient` (loopback TCP to the backend's bridge, authenticated with the device token); `Sources/QTaskCore/BLE/` holds the pure, unit-tested parts. Start the app with `QTASK_BLE=1` to have the backend open the bridge. It compiles and its pure parts are tested; **it has not been run against a real Bluetooth radio** (a Mac cannot hear its own advertisement) and the sync engine is not yet wired into local mode, so the radio is connected but unused. `Info.plist` carries `NSBluetoothAlwaysUsageDescription`; the entitlements file declares `com.apple.security.device.bluetooth`. Details: `docs/sync-ble-transport.md`.
+
 ## Known limits of Phase 1
 
 * No auto-update, Developer ID signing or notarization (Phase 5); the App Store sandbox is untested.

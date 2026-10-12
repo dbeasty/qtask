@@ -111,6 +111,27 @@ describe('ble transport: messages over the link', () => {
   });
 });
 
+describe('ble transport: keep-alive', () => {
+  it('an idle link stays up for ten minutes at a cost of about a kilobyte per five minutes', async () => {
+    const { w, a, b } = await twoDevices();
+    const before = w.airStats().bytes;
+    await w.advance(600_000);
+    assert.ok(linkTo(a, b) && linkTo(b, a), 'still linked');
+    const used = w.airStats().bytes - before;
+    assert.ok(used < 4000, `${used} bytes in ten idle minutes`);
+  });
+
+  it('a link that goes silent without any disconnect is closed by the idle timeout and rebuilt', async () => {
+    const { w, a, b } = await twoDevices();
+    const first = linkTo(a, b)!;
+    for (const c of w.connections) (c.params as any).dropRate = 1; // the air swallows everything, no disconnect event
+    await w.until(() => linkTo(a, b) !== first, { what: 'the silent link to be replaced', maxVirtualMs: 600_000 });
+    for (const c of w.connections) (c.params as any).dropRate = 0;
+    await w.until(() => !!linkTo(a, b) && !!linkTo(b, a), { what: 'a new link', maxVirtualMs: 600_000 });
+    assert.ok(w.clock.now() > 60_000, 'it took the idle timeout (60 s of silence), not an instant');
+  });
+});
+
 describe('ble transport: finding peers', () => {
   it('stops scanning when every paired peer is connected and resumes when one is lost', async () => {
     const { w, a, b } = await twoDevices();
