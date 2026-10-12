@@ -250,7 +250,13 @@ async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 const MAX_CLAIM_ATTEMPTS = 8;
 
 /** Re-reads allowed when the server rejects a conditional write because the document changed. */
-const MAX_PRECONDITION_RETRIES = 25;
+const MAX_PRECONDITION_RETRIES = 60;
+
+/** Jittered exponential backoff for a retried conditional write: up to ~2ms, doubling to a 64ms cap. */
+function backoffMs(attempt: number): number {
+  const ceiling = Math.min(64, 2 * 2 ** Math.min(attempt, 5));
+  return Math.random() * ceiling;
+}
 
 class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private readonly unique: Array<{ fields: string[]; sparse: boolean }>;
@@ -576,6 +582,11 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
             return { hit: true as const, value: await fn(read.doc, { hash: read.hash }) };
           } catch (error) {
             if ((error as Error).constructor.name !== 'KdbPreconditionError') throw error;
+            // Someone else's write landed between our read and ours. Retrying at once makes every
+            // contender collide again in lockstep and starves some of them, so back off, with
+            // jitter, longer each time. (Contention inside this process is already ordered by the
+            // lock; this is for other processes writing the same document.)
+            await new Promise((resolve) => setTimeout(resolve, backoffMs(attempt)));
           }
         }
         throw new Error(`${this.name}: ${id} kept changing under a conditional write; gave up after ${MAX_PRECONDITION_RETRIES} attempts`);
@@ -717,9 +728,10 @@ export class KdbDataStore implements DataStore {
     const { connect } = await loadClient();
     capCheck.at = undefined;
     this.client = new SerializedDmlClient(await connect(config.kdb.addr, config.kdb.token));
-    if (config.kdb.declareConstraints) {
+    if (config.kdb.declareConstraints || config.kdb.declareIndexes) {
       try {
-        await this.declareConstraints();
+        if (config.kdb.declareConstraints) await this.declareConstraints();
+        if (config.kdb.declareIndexes) await this.declareIndexes();
       } catch (error) {
         // A connection left open by a failed connect() keeps the process alive after the error
         // that should have ended it.
@@ -763,6 +775,36 @@ export class KdbDataStore implements DataStore {
           if (/already registered/i.test((error as Error).message)) continue;
           throw new Error(`KDB refused the unique constraint on ${name}(${paths.join(', ')}): ${(error as Error).message}`);
         }
+      }
+    }
+  }
+
+  /**
+   * Creates on KDB the lookup indexes the Mongoose schemas declare for MongoDB, so a filtered read
+   * is a lookup rather than a scan of the namespace.
+   *
+   * What translates, and how:
+   *  - KDB indexes cover one path; a Mongo compound index serves its leading field as a prefix, so
+   *    each becomes an index on that field and the other columns stay a residual filter.
+   *  - Every collection lives in one namespace, so an index is per path, not per collection:
+   *    `userId` is declared by a dozen collections and created once.
+   *  - BTREE for Date and Number paths (ranges, ordering), HASH otherwise. KDB's indexes see
+   *    through arrays (`projectIds`, `collaborators.userId`) as Mongo's multikey indexes do.
+   *  - Unique, TTL and text indexes are not lookups: constraints and expiry are declared
+   *    separately, and text search is done by the application.
+   *
+   * Idempotent: stating an index the server already holds is the normal case after the first start.
+   * Indexes only change cost, never an answer, so a server without them still returns the same rows.
+   */
+  private async declareIndexes(): Promise<void> {
+    const wanted = declaredIndexes();
+    for (const [path, kind] of wanted) {
+      const index = `qtask_i_${path.replace(/[^A-Za-z0-9_]/g, '_')}`;
+      try {
+        await this.client!.exec(config.kdb.namespacePrefix, `CREATE INDEX ${index} ON docs (${path}) USING ${kind}`);
+      } catch (error) {
+        if (/already registered/i.test((error as Error).message)) continue;
+        throw new Error(`KDB refused the index on ${path}: ${(error as Error).message}`);
       }
     }
   }
@@ -839,6 +881,32 @@ function serverKeyValue(doc: Doc, fields: string[]): string | undefined {
     parts.push(value instanceof Date ? value.toISOString() : value);
   }
   return JSON.stringify(parts);
+}
+
+/**
+ * The lookup indexes the Mongoose schemas declare, as path to kind (see declareIndexes for how a
+ * MongoDB index maps onto KDB's). Exported for the tests that check what the store asks for.
+ */
+export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
+  const wanted = new Map<string, 'HASH' | 'BTREE'>();
+  for (const name of Object.keys(MODEL_BY_COLLECTION) as CollectionName[]) {
+    const model = mongoose.models[MODEL_BY_COLLECTION[name]];
+    if (!model) continue;
+    const schema = model.schema as unknown as Schema;
+    const declared = (schema as unknown as { indexes(): Array<[Record<string, unknown>, Record<string, unknown>?]> }).indexes();
+    for (const [fields, options] of declared) {
+      if (options?.unique || options?.expireAfterSeconds !== undefined) continue;
+      const keys = Object.keys(fields);
+      if (keys.length === 0 || keys.some((key) => fields[key] === 'text')) continue;
+      const lead = keys[0]!;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(lead)) continue;
+      const instance = (schema.path(lead) as unknown as { instance?: string } | undefined)?.instance;
+      const kind = instance === 'Date' || instance === 'Number' ? 'BTREE' : 'HASH';
+      // A path wanted ordered by any collection is ordered for all of them.
+      if (kind === 'BTREE' || !wanted.has(lead)) wanted.set(lead, kind);
+    }
+  }
+  return wanted;
 }
 
 /** Whether a dotted path passes through an array, which a field tuple cannot express. */
