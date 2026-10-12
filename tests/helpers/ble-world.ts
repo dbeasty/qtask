@@ -56,6 +56,8 @@ export interface DeviceOptions {
   headersFirst?: boolean;
   /** Only the lower node id starts a round when a link comes up (the other end serves, with a fallback). */
   singleInitiator?: boolean;
+  /** Put something between the transport and the simulated radio (for example the bridge). */
+  radioWrap?: (sim: SimRadio) => import('../../src/sync/ble/radio.ts').BleRadio;
   ble?: Partial<BleTransportOptions>;
   /** Wrap or replace the transport the coordinator runs over (for example a TransportSelector). */
   transport?: (ble: BleTransport, d: { name: string; identity: DeviceIdentity; peers: PeerStore }) => PeerLinkTransport;
@@ -78,7 +80,7 @@ export async function makeBleDevice(world: SimWorld, name: string, o: DeviceOpti
   const ble = new BleTransport({
     identity,
     peers,
-    radio,
+    radio: o.radioWrap ? o.radioWrap(radio) : radio,
     timers: world.clock,
     backoff: { minMs: 1000, maxMs: 15_000 },
     ...o.ble,

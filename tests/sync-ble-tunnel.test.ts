@@ -451,8 +451,7 @@ describe('tunnel: record decoder and info decoder (fuzz)', () => {
     let refuse = 3;
     const real = central.tryWrite.bind(central);
     central.tryWrite = (c) => (refuse-- > 0 ? false : real(c));
-    const origOn = central.onWritable.bind(central);
-    central.onWritable = (h) => void clock.setTimeout(h, 10) ?? origOn(h);
+    central.onWritable = (h) => void clock.setTimeout(h, 10);
     const got: Buffer[] = [];
     peripheral.onData((c) => got.push(Buffer.from(c)));
     const data = randomBytes(95);
