@@ -231,6 +231,11 @@ export class FramedChannel {
     return p;
   }
 
+  /** Writes a PING frame without waiting for the PONG (callers that run their own clock use this). */
+  sendPing(): Promise<void> {
+    return this.writeFrame(FLAG_PING, Buffer.alloc(0));
+  }
+
   /** Round-trip liveness probe. Resolves with the RTT in ms, rejects on timeout. */
   async ping(timeoutMs = 5000): Promise<number> {
     const start = performance.now();

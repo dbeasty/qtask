@@ -15,7 +15,7 @@
  *    at worst cause a failed dial: the fingerprint check is what authenticates.
  */
 
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { networkInterfaces } from 'node:os';
 import tls from 'node:tls';
@@ -34,6 +34,7 @@ import {
   type PeerStore,
 } from './identity.js';
 import { formatPairLink, type PairLink } from './links.js';
+import { pairMac, pairSas, pairTranscript } from './pairing-crypto.js';
 import { MdnsAdvertiser, MdnsBrowser, type MdnsOptions, type MdnsService } from './mdns.js';
 import { fingerprintDer } from './x509.js';
 
@@ -603,17 +604,7 @@ export class LanTransport extends EventEmitter implements PeerLinkTransport {
     if (err) w.reject(err);
   }
 
-  private transcript(inviter: DeviceInfo, joiner: DeviceInfo, ni: string, nj: string, ts: number, exporter: Buffer): Buffer {
-    return sha256(canonicalJson({ i: inviter, j: joiner, ni, nj, ts }), exporter);
-  }
-
-  private static mac(secret: Buffer, role: 'I' | 'J', t: Buffer): string {
-    return createHmac('sha256', secret).update(role).update(t).digest('hex');
-  }
-
-  private static sas(t: Buffer): string {
-    return String(sha256('qtask-sas', t).readUInt32BE(0) % 1_000_000).padStart(6, '0');
-  }
+  private transcript = pairTranscript;
 
   private exporter(sock: tls.TLSSocket): Buffer {
     return Buffer.from(sock.exportKeyingMaterial(32, 'EXPERIMENTAL qtask pairing v1', Buffer.alloc(0)));
@@ -636,10 +627,10 @@ export class LanTransport extends EventEmitter implements PeerLinkTransport {
       const T = this.transcript(me.info, hello.info, ni, String(hello.nonce), ts, this.exporter(sock));
       if (hello.mode === 'qr') {
         const a = await inbox.json<{ t: string; mac: string }>(HANDSHAKE_MS);
-        if (a.t !== 'auth' || typeof a.mac !== 'string' || !eqHex(a.mac, LanTransport.mac(w.secret, 'J', T))) throw new Error('bad pairing secret');
-        await send({ t: 'auth', mac: LanTransport.mac(w.secret, 'I', T) });
+        if (a.t !== 'auth' || typeof a.mac !== 'string' || !eqHex(a.mac, pairMac(w.secret, 'J', T))) throw new Error('bad pairing secret');
+        await send({ t: 'auth', mac: pairMac(w.secret, 'I', T) });
       } else {
-        const ok = await w.confirmSas!(LanTransport.sas(T), hello.info);
+        const ok = await w.confirmSas!(pairSas(T), hello.info);
         if (!ok) throw new Error('pairing rejected by user');
         const c = await inbox.json<{ t: string; ok: boolean }>(PAIR_STEP_MS);
         if (c.t !== 'confirm' || c.ok !== true) throw new Error('pairing rejected by peer');
@@ -719,11 +710,11 @@ export class LanTransport extends EventEmitter implements PeerLinkTransport {
       const T = this.transcript(hello.info, me.info, String(hello.nonce), nj, hello.ts, this.exporter(sock));
       if (qr) {
         const secret = Buffer.from(target.secret!, 'base64url');
-        await send({ t: 'auth', mac: LanTransport.mac(secret, 'J', T) });
+        await send({ t: 'auth', mac: pairMac(secret, 'J', T) });
         const a = await inbox.json<{ t: string; mac: string }>(HANDSHAKE_MS);
-        if (a.t !== 'auth' || typeof a.mac !== 'string' || !eqHex(a.mac, LanTransport.mac(secret, 'I', T))) throw new Error('inviter failed authentication');
+        if (a.t !== 'auth' || typeof a.mac !== 'string' || !eqHex(a.mac, pairMac(secret, 'I', T))) throw new Error('inviter failed authentication');
       } else {
-        const ok = await opts.confirmSas!(LanTransport.sas(T), hello.info);
+        const ok = await opts.confirmSas!(pairSas(T), hello.info);
         await send({ t: 'confirm', ok });
         if (!ok) throw new Error('pairing rejected by user');
         const c = await inbox.json<{ t: string; ok: boolean }>(PAIR_STEP_MS);
