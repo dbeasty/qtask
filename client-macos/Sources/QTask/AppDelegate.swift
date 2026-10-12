@@ -313,6 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       out["nodePid"] = e.nodePid
       out["kdbPid"] = e.kdbPid
       out["kdbPort"] = e.kdbPort
+      if let ble = e.bleBridgePort { out["bleBridgePort"] = ble }
     }
     out["supervisorTimeline"] = await supervisor.timeline.map { ["name": $0.0, "t": $0.1] }
     return out

@@ -11,11 +11,16 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const SOURCE_APP = process.env.QTASK_E2E_MACOS_APP || path.join(ROOT, 'client-macos/build/QTask.app');
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export function prepareApp(work) {
+/**
+ * A private copy of the built app. Two copies that run at once need different bundle ids:
+ * the web view's storage (the page's session token) is per bundle id and origin.
+ */
+export function prepareApp(work, bundleId = 'com.qtask.mac.e2e') {
   if (!existsSync(SOURCE_APP)) throw new Error(`no app at ${SOURCE_APP}: run E2E=1 scripts/build-macos.sh first`);
   const app = path.join(work, 'QTask.app');
+  mkdirSync(work, { recursive: true });
   execFileSync('cp', ['-R', SOURCE_APP, app]);
-  execFileSync('plutil', ['-replace', 'CFBundleIdentifier', '-string', 'com.qtask.mac.e2e', path.join(app, 'Contents/Info.plist')]);
+  execFileSync('plutil', ['-replace', 'CFBundleIdentifier', '-string', bundleId, path.join(app, 'Contents/Info.plist')]);
   for (const inner of ['node', 'kdb-service']) {
     execFileSync('codesign', ['--force', '--sign', '-', path.join(app, 'Contents/Resources/backend', inner)], { stdio: 'ignore' });
   }

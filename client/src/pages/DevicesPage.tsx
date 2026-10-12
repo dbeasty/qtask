@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { localSync, type ConflictInfo, type PairingState, type PeerInfo, type SyncStatus } from '../api/localSync';
 
 /**
@@ -153,13 +153,14 @@ function ConflictRow({ c }: { c: ConflictInfo }) {
   );
 }
 
+let lastHandledPairRequest = 0;
+
 export function DevicesPage({ pairRequest, onBack }: DevicesPageProps) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [joinLink, setJoinLink] = useState('');
   const [cloudForm, setCloudForm] = useState({ hubUrl: 'https://', email: '', password: '' });
-  const handledPairRequest = useRef(pairRequest ?? 0);
 
   const refresh = useCallback(async () => {
     try {
@@ -196,8 +197,10 @@ export function DevicesPage({ pairRequest, onBack }: DevicesPageProps) {
   const openPairing = useCallback(() => run('pair', () => localSync.openPairing()), [run]);
 
   useEffect(() => {
-    if (pairRequest && pairRequest !== handledPairRequest.current) {
-      handledPairRequest.current = pairRequest;
+    // Module-level, so the request that opened this page is honoured on mount but a later
+    // visit to the page does not reopen a pairing window for an old request.
+    if (pairRequest && pairRequest !== lastHandledPairRequest) {
+      lastHandledPairRequest = pairRequest;
       void openPairing();
     }
   }, [pairRequest, openPairing]);
