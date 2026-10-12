@@ -77,6 +77,16 @@ export function runDataStoreConformance(backend: BackendHarness): void {
         assert.equal(await tasks.findById('507f1f77bcf86cd799439011'), null);
       });
 
+      it('finds a document whose _id is a string that is not an ObjectId (MCP sessions use UUIDs)', async () => {
+        const sessions = store.collection('mcpSessions');
+        const id = '7b329239-76fc-4bff-b103-b08a340811e5';
+        await sessions.create({ _id: id, userId: 'u1', keyId: 'k1', pendingProposals: [] });
+        assert.equal((await sessions.findById(id))?._id, id);
+        const updated = await sessions.findByIdAndUpdate(id, { $set: { keyId: 'k2' } }, { returnDocument: 'after' });
+        assert.equal(updated?.keyId, 'k2');
+        assert.equal((await sessions.findById(id))?.keyId, 'k2');
+      });
+
       it('returns null rather than throwing for a malformed id', async () => {
         assert.equal(await tasks.findById('not-an-id'), null);
       });
