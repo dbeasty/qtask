@@ -1,6 +1,6 @@
 # Remaining duplicate transfer in device sync: tasks
 
-Status: defined 2026-10-12, nothing built. Applies to `src/sync/engine.ts` and the coordinator in `src/sync/lan/rpc.ts`, on `integration/offline-p2p`.
+Status: T6, T1, T2 and T3 implemented 2026-10-12 (see "Results" at the end). T4 and T5 open. Applies to `src/sync/engine.ts` and the coordinator in `src/sync/lan/rpc.ts`, on `integration/offline-p2p`.
 
 ## What is already fixed
 
@@ -72,3 +72,28 @@ Ordered by value for effort. Each is its own PR, with a test that asserts the bo
 T6, then T1, T2 and T3 (one or two days together), then T4 (a few days, the only real design work), then T5 only if measurements still justify it.
 
 T1 to T3 fix the cases in the table. T4 is what makes Bluetooth reconnects cheap at 10k-document scale.
+
+## Results (T6, T1, T2, T3)
+
+Implemented in `src/sync/engine.ts` and `src/sync/lan/rpc.ts`, with bounds in `tests/sync-duplicate-transfer.test.ts`. The T1 tests fail when the coordination is disabled.
+
+- **T6:** `SyncResult.traffic` and `engine.status().traffic` report documents and headers sent and received, and duplicates (documents received that applied as a no-op).
+- **T1:** an engine-wide in-flight set. A pull round claims what it is about to fetch. A second round wanting the same documents fetches the rest first, then waits for those, then re-judges, and fetches anything still missing (so a failed fetch elsewhere loses nothing; tested).
+  - Answering an offer claims the documents until that peer's push arrives. A new round with that peer releases any claim a dead round left.
+  - Serve handlers never wait: a link delivers one message at a time, so a handler that waited could block the reply the other round needs. `LinkRpc` now also serves requests without holding up the link. Both were found as a deadlock in the simulated-Bluetooth tests.
+- **T2:** `shareProgress`.
+  - After pulling, the puller acks how far it got (`PullRequest.ack`); the server records that as its push progress toward the puller.
+  - The last push batch carries `through`, so the receiver advances its pull cursor at the sender.
+  - Only for unscoped (fully trusted) peers; the hub ignores both.
+- **T3:** `PeerLinkTransport.localId`; the coordinator's default is that the lower id starts the round, with the existing passive fallback. Pass `shouldInitiate: () => true` for both ends.
+
+Measured, same setup as the table above, with headers-first and shareProgress on:
+
+| Neighbours | Documents to J, before → after | Duplicates | Headers in the neighbours' rounds back to J, before → after |
+|---|---|---|---|
+| 2 | 2,000 → 1,000 | 0 | 3,000 → 1,000 |
+| 3 | 3,000 → 1,000 | 0 | 5,000 → 2,000 |
+
+Three-process LAN run (`npm run perf:lan-engine`, 10k docs, loopback): bytes received by the joining third device went from 0.51 MB (headers-first only) to 0.30 and 0.39 MB in two runs, and its rounds from 14 to 2. The 2-device initial sync was unchanged (278 to 290 ms).
+
+What is left is headers for documents a device got from one neighbour being offered to another (the "after" column), which T4 (summaries) or T5 (per-peer known version vectors) would remove.

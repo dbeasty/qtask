@@ -32,6 +32,7 @@ import {
   type SyncLogEntry,
   type SyncResult,
   type SyncStatus,
+  type SyncTraffic,
   type SyncTransport,
   type WireDoc,
   type WireField,
@@ -102,7 +103,90 @@ export interface SyncWithOptions {
    * otherwise offered by several peers. Peers that do not understand it still work.
    */
   headersFirst?: boolean;
+  /**
+   * After pulling, tell the peer how far we got (`PullRequest.ack`), and with the last
+   * push batch tell it how far it can consider itself pulled (`PushRequest.through`),
+   * so neither side re-offers what the other already has. For fully trusted peers.
+   */
+  shareProgress?: boolean;
 }
+
+const emptyTraffic = (): SyncTraffic => ({ docsSent: 0, docsReceived: 0, headersSent: 0, headersReceived: 0, duplicates: 0 });
+
+function addTraffic(into: SyncTraffic, from: Partial<SyncTraffic>): void {
+  for (const k of Object.keys(from) as Array<keyof SyncTraffic>) into[k] += from[k] ?? 0;
+}
+
+/**
+ * Documents some round is currently fetching (or that a peer has been told to push),
+ * keyed `coll:id`. A second round that wants the same document waits for the first
+ * instead of fetching it again; it never waits while holding entries of its own, so
+ * two rounds cannot deadlock on each other.
+ */
+class InFlight {
+  private readonly entries = new Map<string, { promise: Promise<void>; resolve: () => void; owner: string; timer?: ReturnType<typeof setTimeout> }>();
+
+  has(key: string): boolean {
+    return this.entries.has(key);
+  }
+
+  /** Claims the keys nobody holds and returns them; the rest are returned as `busy`. */
+  claim(keys: string[], owner: string, timeoutMs?: number): { mine: string[]; busy: Promise<void>[]; busyKeys: string[] } {
+    const mine: string[] = [];
+    const busy: Promise<void>[] = [];
+    const busyKeys: string[] = [];
+    for (const key of keys) {
+      const held = this.entries.get(key);
+      if (held) {
+        busy.push(held.promise);
+        busyKeys.push(key);
+        continue;
+      }
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => (resolve = r));
+      const entry: { promise: Promise<void>; resolve: () => void; owner: string; timer?: ReturnType<typeof setTimeout> } = { promise, resolve, owner };
+      if (timeoutMs) {
+        entry.timer = setTimeout(() => this.release([key]), timeoutMs);
+        (entry.timer as { unref?: () => void }).unref?.();
+      }
+      this.entries.set(key, entry);
+      mine.push(key);
+    }
+    return { mine, busy, busyKeys };
+  }
+
+  release(keys: Iterable<string>): void {
+    for (const key of keys) {
+      const entry = this.entries.get(key);
+      if (!entry) continue;
+      if (entry.timer) clearTimeout(entry.timer);
+      this.entries.delete(key);
+      entry.resolve();
+    }
+  }
+
+  releaseOwner(owner: string): void {
+    this.release([...this.entries].filter(([, e]) => e.owner === owner).map(([k]) => k));
+  }
+
+  /** Waits for the given keys (if held) to be released, at most `ms`. */
+  async settle(keys: string[], ms: number): Promise<void> {
+    const waits = keys.map((k) => this.entries.get(k)?.promise).filter((p): p is Promise<void> => !!p);
+    if (waits.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled(waits),
+      new Promise<void>((r) => {
+        timer = setTimeout(r, ms);
+        (timer as { unref?: () => void }).unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** How long a peer's promised push (an offer we answered) holds its documents. */
+const OFFER_HOLD_MS = 15_000;
 
 export class SyncEngine {
   readonly store: SyncDataStore;
@@ -113,6 +197,9 @@ export class SyncEngine {
   private readonly afterApply?: SyncEngineOptions['afterApply'];
   private readonly now: () => number;
   private readonly batchSize: number;
+  private readonly inflight = new InFlight();
+  /** Totals since start, client and server side. */
+  private readonly traffic: SyncTraffic = emptyTraffic();
   private readonly syncLog: SyncLogEntry[] = [];
   private touched = new Map<string, TouchedDoc>();
   private capturing: Promise<number> = Promise.resolve(0);
@@ -524,12 +611,21 @@ export class SyncEngine {
     return new SyncService(this, authorizer);
   }
 
+  /** @internal used by SyncService: drops push promises a peer's earlier round left. */
+  peerRoundStarted(peerId: string): void {
+    this.inflight.releaseOwner(`offer:${peerId}`);
+  }
+
   /** @internal used by SyncService */
   async servePull(from: string, req: PullRequest, authorizer?: SyncAuthorizer): Promise<PullResponse> {
     await this.capture();
     const scopes = authorizer ? await authorizer.readableScopes() : null;
     const sig = scopes ? createHash('sha1').update([...scopes].sort().join('|')).digest('hex').slice(0, 16) : '*';
     const cursor = req.sig === sig ? req.cursor : 0;
+    if (req.ack) {
+      if (!authorizer) this.recordPeerHolds(from, req.ack.epoch, req.cursor, 'pushedSeq');
+      return { docs: [], next: req.cursor, more: false, sig };
+    }
     const limit = Math.max(1, Math.min(req.limit, 2000));
     if (req.ids) {
       const recs: DocRec[] = [];
@@ -537,13 +633,19 @@ export class SyncEngine {
         const rec = this.meta.get(recKey(ref.coll, ref.id));
         if (rec && (!scopes || scopes.has(rec.scope))) recs.push(rec);
       }
-      return { docs: await this.toWire(recs), next: req.cursor, more: false, sig };
+      const docs = await this.toWire(recs);
+      this.traffic.docsSent += docs.length;
+      return { docs, next: req.cursor, more: false, sig };
     }
     const head = this.meta.seq;
     const { recs, more } = this.meta.since(scopes, cursor, limit, from);
     const next = more ? recs[recs.length - 1]!.seq : head;
-    if (req.headersOnly) return { docs: [], headers: recs.map(toHeader), next, more, sig };
+    if (req.headersOnly) {
+      this.traffic.headersSent += recs.length;
+      return { docs: [], headers: recs.map(toHeader), next, more, sig };
+    }
     const docs = await this.toWire(recs);
+    this.traffic.docsSent += docs.length;
     return { docs, next, more, sig };
   }
 
@@ -551,10 +653,17 @@ export class SyncEngine {
   async servePush(from: string, req: PushRequest, authorizer?: SyncAuthorizer): Promise<PushResponse> {
     await this.capture();
     if (req.offer) {
-      const need = req.offer
+      this.traffic.headersReceived += req.offer.length;
+      const wanted = req.offer
         .filter((h) => COLL_ORDER.has(h.coll) && headerNeeded(this.meta.get(recKey(h.coll, h.id)), h))
         .map((h) => recKey(h.coll, h.id));
-      return { accepted: 0, rejected: [], need };
+      // Hold what we asked for until this peer's push arrives, so a concurrent pull round
+      // waits for it instead of fetching the same documents from someone else. A serve
+      // handler must never wait itself: links deliver one message at a time, so waiting
+      // here could block the very reply the other round is waiting for. A document a
+      // pull round already claimed is still asked for; that race costs bytes, not data.
+      this.inflight.claim(wanted, `offer:${from}`, OFFER_HOLD_MS);
+      return { accepted: 0, rejected: [], need: wanted };
     }
     let accepted = 0;
     const rejected: PushRejection[] = [];
@@ -577,6 +686,8 @@ export class SyncEngine {
       } catch (error) {
         result = { applied: false, conflicts: 0, rejected: `store error: ${(error as Error).message}` };
       }
+      this.traffic.docsReceived += 1;
+      if (!result.rejected && !result.applied) this.traffic.duplicates += 1;
       if (result.rejected) {
         rejected.push({ coll: wire.coll, id: wire.id, reason: result.rejected });
         this.pushLog({
@@ -588,6 +699,11 @@ export class SyncEngine {
       } else {
         accepted += 1;
       }
+    }
+    // The offer this push answers is fulfilled (or the peer sent less than promised).
+    this.inflight.releaseOwner(`offer:${from}`);
+    if (req.through && rejected.length === 0 && !authorizer) {
+      this.recordPeerHolds(from, req.through.epoch, req.through.seq, 'pulledSeq');
     }
     if (req.more) this.scheduleDeferredFinish();
     else await this.finishApply();
@@ -640,6 +756,9 @@ export class SyncEngine {
       throw new Error(`sync protocol mismatch: peer speaks ${hello.protocol}, this build ${PROTOCOL_VERSION}`);
     }
     const peerId = hello.nodeId;
+    // A push this peer promised in a round that died must not hold our pulls. If its
+    // round is in fact still running, the worst case is one duplicate document.
+    this.peerRoundStarted(peerId);
     let cursor = this.meta.peer(peerId);
     if (!cursor || cursor.epoch !== hello.epoch) {
       cursor = { epoch: hello.epoch, pushedSeq: 0, pulledSeq: 0 };
@@ -653,6 +772,7 @@ export class SyncEngine {
       conflicts: 0,
       rounds: 0,
       durationMs: 0,
+      traffic: emptyTraffic(),
     };
 
     await this.capture();
@@ -661,14 +781,21 @@ export class SyncEngine {
       await this.pushTo(transport, peerId, cursor, result, options);
       await this.pullFrom(transport, peerId, cursor, result, options);
       cursor.lastSyncedAt = new Date(this.now()).toISOString();
-      this.meta.setPeer(peerId, cursor);
+      this.saveCursor(peerId, cursor);
       await this.finishApply();
       const stillPending =
         this.meta.countSince(null, cursor.pushedSeq, peerId) > 0 || this.meta.dirtyCount() > 0;
       if (!stillPending) break;
     }
 
+    if (options.shareProgress) {
+      // Tell the peer how far we pulled, so its own round toward us starts from there.
+      await transport
+        .pull({ from: this.nodeId, cursor: cursor.pulledSeq, limit: 0, sig: cursor.sig, ack: { epoch: this.meta.epoch } })
+        .catch(() => undefined);
+    }
     result.durationMs = performance.now() - started;
+    addTraffic(this.traffic, result.traffic);
     this.pushLog({
       at: new Date(this.now()).toISOString(),
       kind: 'sync',
@@ -697,6 +824,7 @@ export class SyncEngine {
       }
       let toSend = recs;
       if (options.headersFirst) {
+        result.traffic.headersSent += recs.length;
         const offered = await transport.push({ from: this.nodeId, docs: [], offer: recs.map(toHeader) });
         // A peer that predates offers returns no `need`: send everything, as before.
         if (offered.need) {
@@ -705,8 +833,14 @@ export class SyncEngine {
         }
       }
       const docs = await this.toWire(toSend);
-      if (docs.length > 0) {
-        const response = await transport.push({ from: this.nodeId, docs, ...(more ? { more: true } : {}) });
+      const nextSeq = more ? recs[recs.length - 1]!.seq : Math.max(head, recs[recs.length - 1]!.seq);
+      const through =
+        options.shareProgress && !more && result.rejected.length === 0
+          ? { through: { seq: nextSeq, epoch: this.meta.epoch } }
+          : {};
+      if (docs.length > 0 || 'through' in through) {
+        result.traffic.docsSent += docs.length;
+        const response = await transport.push({ from: this.nodeId, docs, ...(more ? { more: true } : {}), ...through });
         result.pushed += response.accepted;
         total += response.accepted;
         for (const rejection of response.rejected) {
@@ -714,7 +848,7 @@ export class SyncEngine {
           this.pushLog({ at: new Date(this.now()).toISOString(), kind: 'rejected', peerId, rejection });
         }
       }
-      cursor.pushedSeq = more ? recs[recs.length - 1]!.seq : Math.max(head, recs[recs.length - 1]!.seq);
+      cursor.pushedSeq = nextSeq;
       if (!more) return total;
     }
   }
@@ -735,43 +869,114 @@ export class SyncEngine {
         sig: cursor.sig,
         ...(options.headersFirst ? { headersOnly: true } : {}),
       });
-      let incoming = response.docs;
-      if (response.headers) {
-        // Ask only for what the headers say we lack.
-        const needed = response.headers.filter((h) => headerNeeded(this.meta.get(recKey(h.coll, h.id)), h));
-        incoming = needed.length
-          ? (
-              await transport.pull({
-                from: this.nodeId,
-                cursor: 0,
-                limit: this.batchSize,
-                sig: response.sig,
-                ids: needed.map((h) => ({ coll: h.coll, id: h.id })),
-              })
-            ).docs
-          : [];
-      }
-      for (const wire of incoming) {
-        let applied: Awaited<ReturnType<SyncEngine['applyRemote']>>;
-        try {
-          applied = await this.applyRemote(wire, peerId);
-        } catch (error) {
-          // One document the local store refuses must not wedge every later sync.
-          const rejection = { coll: wire.coll, id: wire.id, reason: `store error: ${(error as Error).message}` };
-          result.rejected.push(rejection);
-          this.pushLog({ at: new Date(this.now()).toISOString(), kind: 'rejected', peerId, rejection });
-          continue;
-        }
-        if (applied.applied) {
-          result.pulled += 1;
-          total += 1;
-        }
-        result.conflicts += applied.conflicts;
+      if (!response.headers) {
+        result.traffic.docsReceived += response.docs.length;
+        total += await this.applyPulled(response.docs, peerId, result);
+      } else {
+        result.traffic.headersReceived += response.headers.length;
+        total += await this.fetchNeeded(transport, response.headers, response.sig, peerId, result);
       }
       cursor.pulledSeq = response.next;
       cursor.sig = response.sig;
       if (!response.more) return total;
     }
+  }
+
+  /**
+   * Fetches the documents `headers` says we lack, without fetching one that another
+   * round is already bringing in: those are waited for and re-judged afterwards. Our
+   * own claims are released before waiting, so rounds never wait on each other in a
+   * cycle. If the other round failed, the document is still needed and is fetched here.
+   */
+  private async fetchNeeded(
+    transport: SyncTransport,
+    headers: WireHeader[],
+    sig: string,
+    peerId: string,
+    result: SyncResult
+  ): Promise<number> {
+    const needed = (hs: WireHeader[]) => hs.filter((h) => headerNeeded(this.meta.get(recKey(h.coll, h.id)), h));
+    const byKey = new Map(headers.map((h) => [recKey(h.coll, h.id), h]));
+    const fetch = async (keys: string[]): Promise<number> => {
+      if (keys.length === 0) return 0;
+      try {
+        const res = await transport.pull({
+          from: this.nodeId,
+          cursor: 0,
+          limit: this.batchSize,
+          sig,
+          ids: keys.map((k) => ({ coll: byKey.get(k)!.coll, id: byKey.get(k)!.id })),
+        });
+        result.traffic.docsReceived += res.docs.length;
+        return await this.applyPulled(res.docs, peerId, result);
+      } finally {
+        this.inflight.release(keys);
+      }
+    };
+    let total = 0;
+    const first = needed(headers).map((h) => recKey(h.coll, h.id));
+    const { mine, busyKeys } = this.inflight.claim(first, `pull:${peerId}`);
+    total += await fetch(mine);
+    if (busyKeys.length > 0) {
+      await this.inflight.settle(busyKeys, OFFER_HOLD_MS);
+      const still = needed(busyKeys.map((k) => byKey.get(k)!)).map((h) => recKey(h.coll, h.id));
+      // Claim again: anything someone else re-claimed meanwhile is theirs to bring in;
+      // if they fail, our cursor has not passed it on their side, so it comes next time.
+      const again = this.inflight.claim(still, `pull:${peerId}`);
+      total += await fetch(again.mine);
+      for (const k of again.busyKeys) {
+        // Rare: claimed by yet another round. Fetch anyway rather than risk skipping it.
+        const h = byKey.get(k)!;
+        if (headerNeeded(this.meta.get(k), h)) total += await fetch([k]);
+      }
+    }
+    return total;
+  }
+
+  /** Applies pulled documents; counts no-op applies as duplicates. */
+  private async applyPulled(incoming: WireDoc[], peerId: string, result: SyncResult): Promise<number> {
+    let total = 0;
+    for (const wire of incoming) {
+      let applied: Awaited<ReturnType<SyncEngine['applyRemote']>>;
+      try {
+        applied = await this.applyRemote(wire, peerId);
+      } catch (error) {
+        // One document the local store refuses must not wedge every later sync.
+        const rejection = { coll: wire.coll, id: wire.id, reason: `store error: ${(error as Error).message}` };
+        result.rejected.push(rejection);
+        this.pushLog({ at: new Date(this.now()).toISOString(), kind: 'rejected', peerId, rejection });
+        continue;
+      }
+      if (applied.applied) {
+        result.pulled += 1;
+        total += 1;
+      } else if (!applied.rejected) {
+        result.traffic.duplicates += 1;
+      }
+      result.conflicts += applied.conflicts;
+    }
+    return total;
+  }
+
+  /**
+   * The peer is known to hold (or to have pulled) our documents up to `seq`, or we
+   * hold the peer's up to `seq`: advance the matching cursor, never backwards.
+   */
+  private recordPeerHolds(peerId: string, epoch: string, seq: number, field: 'pushedSeq' | 'pulledSeq'): void {
+    let cursor = this.meta.peer(peerId);
+    if (!cursor || cursor.epoch !== epoch) cursor = { epoch, pushedSeq: 0, pulledSeq: 0 };
+    if (seq <= cursor[field]) return;
+    this.meta.setPeer(peerId, { ...cursor, [field]: seq });
+  }
+
+  /** Saves a round's cursor without moving back progress recorded meanwhile by the peer. */
+  private saveCursor(peerId: string, cursor: { epoch: string; pushedSeq: number; pulledSeq: number; sig?: string; lastSyncedAt?: string }): void {
+    const stored = this.meta.peer(peerId);
+    if (stored && stored.epoch === cursor.epoch && (cursor.sig === undefined || cursor.sig === '*')) {
+      cursor.pushedSeq = Math.max(cursor.pushedSeq, stored.pushedSeq);
+      cursor.pulledSeq = Math.max(cursor.pulledSeq, stored.pulledSeq);
+    }
+    this.meta.setPeer(peerId, cursor);
   }
 
   // --- status -----------------------------------------------------------------------
@@ -799,6 +1004,7 @@ export class SyncEngine {
       documents: this.meta.size,
       tombstones: this.meta.tombstoneCount(),
       peers,
+      traffic: { ...this.traffic },
     };
   }
 }
@@ -811,6 +1017,9 @@ export class SyncService {
   ) {}
 
   async hello(req: HelloRequest): Promise<HelloResponse> {
+    // A peer runs one round toward us at a time, so a new hello means any push it
+    // promised in an earlier round (an answered offer) is not coming.
+    this.engine.peerRoundStarted(req.nodeId);
     return {
       protocol: PROTOCOL_VERSION,
       nodeId: this.engine.nodeId,

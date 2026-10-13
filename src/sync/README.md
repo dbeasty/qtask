@@ -151,3 +151,11 @@ merge · `engine.ts` capture/apply/delta · `transport.ts` · `hub.ts` · `clien
   `QTASK_SYNC_META_PATH` loses cursors and stamps on restart.
 * `updatedAt` is not replicated (the backend stamps it on write); sync keeps its own
   `ut` per record.
+
+## Duplicate-transfer controls
+
+`syncWith(transport, { headersFirst, shareProgress })`:
+- `headersFirst` exchanges version vectors before content.
+- `shareProgress` acks pull progress and sends `through` with the last push batch, for fully trusted peers only.
+
+The engine also keeps an in-flight set, so concurrent rounds never fetch the same document twice. `SyncResult.traffic` and `status().traffic` count documents, headers and duplicates. The LAN/Bluetooth coordinator turns all of this on, and by default lets only the lower id start a round. See `docs/sync-duplicate-transfer-tasks.md`.

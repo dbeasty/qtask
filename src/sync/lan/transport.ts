@@ -251,6 +251,9 @@ const PAIR_STEP_MS = 120_000;
 export class LanTransport extends EventEmitter implements PeerLinkTransport {
   readonly kind = 'lan' as const;
   port = 0;
+  get localId(): string {
+    return this.o.identity.info.nodeId;
+  }
   private server: tls.Server | null = null;
   private advertiser: MdnsAdvertiser | null = null;
   private browser: MdnsBrowser | null = null;

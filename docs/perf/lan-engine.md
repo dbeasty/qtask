@@ -34,3 +34,16 @@ Observations:
 - The "third device catch-up ms" in the table is not meaningful: pairing finished (and the data had already
   arrived) before the timer started. Use the bytes.
 - Real Wi-Fi throughput will be far below loopback.
+
+## After T1 to T3 (2026-10-12)
+
+Two runs of `npm run perf:lan-engine` (10k docs, loopback, M3 Max) with in-flight coordination, progress sharing and single initiator on by default:
+
+| Measure | Before (headers-first only) | Now |
+|---|---|---|
+| Bytes received by the joining third device | 0.51 MB | 0.30, 0.39 MB |
+| Its rounds | 14 | 2 |
+| 2-device initial sync, 10k docs | 279 ms | 290, 278 ms |
+| 100 edits visible on both other devices | 17 ms | 24, 26 ms |
+
+The no-op round measured 2.1 ms in one run and 29.9 ms in the other. These are single samples with other work on the machine, so treat that one as noise until repeated. See `docs/sync-duplicate-transfer-tasks.md`.

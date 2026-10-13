@@ -31,6 +31,8 @@ export interface SyncPeerLink {
 
 export interface PeerLinkTransport {
   readonly kind: TransportKind;
+  /** This device's id in the same space as `SyncPeerLink.peerId`, when the transport knows it. */
+  readonly localId?: string;
   start(): Promise<void>;
   stop(): Promise<void>;
   /**

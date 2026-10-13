@@ -83,6 +83,13 @@ export interface PullRequest {
   headersOnly?: boolean;
   /** Instead of a cursor page, send exactly these documents (the ones `headers` said were needed). */
   ids?: Array<{ coll: ReplicatedCollection; id: string }>;
+  /**
+   * Acknowledgement only: the requester has applied everything up to `cursor` and its
+   * meta epoch is `epoch`. The server records that as its own push progress toward the
+   * requester, so its next round does not offer the same documents back. Answered with
+   * an empty page. Ignored when the server has an authorizer (scoped peers).
+   */
+  ack?: { epoch: string };
 }
 
 export interface PullResponse {
@@ -112,6 +119,12 @@ export interface PushRequest {
    * falls back to a plain push.
    */
   offer?: WireHeader[];
+  /**
+   * Last batch of a push: the receiver now holds everything of the sender's up to
+   * `seq` (sender's sequence space, sender's meta `epoch`), so it can advance its own
+   * pull cursor at the sender. Only sent when nothing in the push was rejected.
+   */
+  through?: { seq: number; epoch: string };
 }
 
 export interface PushRejection {
@@ -170,6 +183,18 @@ export interface SyncResult {
   conflicts: number;
   rounds: number;
   durationMs: number;
+  /** Traffic in this round, as seen by the side that ran it. */
+  traffic: SyncTraffic;
+}
+
+/** Documents and headers moved, and documents received that changed nothing. */
+export interface SyncTraffic {
+  docsSent: number;
+  docsReceived: number;
+  headersSent: number;
+  headersReceived: number;
+  /** Documents received that applied as a no-op: the receiver already had them. */
+  duplicates: number;
 }
 
 export interface PeerStatus {
@@ -192,6 +217,8 @@ export interface SyncStatus {
   documents: number;
   tombstones: number;
   peers: PeerStatus[];
+  /** Totals since the engine started, both as a client and as a server. */
+  traffic: SyncTraffic;
 }
 
 export type SyncLogEntry =

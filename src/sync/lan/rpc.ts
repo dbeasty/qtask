@@ -109,6 +109,12 @@ export class LinkRpc implements SyncTransport {
       return;
     }
     if (env.k !== 'req') return;
+    // Served without holding up the link: responses to our own requests, which may be
+    // what this request is indirectly waiting for, arrive on the same link.
+    void this.handle(env);
+  }
+
+  private async handle(env: Extract<Envelope, { k: 'req' }>): Promise<void> {
     try {
       const body = await this.serve(env.op, env.body);
       await this.link.send(encoder.encode(JSON.stringify({ k: 'res', id: env.id, body } satisfies Envelope)));
@@ -155,10 +161,10 @@ export interface LanSyncOptions {
   onError?: (peerId: string, error: Error) => void;
   /**
    * Which end starts the round when a link comes up. A round is bidirectional (pull and
-   * push), so when both ends start one the data crosses the link twice, which is cheap on
-   * Wi-Fi and expensive on Bluetooth. Default: both start. For a scarce link pass e.g.
-   * `(link) => selfNodeId < link.peerId`; the other end only serves, and starts its own
-   * round after `passiveFallbackMs` if the peer never did.
+   * push), so when both ends start one the data crosses the link twice. Default: the end
+   * with the lower id (`transport.localId < link.peerId`); the other end only serves, and
+   * starts its own round after `passiveFallbackMs` if the peer never did. Local writes
+   * still start a round from either end. Pass `() => true` for both ends to start.
    */
   shouldInitiate?: (link: SyncPeerLink) => boolean;
   passiveFallbackMs?: number;
@@ -207,7 +213,10 @@ export class LanSyncCoordinator {
       this.clients.set(link.peerId, this.options.wrapTransport ? this.options.wrapTransport(rpc, link) : rpc);
       this.linkKinds.set(link.peerId, link.transport);
       this.served.delete(link.peerId);
-      if (this.options.shouldInitiate && !this.options.shouldInitiate(link)) {
+      const shouldInitiate =
+        this.options.shouldInitiate ??
+        (this.transport.localId ? (l: SyncPeerLink) => this.transport.localId! < l.peerId : undefined);
+      if (shouldInitiate && !shouldInitiate(link)) {
         // The peer is expected to start the round; do it ourselves only if it never does.
         const fire = () => {
           if (!this.stopped && this.rpcs.get(link.peerId) === rpc && !this.served.has(link.peerId)) void this.syncPeer(link.peerId);
@@ -262,7 +271,11 @@ export class LanSyncCoordinator {
         const rpc = this.clients.get(peerId);
         if (!rpc || this.stopped) return;
         try {
-          const result = await this.engine.syncWith(rpc, { headersFirst: this.options.headersFirst !== false });
+          const result = await this.engine.syncWith(rpc, {
+            headersFirst: this.options.headersFirst !== false,
+            // Paired devices are fully trusted, so progress can be shared both ways.
+            shareProgress: this.options.headersFirst !== false,
+          });
           this.options.onResult?.(peerId, result);
         } catch (e) {
           // A link that closed mid-round is expected churn, not a failure to report.

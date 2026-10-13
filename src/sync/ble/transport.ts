@@ -290,6 +290,10 @@ export class BleTransport extends EventEmitter implements PeerLinkTransport {
     return this.o.identity.info;
   }
 
+  get localId(): string {
+    return this.o.identity.info.nodeId;
+  }
+
   onPeerUp(h: (l: SyncPeerLink) => void): void {
     this.upHandlers.push(h);
     for (const l of this.live.values()) h(l);

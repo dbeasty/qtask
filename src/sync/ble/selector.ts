@@ -64,6 +64,10 @@ export class TransportSelector implements PeerLinkTransport {
     });
   }
 
+  get localId(): string | undefined {
+    return this.transports.find((t) => t.localId)?.localId;
+  }
+
   /** Kind of the preferred transport. */
   get kind(): TransportKind {
     return this.transports[0]!.kind;
