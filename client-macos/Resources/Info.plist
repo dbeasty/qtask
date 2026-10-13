@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>QTask</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.qtask.mac</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleName</key>
+	<string>QTask</string>
+	<key>CFBundleDisplayName</key>
+	<string>QTask</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>QTaskCommit</key>
+	<string>__COMMIT__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>QTask uses Bluetooth to sync your tasks with your other paired devices when no network is available. It is only used after you turn on Bluetooth sync, and only talks to devices you have paired.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>QTask syncs your tasks with your other paired devices on this network. Only devices you have paired can connect, and nothing is shared with anyone else on the network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_qtask._tcp</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.qtask.mac.pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>qtask</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSHumanReadableCopyright</key>
+	<string>Limidus</string>
+</dict>
+</plist>

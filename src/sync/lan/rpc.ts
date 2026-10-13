@@ -1,0 +1,289 @@
+/**
+ * Bridges the two transport layers: the engine speaks request/response
+ * (`SyncTransport`: hello, pull, push) and the LAN/BLE transports move opaque
+ * messages over a link (`SyncPeerLink`). `LinkRpc` multiplexes both directions on one
+ * link, so each side can serve the other and ask it questions at the same time.
+ *
+ * `LanSyncCoordinator` then runs the engine over every paired peer that is up.
+ * Paired devices belong to one person, so they are fully trusted: no authorizer.
+ */
+
+import type { SyncEngine } from '../engine.js';
+import type {
+  HelloRequest,
+  HelloResponse,
+  PullRequest,
+  PullResponse,
+  PushRequest,
+  PushResponse,
+  SyncResult,
+  SyncTransport,
+} from '../types.js';
+import type { PeerLinkTransport, SyncPeerLink } from '../transport-contract.js';
+
+type Op = 'hello' | 'pull' | 'push';
+type Envelope =
+  | { k: 'req'; id: number; op: Op; body: unknown }
+  | { k: 'res'; id: number; body: unknown }
+  | { k: 'err'; id: number; message: string };
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+/**
+ * The link went away under an in-flight request: the peer left, or the transport
+ * replaced a duplicate link. Not a sync failure; the replacement link (or the peer's
+ * return) starts a new round, and everything unsent is still pending in the engine.
+ */
+export class LinkClosedError extends Error {
+  constructor(message = 'link closed') {
+    super(message);
+    this.name = 'LinkClosedError';
+  }
+}
+
+export class LinkRpc implements SyncTransport {
+  readonly kind: string;
+  private nextId = 1;
+  private readonly pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private closed = false;
+
+  constructor(
+    private readonly link: SyncPeerLink,
+    private readonly service: SyncServiceLike,
+    private readonly options: { timeoutMs?: number; onServed?: (op: Op) => void } = {}
+  ) {
+    this.kind = link.transport;
+    link.onMessage((m) => this.receive(m));
+    link.onClose((reason) => this.fail(new LinkClosedError(reason ? `link closed: ${reason.message}` : 'link closed')));
+  }
+
+  hello(req: HelloRequest): Promise<HelloResponse> {
+    return this.call('hello', req);
+  }
+  pull(req: PullRequest): Promise<PullResponse> {
+    return this.call('pull', req);
+  }
+  push(req: PushRequest): Promise<PushResponse> {
+    return this.call('push', req);
+  }
+  async close(): Promise<void> {
+    this.fail(new LinkClosedError('closed'));
+    this.link.close();
+  }
+
+  private call<T>(op: Op, body: unknown): Promise<T> {
+    if (this.closed) return Promise.reject(new LinkClosedError());
+    const id = this.nextId++;
+    const timeoutMs = this.options.timeoutMs ?? 120_000;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`sync ${op} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => (clearTimeout(timer), resolve(v)),
+        reject: (e) => (clearTimeout(timer), reject(e)),
+      });
+      this.link.send(encoder.encode(JSON.stringify({ k: 'req', id, op, body } satisfies Envelope))).catch((e) => {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(e as Error);
+      });
+    });
+  }
+
+  private async receive(raw: Uint8Array): Promise<void> {
+    let env: Envelope;
+    try {
+      env = JSON.parse(decoder.decode(raw)) as Envelope;
+    } catch {
+      return; // not ours; a malformed message never takes the link down
+    }
+    if (env.k === 'res' || env.k === 'err') {
+      const p = this.pending.get(env.id);
+      if (!p) return;
+      this.pending.delete(env.id);
+      if (env.k === 'res') p.resolve(env.body);
+      else p.reject(new Error(env.message));
+      return;
+    }
+    if (env.k !== 'req') return;
+    // Served without holding up the link: responses to our own requests, which may be
+    // what this request is indirectly waiting for, arrive on the same link.
+    void this.handle(env);
+  }
+
+  private async handle(env: Extract<Envelope, { k: 'req' }>): Promise<void> {
+    try {
+      const body = await this.serve(env.op, env.body);
+      await this.link.send(encoder.encode(JSON.stringify({ k: 'res', id: env.id, body } satisfies Envelope)));
+      this.options.onServed?.(env.op);
+    } catch (e) {
+      await this.link
+        .send(encoder.encode(JSON.stringify({ k: 'err', id: env.id, message: (e as Error).message } satisfies Envelope)))
+        .catch(() => undefined);
+    }
+  }
+
+  private serve(op: Op, body: unknown): Promise<unknown> {
+    switch (op) {
+      case 'hello':
+        return this.service.hello(body as HelloRequest);
+      case 'pull':
+        return this.service.pull(body as PullRequest);
+      case 'push':
+        return this.service.push(body as PushRequest);
+      default:
+        return Promise.reject(new Error(`unknown op ${String(op)}`));
+    }
+  }
+
+  private fail(reason: Error): void {
+    this.closed = true;
+    for (const p of this.pending.values()) p.reject(reason);
+    this.pending.clear();
+  }
+}
+
+export interface SyncServiceLike {
+  hello(req: HelloRequest): Promise<HelloResponse>;
+  pull(req: PullRequest): Promise<PullResponse>;
+  push(req: PushRequest): Promise<PushResponse>;
+}
+
+export interface LanSyncOptions {
+  /** Minimum gap between two rounds with the same peer. */
+  debounceMs?: number;
+  /** Offer version vectors before content so nothing is sent twice. On by default; false for A/B comparison. */
+  headersFirst?: boolean;
+  onResult?: (peerId: string, result: SyncResult) => void;
+  onError?: (peerId: string, error: Error) => void;
+  /**
+   * Which end starts the round when a link comes up. A round is bidirectional (pull and
+   * push), so when both ends start one the data crosses the link twice. Default: the end
+   * with the lower id (`transport.localId < link.peerId`); the other end only serves, and
+   * starts its own round after `passiveFallbackMs` if the peer never did. Local writes
+   * still start a round from either end. Pass `() => true` for both ends to start.
+   */
+  shouldInitiate?: (link: SyncPeerLink) => boolean;
+  passiveFallbackMs?: number;
+  /** Timer source for the passive fallback (virtual time in tests). Default: real timers. */
+  timers?: { setTimeout(fn: () => void, ms: number): unknown };
+  /**
+   * What answers the peer's requests. Default: `engine.service()` (fully trusted). A
+   * host can wrap it, for example to exchange extra hello fields or to persist state
+   * before an answer leaves the device.
+   */
+  service?: SyncServiceLike;
+  /** Wraps the client side of each link before the engine uses it (same purpose as `service`). */
+  wrapTransport?: (rpc: SyncTransport, link: SyncPeerLink) => SyncTransport;
+}
+
+/**
+ * Runs the engine over every paired peer that is up: a round when a peer appears, a
+ * round after local changes (`syncNow`), and a round with the other peers after a
+ * peer pushes us something, so a change relays through a mesh.
+ */
+export class LanSyncCoordinator {
+  private readonly rpcs = new Map<string, LinkRpc>();
+  private readonly clients = new Map<string, SyncTransport>();
+  private readonly linkKinds = new Map<string, SyncPeerLink['transport']>();
+  private readonly running = new Map<string, Promise<void>>();
+  private readonly again = new Set<string>();
+  private stopped = false;
+  private readonly served = new Set<string>();
+
+  constructor(
+    private readonly engine: SyncEngine,
+    private readonly transport: PeerLinkTransport,
+    private readonly options: LanSyncOptions = {}
+  ) {}
+
+  start(): void {
+    this.transport.onPeerUp((link) => {
+      const rpc = new LinkRpc(link, this.options.service ?? this.engine.service(), {
+        onServed: (op) => {
+          this.served.add(link.peerId);
+          // A peer pushed us changes: relay them to everyone else.
+          if (op === 'push') this.syncAllExcept(link.peerId);
+        },
+      });
+      this.rpcs.set(link.peerId, rpc);
+      this.clients.set(link.peerId, this.options.wrapTransport ? this.options.wrapTransport(rpc, link) : rpc);
+      this.linkKinds.set(link.peerId, link.transport);
+      this.served.delete(link.peerId);
+      const shouldInitiate =
+        this.options.shouldInitiate ??
+        (this.transport.localId ? (l: SyncPeerLink) => this.transport.localId! < l.peerId : undefined);
+      if (shouldInitiate && !shouldInitiate(link)) {
+        // The peer is expected to start the round; do it ourselves only if it never does.
+        const fire = () => {
+          if (!this.stopped && this.rpcs.get(link.peerId) === rpc && !this.served.has(link.peerId)) void this.syncPeer(link.peerId);
+        };
+        const ms = this.options.passiveFallbackMs ?? 15_000;
+        if (this.options.timers) this.options.timers.setTimeout(fire, ms);
+        else setTimeout(fire, ms).unref();
+        return;
+      }
+      // Both ends see peerUp and both start a round; `running` collapses overlaps.
+      void this.syncPeer(link.peerId);
+    });
+    this.transport.onPeerDown((peerId) => {
+      this.rpcs.delete(peerId);
+      this.clients.delete(peerId);
+      this.linkKinds.delete(peerId);
+    });
+  }
+
+  stop(): void {
+    this.stopped = true;
+  }
+
+  /** Peers with a live link, and the kind of link the coordinator is using for each. */
+  connected(): Array<{ peerId: string; transport: SyncPeerLink['transport'] }> {
+    return [...this.rpcs.keys()].map((peerId) => ({ peerId, transport: this.linkKinds.get(peerId)! }));
+  }
+
+  /** Syncs with one peer now (if it is connected). */
+  syncWithPeer(peerId: string): Promise<void> {
+    return this.syncPeer(peerId);
+  }
+
+  /** Call after local writes. Resolves when every peer round has finished. */
+  async syncNow(): Promise<void> {
+    await Promise.all([...this.rpcs.keys()].map((id) => this.syncPeer(id)));
+  }
+
+  private syncAllExcept(peerId: string): void {
+    for (const id of this.rpcs.keys()) if (id !== peerId) void this.syncPeer(id);
+  }
+
+  private syncPeer(peerId: string): Promise<void> {
+    const current = this.running.get(peerId);
+    if (current) {
+      this.again.add(peerId); // changes landed mid-round: run once more afterwards
+      return current;
+    }
+    const run = (async () => {
+      do {
+        this.again.delete(peerId);
+        const rpc = this.clients.get(peerId);
+        if (!rpc || this.stopped) return;
+        try {
+          const result = await this.engine.syncWith(rpc, {
+            headersFirst: this.options.headersFirst !== false,
+            // Paired devices are fully trusted, so progress can be shared both ways.
+            shareProgress: this.options.headersFirst !== false,
+          });
+          this.options.onResult?.(peerId, result);
+        } catch (e) {
+          // A link that closed mid-round is expected churn, not a failure to report.
+          if (!(e instanceof LinkClosedError)) this.options.onError?.(peerId, e as Error);
+        }
+      } while (this.again.has(peerId));
+    })().finally(() => this.running.delete(peerId));
+    this.running.set(peerId, run);
+    return run;
+  }
+}

@@ -7,6 +7,8 @@ release/
 *.log
 .DS_Store
 data/uploads/
+client-macos/build/
+client-macos/.build/
 
 # Released kdb-service binaries (npm run kdb:fetch)
 .kdb/

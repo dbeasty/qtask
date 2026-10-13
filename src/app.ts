@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { connectDb } from './db/connection.js';
 import { getDataHealth, getDataStore } from './data/index.js';
+import type { DataStore } from './data/types.js';
 import { projectsRouter } from './routes/projects.js';
 import { tasksRouter } from './routes/tasks.js';
 import { agentRouter } from './routes/agent.js';
@@ -21,25 +22,36 @@ import { mountWellKnownRoutes } from './routes/wellKnown.js';
 import { errorHandler, notFoundHandler } from './middleware/index.js';
 import { readOnlyMiddleware, getDeploymentHealthPayload } from './middleware/readOnly.js';
 import { requireAuth } from './middleware/auth.js';
+import { createSyncRouter } from './sync/hub.js';
 import { startEmbeddingWorker } from './services/embeddingQueue.js';
 import { startFeedbackVisionWorker } from './services/feedbackVisionQueue.js';
 import { config, getHealthFeaturesPayload } from './config/index.js';
 import { initEmail, getEmailStatus } from './services/emailService.js';
 import { APP_VERSION, GIT_SHA } from './version.js';
 import { fetchAiStackVersion } from './services/aiStackVersion.js';
+import { isLocalMode, resolveLocalConfig } from './local/config.js';
+import { mountLocalPreamble, versionHandler } from './local/routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function createApp(options?: { connect?: boolean; startWorker?: boolean }) {
   const shouldConnect = options?.connect ?? true;
-  const shouldStartWorker = options?.startWorker ?? true;
+  // Local mode (the Mac app's private backend) is decided once per app: it changes which
+  // routes exist, so it cannot flip while the app is up. See src/local/README.md.
+  const local = isLocalMode() ? resolveLocalConfig() : undefined;
+  const shouldStartWorker = (options?.startWorker ?? true) && !local;
 
   if (shouldConnect) {
     await connectDb();
-    const { projectService } = await import('./services/projectService.js');
-    await projectService.migrateLegacyCollaboratorRoles();
-    const { runDataMigrations } = await import('./db/migrations.js');
-    await runDataMigrations();
+    // A local-mode store is born current, so the legacy migrations have nothing to do —
+    // and they would cost a full scan at every launch (they also still use Mongoose's
+    // `app_meta`, which a KDB-only device does not have).
+    if (!local) {
+      const { projectService } = await import('./services/projectService.js');
+      await projectService.migrateLegacyCollaboratorRoles();
+      const { runDataMigrations } = await import('./db/migrations.js');
+      await runDataMigrations();
+    }
   }
   await initEmail();
   if (shouldStartWorker && config.embeddingWorkerEnabled && process.env.EMBEDDING_WORKER_ENABLED !== 'false') {
@@ -77,7 +89,10 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
       credentials: true,
     })
   );
-  app.use(express.json({ limit: '1mb' }));
+  // Sync batches carry whole documents and legitimately exceed the 1mb API default;
+  // that route parses its own body with a larger, still bounded, limit.
+  const jsonParser = express.json({ limit: '1mb' });
+  app.use((req, res, next) => (req.path.startsWith('/api/sync') ? next() : jsonParser(req, res, next)));
   app.use(express.urlencoded({ extended: false }));
 
   const authLimiter = rateLimit({
@@ -88,13 +103,16 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
     message: { error: 'Too many authentication attempts, please try again later' },
   });
 
+  if (local) mountLocalPreamble(app, local);
+  app.get('/api/version', versionHandler);
+
   app.get('/health', async (_req, res) => {
     const checks: Record<string, string> = { service: 'ok' };
 
     // Keyed by the backend actually serving the data: `mongodb` stays what it has always been
     // for a Mongo deployment (deploy/smoke-test.sh and monitors look for it), and a KDB
     // deployment reports `kdb` rather than a Mongo check that would be meaningless there.
-    let backend: 'mongo' | 'kdb' = 'mongo';
+    let backend: DataStore['backend'] = 'mongo';
     try {
       const store = getDataStore();
       backend = store.backend;
@@ -131,28 +149,39 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
 
   app.use(readOnlyMiddleware);
 
-  mountWellKnownRoutes(app);
+  // No rate limit on a private loopback service: the only caller is the app itself.
+  app.use('/api/auth', ...(local ? [] : [authLimiter]), authRouter);
 
-  // /oauth/consent is a public SPA route (client/dist); consent API lives at /api/oauth/consent.
-  app.use('/oauth', authLimiter, oauthRouter);
-
-  app.use('/api/auth', authLimiter, authRouter);
-
-  app.get('/api/invites/preview/:token', authLimiter, invitePreviewHandler);
-
+  // The cloud hub's sync protocol. A device never serves it (it is a client of a hub),
+  // so it is not mounted in local mode; the device's own controls are /api/local-sync.
+  if (!local) app.use('/api/sync', requireAuth, express.json({ limit: '32mb' }), createSyncRouter());
+  if (local) {
+    const { createLocalSyncRouter } = await import('./local/sync-routes.js');
+    app.use('/api/local-sync', createLocalSyncRouter());
+  }
   app.use('/api/tasks', requireAuth, tasksRouter);
   app.use('/api/projects', requireAuth, projectsRouter);
-  app.use('/api/invites', requireAuth, invitesRouter);
-  app.use('/api/notifications', requireAuth, notificationsRouter);
-  app.use('/api/feedback', requireAuth, feedbackRouter);
-  app.use('/api/mcp-keys', requireAuth, mcpKeysRouter);
-  app.use('/api/mcp-oauth-clients', requireAuth, mcpOAuthClientsRouter);
-  app.use('/api/oauth', authLimiter, requireAuth, oauthConsentRouter);
-  app.use('/api/mcp', mcpRouter);
   app.use('/api/search', requireAuth, searchRouter);
-  app.use('/api', requireAuth, agentRouter);
 
-  if (config.serveClient && config.nodeEnv === 'production') {
+  // Online-only surface. A device with no account and no network has no use for OAuth,
+  // invites, notifications, feedback e-mail, MCP keys or the AI agent, so in local mode
+  // none of it is mounted: the paths answer 404, not "forbidden".
+  if (!local) {
+    mountWellKnownRoutes(app);
+    // /oauth/consent is a public SPA route (client/dist); consent API lives at /api/oauth.
+    app.use('/oauth', authLimiter, oauthRouter);
+    app.get('/api/invites/preview/:token', authLimiter, invitePreviewHandler);
+    app.use('/api/invites', requireAuth, invitesRouter);
+    app.use('/api/notifications', requireAuth, notificationsRouter);
+    app.use('/api/feedback', requireAuth, feedbackRouter);
+    app.use('/api/mcp-keys', requireAuth, mcpKeysRouter);
+    app.use('/api/mcp-oauth-clients', requireAuth, mcpOAuthClientsRouter);
+    app.use('/api/oauth', authLimiter, requireAuth, oauthConsentRouter);
+    app.use('/api/mcp', mcpRouter);
+    app.use('/api', requireAuth, agentRouter);
+  }
+
+  if (!local && config.serveClient && config.nodeEnv === 'production') {
     const clientDist = path.resolve(__dirname, '../client/dist');
     app.use(express.static(clientDist));
     app.get(/^(?!\/api|\/health).*/, (_req, res, next) => {

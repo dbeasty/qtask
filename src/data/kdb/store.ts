@@ -73,7 +73,10 @@ interface KdbClient {
   close(): Promise<void>;
 }
 
-type ConnectFn = (addr: string, token: string) => Promise<KdbClient>;
+type ConnectFn = (
+  addr: string,
+  options: string | { token?: string; requestTimeoutMs?: number }
+) => Promise<KdbClient>;
 
 /**
  * The client's `exec` is two round trips on one shared session per namespace - run the DML, then
@@ -733,7 +736,19 @@ export class KdbDataStore implements DataStore {
   async connect(): Promise<void> {
     const { connect } = await loadClient();
     capCheck.at = undefined;
-    this.client = new SerializedDmlClient(await connect(config.kdb.addr, config.kdb.token));
+    // KDB_REQUEST_TIMEOUT_MS raises the client's per-request deadline (30 s by default).
+    // The Mac app sets it: opening a store with a few thousand documents can make the
+    // first request wait longer than that while kdb-service recovers, and a timeout there
+    // is a failed launch rather than a slow one.
+    const timeout = Number(process.env.KDB_REQUEST_TIMEOUT_MS);
+    this.client = new SerializedDmlClient(
+      await connect(
+        config.kdb.addr,
+        Number.isFinite(timeout) && timeout > 0
+          ? { token: config.kdb.token || undefined, requestTimeoutMs: timeout }
+          : config.kdb.token
+      )
+    );
     if (config.kdb.declareConstraints || config.kdb.declareIndexes) {
       try {
         if (config.kdb.declareConstraints) await this.declareConstraints();
