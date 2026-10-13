@@ -52,6 +52,8 @@ export class DeviceSyncClient {
   private state: ClientState = 'stopped';
   private timer?: NodeJS.Timeout;
   private inflight?: Promise<SyncResult | undefined>;
+  /** The one run queued behind `inflight`, shared by every call made while it runs. */
+  private followUp?: Promise<SyncResult | undefined>;
   private failures = 0;
   private lastError?: string;
   private lastResult?: ClientStatus['lastResult'];
@@ -90,7 +92,12 @@ export class DeviceSyncClient {
 
   /** Call after a local write so it reaches the cloud soon; coalesced by the debounce. */
   notifyLocalChange(): void {
-    if (!this.running || this.inflight || this.failures > 0) return;
+    if (!this.running || this.failures > 0) return;
+    // A write made while a run is going may have missed its capture: queue one after it.
+    if (this.inflight) {
+      void this.syncNow().catch(() => undefined);
+      return;
+    }
     this.schedule(this.options.debounceMs);
   }
 
@@ -113,9 +120,22 @@ export class DeviceSyncClient {
     this.timer.unref();
   }
 
-  /** Sync now. Concurrent calls share one run. Resolves undefined if signed out. */
+  /**
+   * Sync now. Resolves after a run that started after this call, so a change made just
+   * before calling is included even when a run was already going (that run may have
+   * passed its capture or its pull). Calls made during a run share one follow-up run.
+   * Resolves undefined if signed out.
+   */
   syncNow(): Promise<SyncResult | undefined> {
-    if (this.inflight) return this.inflight;
+    if (this.inflight) {
+      this.followUp ??= this.inflight
+        .catch(() => undefined)
+        .then(() => {
+          this.followUp = undefined;
+          return this.syncNow();
+        });
+      return this.followUp;
+    }
     this.inflight = this.run().finally(() => {
       this.inflight = undefined;
     });

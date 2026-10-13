@@ -17,11 +17,13 @@
 #   QTASK_NODE_BIN     a *standalone* Node (statically bundles its libraries). Homebrew's
 #                      node loads libnode from the Cellar, so it cannot be copied into an
 #                      app and is refused. Default: the newest ~/.gradle/nodejs/node-v*-darwin-arm64
-#   KDB_ROOT           a kdb checkout (default ../kdb beside this repo's main checkout)
-#   KDB_SERVICE_BIN    the kdb-service binary (default $KDB_ROOT/go/bin/kdb-service)
-#   KDB_CLIENT_SRC     @kdb/client's entry (default $KDB_ROOT/packages/kdb-client/src/index.ts)
+#   KDB_SERVICE_BIN    the kdb-service binary (default: the pinned release in
+#                      .kdb/<version>/kdb-service, from `npm run kdb:fetch`)
+#   KDB_CLIENT_SRC     @kdb/client's entry (default: the installed release package)
+#   KDB_ROOT           a kdb checkout, to bundle an unreleased build from source instead
 #
-# KDB is read, never modified: the binary and client source are copied/bundled as they are.
+# The default is the released KDB this checkout pins (package.json), the same one the
+# server and tests use. KDB is read, never modified.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,14 +35,19 @@ cd "$ROOT"
 
 # --- locate inputs ---------------------------------------------------------------------
 
-# The main checkout, when this is a worktree: kdb is developed beside it.
-MAIN_ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
-KDB_ROOT="${KDB_ROOT:-$(cd "$MAIN_ROOT/../kdb" 2>/dev/null && pwd || true)}"
-if [ -z "${KDB_ROOT}" ] && [ -d "$ROOT/../kdb" ]; then KDB_ROOT="$(cd "$ROOT/../kdb" && pwd)"; fi
-KDB_SERVICE_BIN="${KDB_SERVICE_BIN:-$KDB_ROOT/go/bin/kdb-service}"
-KDB_CLIENT_SRC="${KDB_CLIENT_SRC:-$KDB_ROOT/packages/kdb-client/src/index.ts}"
-[ -x "$KDB_SERVICE_BIN" ] || { echo "kdb-service not found at $KDB_SERVICE_BIN (set KDB_ROOT or KDB_SERVICE_BIN)" >&2; exit 1; }
-[ -f "$KDB_CLIENT_SRC" ] || { echo "@kdb/client not found at $KDB_CLIENT_SRC (set KDB_ROOT or KDB_CLIENT_SRC)" >&2; exit 1; }
+if [ -n "${KDB_ROOT:-}" ]; then
+  # An unreleased KDB build from a source checkout.
+  KDB_SERVICE_BIN="${KDB_SERVICE_BIN:-$KDB_ROOT/go/bin/kdb-service}"
+  KDB_CLIENT_SRC="${KDB_CLIENT_SRC:-$KDB_ROOT/packages/kdb-client/src/index.ts}"
+else
+  KDB_CLIENT_PKG="$ROOT/node_modules/@kdb/client"
+  [ -f "$KDB_CLIENT_PKG/package.json" ] || { echo "@kdb/client is not installed: run npm install" >&2; exit 1; }
+  KDB_VERSION="$(node -p "require('$KDB_CLIENT_PKG/package.json').version")"
+  KDB_SERVICE_BIN="${KDB_SERVICE_BIN:-$ROOT/.kdb/$KDB_VERSION/kdb-service}"
+  KDB_CLIENT_SRC="${KDB_CLIENT_SRC:-$KDB_CLIENT_PKG/dist/index.js}"
+fi
+[ -x "$KDB_SERVICE_BIN" ] || { echo "kdb-service not found at $KDB_SERVICE_BIN (run npm run kdb:fetch, or set KDB_SERVICE_BIN)" >&2; exit 1; }
+[ -f "$KDB_CLIENT_SRC" ] || { echo "@kdb/client not found at $KDB_CLIENT_SRC (run npm install, or set KDB_CLIENT_SRC)" >&2; exit 1; }
 
 NODE_BIN="${QTASK_NODE_BIN:-}"
 if [ -z "$NODE_BIN" ]; then

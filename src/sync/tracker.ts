@@ -193,6 +193,10 @@ export class SyncDataStore implements DataStore {
     return this.inner.disconnect();
   }
 
+  ping(): Promise<void> {
+    return this.inner.ping();
+  }
+
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {
     const cached = this.cache.get(name);
     if (cached) return cached as unknown as Collection<T>;

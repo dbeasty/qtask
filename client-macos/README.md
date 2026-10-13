@@ -31,9 +31,11 @@ node e2e/macos/run.mjs              # end-to-end against the built app
 node e2e/macos/perf.mjs             # measurements -> docs/perf/phase1.md
 ```
 
-The build needs a standalone Node (`QTASK_NODE_BIN`; Homebrew's cannot be bundled), a built
-`kdb-service` and the `@kdb/client` source (`KDB_ROOT`, default the checkout beside this repo).
-KDB is only read: its binary is copied and its client bundled as they are.
+The build needs a standalone Node (`QTASK_NODE_BIN`; Homebrew's cannot be bundled) and the
+KDB release this checkout pins: `@kdb/client` from `npm install` and `kdb-service` from
+`npm run kdb:fetch` (into `.kdb/<version>/`). Set `KDB_ROOT` to bundle an unreleased KDB
+from a source checkout instead. KDB is only read: its binary is copied and its client
+bundled as they are.
 
 ## Where data lives
 

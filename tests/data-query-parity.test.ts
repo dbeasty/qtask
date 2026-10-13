@@ -244,6 +244,45 @@ describe('update parity with mongod', () => {
   }
 });
 
+describe('positional update parity with mongod', () => {
+  // `array.$.field` names "the element the query matched", so it is resolved from the filter.
+  const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ['dotted condition on the array', { 'steps.text': 'deploy' }, { $set: { 'steps.$.done': false } }],
+    ['the first of several matching elements', { 'steps.done': { $in: [true, false] } }, { $set: { 'steps.$.text': 'renamed' } }],
+    ['$elemMatch with two conditions', { steps: { $elemMatch: { text: 'provision', done: false } } }, { $set: { 'steps.$.done': true } }],
+    ['another array', { 'collaborators.userId': 'u2' }, { $set: { 'collaborators.$.role': 'viewer' } }],
+    ['$inc through the operator', { 'steps.text': 'deploy' }, { $inc: { 'steps.$.attempts': 2 } }],
+    ['$unset through the operator', { 'steps.text': 'deploy' }, { $unset: { 'steps.$.done': '' } }],
+    ['equality on scalar array elements', { tags: 'urgent' }, { $set: { 'tags.$': 'critical' } }],
+  ];
+
+  for (const [name, filter, update] of cases) {
+    it(name, async () => {
+      const source = CORPUS[0]!;
+      const scratch = client.db('parity').collection('update_scratch');
+      await scratch.deleteMany({});
+      await scratch.insertOne({ ...source });
+      const full = { _id: source._id, ...filter };
+      const result = await scratch.updateOne(full as never, update as never);
+      assert.equal(result.matchedCount, 1, `${name}: the filter must match the source document`);
+      const expected = await scratch.findOne({ _id: source._id as never });
+
+      const actual = applyUpdate(source, update, false, full);
+
+      assert.deepEqual(normalize(actual), normalize(expected as Record<string, unknown>), `${name}: engine and mongod disagree`);
+    });
+  }
+
+  it('refuses a positional update the filter gives no match for, as mongod does', async () => {
+    const source = CORPUS[0]!;
+    const scratch = client.db('parity').collection('update_scratch');
+    await scratch.deleteMany({});
+    await scratch.insertOne({ ...source });
+    await assert.rejects(scratch.updateOne({ _id: source._id as never }, { $set: { 'steps.$.done': true } } as never));
+    assert.throws(() => applyUpdate(source, { $set: { 'steps.$.done': true } }, false, { _id: source._id }), /positional operator/i);
+  });
+});
+
 /** Dates compare by instant, and key order is not meaningful in either store. */
 function normalize(doc: Record<string, unknown> | null): unknown {
   if (!doc) return doc;

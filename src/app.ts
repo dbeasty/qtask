@@ -3,9 +3,9 @@ import { fileURLToPath } from 'node:url';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import mongoose from 'mongoose';
 import { connectDb } from './db/connection.js';
-import { getDataHealth } from './data/index.js';
+import { getDataHealth, getDataStore } from './data/index.js';
+import type { DataStore } from './data/types.js';
 import { projectsRouter } from './routes/projects.js';
 import { tasksRouter } from './routes/tasks.js';
 import { agentRouter } from './routes/agent.js';
@@ -109,22 +109,18 @@ export async function createApp(options?: { connect?: boolean; startWorker?: boo
   app.get('/health', async (_req, res) => {
     const checks: Record<string, string> = { service: 'ok' };
 
+    // Keyed by the backend actually serving the data: `mongodb` stays what it has always been
+    // for a Mongo deployment (deploy/smoke-test.sh and monitors look for it), and a KDB
+    // deployment reports `kdb` rather than a Mongo check that would be meaningless there.
+    let backend: DataStore['backend'] = 'mongo';
     try {
-      if (mongoose.connection.readyState !== 1) {
-        checks.mongodb = 'disconnected';
-        res.status(503).json({
-          status: 'degraded',
-          version: APP_VERSION,
-          gitSha: GIT_SHA,
-          checks,
-          deployment: getDeploymentHealthPayload(),
-        });
-        return;
-      }
-      await mongoose.connection.db?.admin().ping();
-      checks.mongodb = 'ok';
-    } catch {
-      checks.mongodb = 'error';
+      const store = getDataStore();
+      backend = store.backend;
+      await store.ping();
+      checks[backend === 'kdb' ? 'kdb' : 'mongodb'] = 'ok';
+    } catch (error) {
+      const connected = !(error instanceof Error && /not connected|Data store is not connected/.test(error.message));
+      checks[backend === 'kdb' ? 'kdb' : 'mongodb'] = connected ? 'error' : 'disconnected';
       res.status(503).json({
         status: 'degraded',
         version: APP_VERSION,

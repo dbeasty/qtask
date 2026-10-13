@@ -251,6 +251,12 @@ export interface UserOAuthAuthCodeDoc extends TimestampedDoc {
   expiresAt: Date;
 }
 
+/** A migration that has run (src/db/migrations.ts). */
+export interface AppMetaDoc extends StoredDoc {
+  key: string;
+  at: Date;
+}
+
 export interface LlmCallMetricDoc extends StoredDoc {
   requestId: string;
   userId?: string;

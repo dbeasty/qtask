@@ -24,6 +24,20 @@ export class ValidationError extends Error {
   }
 }
 
+/**
+ * A write that would repeat a value a unique constraint forbids. Carries MongoDB's duplicate-key
+ * code (11000) because that is how the application recognises it (`isDuplicateKeyError` in
+ * authService) and turns it into a 409 - the data layer's contract is that either backend
+ * rejects a duplicate in the same shape.
+ */
+export class DuplicateKeyError extends Error {
+  readonly code = 11000;
+  constructor(message: string) {
+    super(message);
+    this.name = 'DuplicateKeyError';
+  }
+}
+
 interface NormalizeOptions {
   /** A create applies defaults and required-checks; an update only casts what is present. */
   isCreate: boolean;
@@ -34,7 +48,29 @@ interface NormalizeOptions {
  * ids minted, timestamps stamped.
  */
 export function normalizeDocument(schema: Schema, input: Doc, options: NormalizeOptions): Doc {
-  const out = applySchema(schema, { ...input }, options, '');
+  // Mongoose reports every problem in a document at once ("title is required, status is not a
+  // valid enum value, ..."), and API callers see that message. Stopping at the first problem
+  // would show them one at a time, so problems are collected through the whole walk (it is
+  // synchronous, so a module-level collector cannot interleave) and raised together.
+  const outer = collecting;
+  const problems: string[] = [];
+  collecting = problems;
+  let out: Doc;
+  try {
+    out = applySchema(schema, { ...input }, options, '');
+  } finally {
+    collecting = outer;
+  }
+  if (problems.length > 0) throw new ValidationError(problems.join(', '));
+  // MongoDB (through Mongoose) drops a key whose value is undefined, so `doc.token = undefined;
+  // replaceOne(...)` removes the field. Left in place here the key looked present, so the
+  // store did not treat it as removed, JSON then dropped it on the way out, and the old value
+  // survived KDB's merge-write: a retired one-time token stayed valid.
+  stripUndefined(out);
+  // Mongoose's `minimize`: a document saved with an empty object for a field drops the field.
+  // (Only on create and replace; an update's $set of {} is stored as given.)
+  if (options.isCreate) minimizeEmpty(out);
+  else minimizeInsideArrays(out);
 
   if (hasTimestamps(schema)) {
     const now = new Date();
@@ -48,6 +84,53 @@ export function normalizeDocument(schema: Schema, input: Doc, options: Normalize
   }
 
   return out;
+}
+
+let collecting: string[] | null = null;
+
+/**
+ * On an update, Mongoose minimizes the elements it casts into an array (a pushed sub-document
+ * with `arguments: {}` loses that key) but stores a `$set` of `{}` as given. So only objects
+ * reached through an array are minimized.
+ */
+function minimizeInsideArrays(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) minimizeEmpty(item);
+    return;
+  }
+  if (value === null || typeof value !== 'object' || value instanceof Date) return;
+  for (const inner of Object.values(value as Record<string, unknown>)) minimizeInsideArrays(inner);
+}
+
+/** Removes own properties that are empty plain objects, at every depth (children first). */
+function minimizeEmpty(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) minimizeEmpty(item);
+    return;
+  }
+  if (value === null || typeof value !== 'object' || value instanceof Date) return;
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    const inner = record[key];
+    minimizeEmpty(inner);
+    if (inner !== null && typeof inner === 'object' && !Array.isArray(inner) && !(inner instanceof Date) && Object.keys(inner as object).length === 0) {
+      delete record[key];
+    }
+  }
+}
+
+/** Removes own properties whose value is undefined, at every depth. */
+function stripUndefined(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) stripUndefined(item);
+    return;
+  }
+  if (value === null || typeof value !== 'object' || value instanceof Date) return;
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (record[key] === undefined) delete record[key];
+    else stripUndefined(record[key]);
+  }
 }
 
 /** Stamps `updatedAt` on a document being written back, when the schema has timestamps. */
@@ -75,24 +158,46 @@ function applySchema(schema: Schema, doc: Doc, options: NormalizeOptions, prefix
     // handled through `type.schema` below, so a dotted path here is a leaf of one.
     if (path.includes('.')) continue;
 
-    const present = out[path] !== undefined && out[path] !== null;
+    try {
+      const present = out[path] !== undefined && out[path] !== null;
 
-    if (!present) {
-      if (options.isCreate) {
-        const fallback = defaultFor(type);
-        if (fallback !== undefined) {
-          out[path] = fallback;
+      if (!present) {
+        if (options.isCreate) {
+          const fallback = defaultFor(type);
+          if (fallback !== undefined) {
+            out[path] = fallback;
+          }
         }
       }
-    }
 
-    if (out[path] !== undefined && out[path] !== null) {
-      out[path] = castValue(type, out[path], options, `${prefix}${path}`);
-    }
+      if (out[path] !== undefined && out[path] !== null) {
+        out[path] = castValue(type, out[path], options, `${prefix}${path}`);
+      }
 
-    if (options.isCreate && isRequired(type) && (out[path] === undefined || out[path] === null || out[path] === '')) {
-      throw new ValidationError(`${prefix}${path} is required`);
+      if (options.isCreate && isRequired(type) && (out[path] === undefined || out[path] === null || out[path] === '')) {
+        throw new ValidationError(`${prefix}${path} is required`);
+      }
+    } catch (error) {
+      // Record and carry on to the next path; normalizeDocument raises them together.
+      if (error instanceof ValidationError && collecting) {
+        collecting.push(error.message);
+        continue;
+      }
+      throw error;
     }
+  }
+
+  // Strict mode, as Mongoose has it: a field the schema does not declare is dropped rather than
+  // stored, at the top level and inside sub-documents. Without this the KDB side kept data the
+  // MongoDB side silently discarded (an `entityLinkSource` snapshot nobody declared).
+  if ((schema as unknown as { options?: { strict?: unknown } }).options?.strict !== false) {
+    const declared = new Set<string>(['_id', '__v']);
+    for (const path of Object.keys(schema.paths)) declared.add(path.split('.')[0]!);
+    if (hasTimestamps(schema)) {
+      declared.add('createdAt');
+      declared.add('updatedAt');
+    }
+    for (const key of Object.keys(out)) if (!declared.has(key)) delete out[key];
   }
 
   return out;
@@ -266,4 +371,35 @@ export function ttlSpec(schema: Schema): { path: string; graceMs: number } | nul
     if (typeof seconds === 'number' && keys.length === 1) return { path: keys[0], graceMs: seconds * 1000 };
   }
   return null;
+}
+
+
+/**
+ * MongoDB stores `undefined` inside a Mixed value as null when it arrives through an update
+ * (`$set: { pendingProposals: [{ toolCallIndex: undefined }] }`), whereas a create or a typed
+ * field drops it. Applied to the result of an update, before normalization strips the rest, so
+ * the stored shape matches and `=== undefined` checks in the application see the same thing on
+ * either backend.
+ */
+export function mixedUndefinedToNull(schema: Schema, doc: Doc): Doc {
+  for (const [path, type] of Object.entries(schema.paths)) {
+    if (path.includes('.') || doc[path] === undefined || doc[path] === null) continue;
+    const t = type as unknown as { instance?: string; caster?: { instance?: string }; $embeddedSchemaType?: { instance?: string } };
+    const element = t.caster ?? t.$embeddedSchemaType;
+    if (t.instance === 'Mixed' || (t.instance === 'Array' && element?.instance === 'Mixed')) {
+      doc[path] = nullify(doc[path]);
+    }
+  }
+  return doc;
+}
+
+function nullify(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (Array.isArray(value)) return value.map(nullify);
+  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) out[key] = nullify(inner);
+    return out;
+  }
+  return value;
 }

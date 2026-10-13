@@ -13,24 +13,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolve } from 'node:path';
 import request from 'supertest';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 import type { Express } from 'express';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 process.env.SERVE_CLIENT = 'false';
 
-const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../kdb');
-const CLIENT_MODULE = process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
 const PORT = Number(process.env.KDB_TEST_PORT_LOCAL ?? 7812);
 const TOKEN = 'kdb-test-device-token-0123456789';
 const NAMESPACE = 'qtasklocal/docs';
 
-const skip = !existsSync(SERVICE_BIN)
-  ? `kdb-service not built at ${SERVICE_BIN}`
-  : !existsSync(CLIENT_MODULE)
-    ? `@kdb/client not found at ${CLIENT_MODULE}`
-    : undefined;
+const skip = kdbUnavailable;
 
 describe('local mode on KDB', { skip }, () => {
   let service: ChildProcess | undefined;

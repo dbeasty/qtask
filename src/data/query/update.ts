@@ -7,7 +7,7 @@
  * fails, because the caller reports success either way.
  */
 
-import { matchesFilter, type Filter } from './filter.js';
+import { matchesFilter, positionalIndex, type Filter } from './filter.js';
 import { valuesEqual, orderingCompare } from './compare.js';
 import { getPath, setPath, unsetPath, isPlainObject, type Doc } from './paths.js';
 
@@ -25,8 +25,12 @@ export function isOperatorUpdate(update: Update): boolean {
  *
  * `isInsert` drives $setOnInsert, which applies only when the update is creating a
  * document through an upsert.
+ *
+ * `filter` is the query that selected the document. It is needed for the positional operator
+ * (`array.$.field`), which names "the element the query matched" and so cannot be resolved from
+ * the update alone.
  */
-export function applyUpdate(doc: Doc, update: Update, isInsert = false): Doc {
+export function applyUpdate(doc: Doc, update: Update, isInsert = false, filter: Filter = {}): Doc {
   if (!isOperatorUpdate(update)) {
     // Whole-document replacement keeps the _id: Mongo refuses to change it, and a
     // replacement that dropped it would orphan the document.
@@ -44,10 +48,33 @@ export function applyUpdate(doc: Doc, update: Update, isInsert = false): Doc {
     if (!SUPPORTED.has(operator)) {
       throw new Error(`Unsupported update operator: ${operator}`);
     }
-    applyOperator(next, operator, payload as Record<string, unknown>, isInsert);
+    applyOperator(next, operator, resolvePositional(next, payload as Record<string, unknown>, filter), isInsert);
   }
 
   return next;
+}
+
+/** The positional operator: a `$` path segment that follows another segment. */
+const POSITIONAL = /\.\$(?=\.|$)/;
+
+/** Rewrites `list.$.field` to `list.<index>.field` using the filter's match on `list`. */
+function resolvePositional(doc: Doc, payload: Record<string, unknown>, filter: Filter): Record<string, unknown> {
+  if (!Object.keys(payload).some((path) => POSITIONAL.test(path))) return payload;
+  const out: Record<string, unknown> = {};
+  for (const [path, value] of Object.entries(payload)) {
+    const at = path.search(POSITIONAL);
+    if (at < 0) {
+      out[path] = value;
+      continue;
+    }
+    const arrayPath = path.slice(0, at);
+    const index = positionalIndex(doc, filter, arrayPath);
+    if (index === null) {
+      throw new Error(`The positional operator did not find the match needed from the query (${path})`);
+    }
+    out[`${arrayPath}.${index}${path.slice(at + 2)}`] = value;
+  }
+  return out;
 }
 
 function applyOperator(doc: Doc, operator: string, payload: Record<string, unknown>, isInsert: boolean): void {

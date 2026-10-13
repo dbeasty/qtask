@@ -185,6 +185,7 @@ class DivergingStore implements DataStore {
 
   async connect(): Promise<void> {}
   async disconnect(): Promise<void> {}
+  async ping(): Promise<void> {}
   async clear(): Promise<void> {
     this.docs.clear();
   }

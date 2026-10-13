@@ -130,14 +130,49 @@ describe('device sync client', () => {
     assert.equal(status.consecutiveFailures, 0);
   });
 
-  it('coalesces concurrent syncNow calls into one run', async () => {
+  it('calls made during a run share one follow-up run that starts after them', async () => {
     const device = await makePeer('device');
     const hub = await makePeer('hub', { role: 'hub' });
     const transport = new LoopbackTransport(hub.engine.service());
     const client = new DeviceSyncClient({ engine: device.engine, transport, getToken: () => 't' });
-    const [a, b] = await Promise.all([client.syncNow(), client.syncNow()]);
-    assert.equal(a, b);
-    assert.equal(transport.requests, 2, 'one hello and one pull; nothing to push, and no second run');
+    const [a, b, c] = await Promise.all([client.syncNow(), client.syncNow(), client.syncNow()]);
+    assert.ok(a && b && c);
+    assert.equal(b, c, 'the calls made during the first run share its follow-up');
+    assert.equal(transport.requests, 4, 'two runs of hello + pull, not three');
+  });
+
+  it('a change made on the hub while a run is going is pulled by a syncNow called after it', async () => {
+    const device = await makePeer('device');
+    const hub = await makePeer('hub', { role: 'hub' });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let first = true;
+    // Hold the first run just after its pull has been answered, as a slow local apply
+    // would, and change the hub meanwhile: that run can no longer see the change.
+    const inner = new LoopbackTransport(hub.engine.service());
+    const transport = {
+      kind: 'held',
+      requests: 0,
+      hello: (r: any) => inner.hello(r),
+      push: (r: any) => inner.push(r),
+      pull: async (r: any) => {
+        const res = await inner.pull(r);
+        if (first) {
+          first = false;
+          await gate;
+        }
+        return res;
+      },
+    };
+    const client = new DeviceSyncClient({ engine: device.engine, transport, getToken: () => 't' });
+    const running = client.syncNow();
+    await new Promise((r) => setTimeout(r, 5));
+    await hub.store.collection('tasks').create({ _id: 'late', userId: 'u1', title: 'made mid-run' });
+    const after = client.syncNow();
+    release();
+    await running;
+    await after;
+    assert.ok(await device.inner.collection('tasks').findOne({ _id: 'late' }), 'the follow-up run pulled it');
   });
 });
 

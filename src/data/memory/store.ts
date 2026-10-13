@@ -232,6 +232,8 @@ export class MemoryDataStore implements DataStore {
 
   async connect(): Promise<void> {}
   async disconnect(): Promise<void> {}
+  /** Always answers: the data is in this process. */
+  async ping(): Promise<void> {}
 
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {
     let existing = this.collections.get(name);

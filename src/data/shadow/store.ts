@@ -34,7 +34,10 @@
  * why compare.ts ignores that field and nothing else.
  */
 
+import mongoose, { type Schema } from 'mongoose';
 import { createLogger } from '../../utils/logger.js';
+import { MODEL_BY_COLLECTION } from '../modelNames.js';
+import { presetSubdocumentIds } from '../subdocumentIds.js';
 import { ShadowQueue, type ShadowStats } from './queue.js';
 import {
   compareCounts,
@@ -60,6 +63,20 @@ import type {
 
 const log = createLogger('data:shadow');
 
+/**
+ * A private copy of anything the shadow will look at later.
+ *
+ * Mirrored writes and read comparisons run out of band, some time after the call returned, and
+ * callers own what they pass in and what they get back: the application routinely reads a
+ * document, mutates it (`user.emailVerified = true`) and passes it to `replaceOne`. A queued
+ * comparison holding the caller's object would compare the shadow with the caller's *edited*
+ * copy, and a queued write would replay a later edit than the one the primary applied - both
+ * reported as divergence that is really aliasing. Snapshot at the call, replay the snapshot.
+ */
+function snap<V>(value: V): V {
+  return value === undefined || value === null ? value : structuredClone(value);
+}
+
 class ShadowedCollection<T extends Doc> implements Collection<T> {
   constructor(
     readonly name: CollectionName,
@@ -73,47 +90,49 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
 
   async find(filter: Filter = {}, options: FindOptions = {}): Promise<T[]> {
     const result = await this.primary.find(filter, options);
-    this.compare('find', { filter, options }, async () =>
-      compareDocLists(
-        this.name,
-        'find',
-        { filter, options },
-        result,
-        await this.shadow.find(filter, options),
-        queryIsOrdered(options)
-      )
+    const seen = snap(result);
+    const query = snap({ filter, options });
+    this.compare('find', query, async () =>
+      compareDocLists(this.name, 'find', query, seen, await this.shadow.find(query.filter, query.options), queryIsOrdered(query.options))
     );
     return result;
   }
 
   async findOne(filter: Filter, options: FindOptions = {}): Promise<T | null> {
     const result = await this.primary.findOne(filter, options);
-    this.compare('findOne', { filter, options }, async () =>
-      compareDocs(this.name, 'findOne', { filter, options }, result, await this.shadow.findOne(filter, options))
+    const seen = snap(result);
+    const query = snap({ filter, options });
+    this.compare('findOne', query, async () =>
+      compareDocs(this.name, 'findOne', query, seen, await this.shadow.findOne(query.filter, query.options))
     );
     return result;
   }
 
   async findById(id: string, options: FindOptions = {}): Promise<T | null> {
     const result = await this.primary.findById(id, options);
-    this.compare('findById', { id, options }, async () =>
-      compareDocs(this.name, 'findById', { id, options }, result, await this.shadow.findById(id, options))
+    const seen = snap(result);
+    const query = snap({ id, options });
+    this.compare('findById', query, async () =>
+      compareDocs(this.name, 'findById', query, seen, await this.shadow.findById(query.id, query.options))
     );
     return result;
   }
 
   async countDocuments(filter: Filter = {}): Promise<number> {
     const result = await this.primary.countDocuments(filter);
-    this.compare('countDocuments', { filter }, async () =>
-      compareCounts(this.name, 'countDocuments', { filter }, result, await this.shadow.countDocuments(filter))
+    const query = snap({ filter });
+    this.compare('countDocuments', query, async () =>
+      compareCounts(this.name, 'countDocuments', query, result, await this.shadow.countDocuments(query.filter))
     );
     return result;
   }
 
   async distinct(field: string, filter: Filter = {}): Promise<unknown[]> {
     const result = await this.primary.distinct(field, filter);
-    this.compare('distinct', { field, filter }, async () =>
-      compareValueSets(this.name, 'distinct', { field, filter }, result, await this.shadow.distinct(field, filter))
+    const seen = snap(result);
+    const query = snap({ field, filter });
+    this.compare('distinct', query, async () =>
+      compareValueSets(this.name, 'distinct', query, seen, await this.shadow.distinct(query.field, query.filter))
     );
     return result;
   }
@@ -142,38 +161,70 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
 
   // --- writes: primary answers, shadow mirrors -----------------------------------
 
+  /**
+   * The write with an `_id` already on every sub-document it introduces, so that both stores
+   * store the same ids rather than each minting its own (see subdocumentIds.ts). Applied before
+   * the primary sees the write; the shadow replays the same payload.
+   */
+  private withIds<U extends Doc>(update: U): U {
+    const schema = mongoose.models[MODEL_BY_COLLECTION[this.name]]?.schema as Schema | undefined;
+    return schema ? presetSubdocumentIds(schema, update) : update;
+  }
+
   async create(doc: Doc): Promise<T> {
     const created = await this.primary.create(doc);
     // The stored document, not the input: it carries the id and timestamps the
     // primary assigned, which is what keeps the two stores addressable alike.
-    this.mirror('create', () => this.shadow.create(created));
+    const replay = snap(created);
+    this.mirror('create', () => this.shadow.create(replay));
     return created;
   }
 
   async insertMany(docs: Doc[]): Promise<T[]> {
     const created = await this.primary.insertMany(docs);
-    this.mirror('insertMany', () => this.shadow.insertMany(created));
+    const replay = snap(created);
+    this.mirror('insertMany', () => this.shadow.insertMany(replay));
     return created;
   }
 
-  async updateOne(filter: Filter, update: Update, options?: UpdateOptions): Promise<UpdateResult> {
+  async updateOne(filter: Filter, original: Update, options?: UpdateOptions): Promise<UpdateResult> {
+    const update = this.withIds(original);
+    const args = snap({ filter, update, options });
     const result = await this.primary.updateOne(filter, update, options);
-    this.mirror('updateOne', () => this.shadow.updateOne(filter, update, options));
+    if (result.upsertedId) {
+      // The primary created this document and gave it an id. Replaying the upsert would make the
+      // shadow mint a different one, leaving the same row under two identities for good.
+      //
+      // Queued at once and read when it runs, not read here first: awaiting before queueing lets
+      // a later write to the same key reach the queue ahead of this one, and the shadow then
+      // creates the row under a new id before this copy arrives and collides with it.
+      const id = result.upsertedId;
+      this.mirror('updateOne:upsert', async () => {
+        const created = await this.primary.findById(id);
+        if (created) await this.copyAcross(created);
+      });
+      return result;
+    }
+    this.mirror('updateOne', () => this.shadow.updateOne(args.filter, args.update, args.options));
     return result;
   }
 
-  async updateMany(filter: Filter, update: Update): Promise<UpdateResult> {
+  async updateMany(filter: Filter, original: Update): Promise<UpdateResult> {
+    const update = this.withIds(original);
+    const args = snap({ filter, update });
     const result = await this.primary.updateMany(filter, update);
-    this.mirror('updateMany', () => this.shadow.updateMany(filter, update));
+    this.mirror('updateMany', () => this.shadow.updateMany(args.filter, args.update));
     return result;
   }
 
-  async findOneAndUpdate(filter: Filter, update: Update, options?: UpdateOptions): Promise<T | null> {
+  async findOneAndUpdate(filter: Filter, original: Update, options?: UpdateOptions): Promise<T | null> {
+    const update = this.withIds(original);
+    const args = snap({ filter, update, options });
     const result = await this.primary.findOneAndUpdate(filter, update, options);
     // An upsert that created a document has to carry the primary's id across, or the
     // two stores hold the same row under different identities from then on.
     if (result && options?.upsert) {
-      const upserted = result;
+      const upserted = snap(result);
       this.mirror('findOneAndUpdate:upsert', async () => {
         const existing = await this.shadow.findById(String(upserted._id));
         if (existing) {
@@ -184,44 +235,74 @@ class ShadowedCollection<T extends Doc> implements Collection<T> {
       });
       return result;
     }
-    this.mirror('findOneAndUpdate', () => this.shadow.findOneAndUpdate(filter, update, options));
+    this.mirror('findOneAndUpdate', () => this.shadow.findOneAndUpdate(args.filter, args.update, args.options));
     return result;
   }
 
-  async findByIdAndUpdate(id: string, update: Update, options?: UpdateOptions): Promise<T | null> {
+  async findByIdAndUpdate(id: string, original: Update, options?: UpdateOptions): Promise<T | null> {
+    const update = this.withIds(original);
+    const args = snap({ update, options });
     const result = await this.primary.findByIdAndUpdate(id, update, options);
-    this.mirror('findByIdAndUpdate', () => this.shadow.findByIdAndUpdate(id, update, options));
+    this.mirror('findByIdAndUpdate', () => this.shadow.findByIdAndUpdate(id, args.update, args.options));
     return result;
   }
 
-  async replaceOne(filter: Filter, doc: Doc): Promise<UpdateResult> {
+  async replaceOne(filter: Filter, original: Doc): Promise<UpdateResult> {
+    const doc = this.withIds(original);
+    const args = snap({ filter, doc });
     const result = await this.primary.replaceOne(filter, doc);
-    this.mirror('replaceOne', () => this.shadow.replaceOne(filter, doc));
+    this.mirror('replaceOne', () => this.shadow.replaceOne(args.filter, args.doc));
     return result;
   }
 
   async deleteOne(filter: Filter): Promise<DeleteResult> {
+    const replay = snap(filter);
     const result = await this.primary.deleteOne(filter);
-    this.mirror('deleteOne', () => this.shadow.deleteOne(filter));
+    this.mirror('deleteOne', () => this.shadow.deleteOne(replay));
     return result;
   }
 
   async deleteMany(filter: Filter): Promise<DeleteResult> {
+    const replay = snap(filter);
     const result = await this.primary.deleteMany(filter);
-    this.mirror('deleteMany', () => this.shadow.deleteMany(filter));
+    this.mirror('deleteMany', () => this.shadow.deleteMany(replay));
     return result;
   }
 
   async findOneAndDelete(filter: Filter): Promise<T | null> {
+    const replay = snap(filter);
     const result = await this.primary.findOneAndDelete(filter);
-    this.mirror('findOneAndDelete', () => this.shadow.findOneAndDelete(filter));
+    this.mirror('findOneAndDelete', () => this.shadow.findOneAndDelete(replay));
     return result;
   }
 
-  async bulkWrite(operations: BulkOperation[]): Promise<UpdateResult> {
+  async bulkWrite(original: BulkOperation[]): Promise<UpdateResult> {
+    const operations = original.map((op) => ({ updateOne: { ...op.updateOne, update: this.withIds(op.updateOne.update) } }));
+    const replay = snap(operations);
     const result = await this.primary.bulkWrite(operations);
-    this.mirror('bulkWrite', () => this.shadow.bulkWrite(operations));
+    // An upsert may have created documents, and replaying it would mint different ids on the
+    // shadow. Those operations are mirrored by copying the primary's resulting document; the
+    // rest are replayed as written.
+    const plain = replay.filter((op) => !op.updateOne.upsert);
+    const upserts = replay.filter((op) => op.updateOne.upsert);
+    if (plain.length > 0) this.mirror('bulkWrite', () => this.shadow.bulkWrite(plain));
+    for (const op of upserts) {
+      const filter = op.updateOne.filter;
+      // Queued now, read when it runs (see updateOne): the order of the queue is the order of the
+      // calls, and a read made before queueing would let a later write overtake it.
+      this.mirror('bulkWrite:upsert', async () => {
+        const current = await this.primary.findOne(filter);
+        if (current) await this.copyAcross(current);
+      });
+    }
     return result;
+  }
+
+  /** Makes the shadow hold exactly this document, creating it under the primary's id if absent. */
+  private async copyAcross(doc: T): Promise<void> {
+    const existing = await this.shadow.findById(String(doc._id));
+    if (existing) await this.shadow.replaceOne({ _id: doc._id }, doc);
+    else await this.shadow.create(doc);
   }
 
   private mirror(operation: string, run: () => Promise<unknown>): void {
@@ -357,6 +438,11 @@ export class ShadowDataStore implements DataStore {
     // blamed on the backend at the next comparison.
     await this.queue.drain();
     await Promise.allSettled([this.primary.disconnect(), this.shadow.disconnect()]);
+  }
+
+  /** Health is the primary's: it serves every request, and the shadow is allowed to be down. */
+  async ping(): Promise<void> {
+    await this.primary.ping();
   }
 
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {

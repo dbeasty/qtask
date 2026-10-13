@@ -83,6 +83,10 @@ export const config = {
     token: process.env.KDB_TOKEN ?? '',
     /** Narrow scans server-side with SQL. Off until the shadow bake has vouched for it. */
     pushdown: process.env.DATA_KDB_PUSHDOWN === 'true',
+    /** Hand unique constraints to the server so they hold across processes. On by default. */
+    declareConstraints: process.env.DATA_KDB_DECLARE_CONSTRAINTS !== 'false',
+    /** Create on KDB the lookup indexes the schemas declare for MongoDB. On by default. */
+    declareIndexes: process.env.DATA_KDB_DECLARE_INDEXES !== 'false',
   },
   jwtSecret: requireSecret('JWT_SECRET', process.env.JWT_SECRET, 'dev-jwt-secret-change-me'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',

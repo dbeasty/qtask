@@ -59,6 +59,10 @@ export function stopFeedbackVisionWorker(): void {
 async function processNextJob(): Promise<void> {
   if (drainDisabled || processing) return;
   processing = true;
+  // Re-drain only after actually handling a job. Re-draining unconditionally meant that when the
+  // dequeue itself failed - the store unavailable - the next pass failed at once, scheduled
+  // another, and so on until the stack overflowed. (New work calls scheduleDrain itself.)
+  let foundJob = false;
 
   try {
     const job = await visionJobs().findOneAndUpdate(
@@ -68,6 +72,7 @@ async function processNextJob(): Promise<void> {
     );
 
     if (!job) return;
+    foundJob = true;
 
     const feedback = await feedbackDocs().findById(job.feedbackId);
     if (!feedback) {
@@ -147,6 +152,6 @@ async function processNextJob(): Promise<void> {
     }
   } finally {
     processing = false;
-    scheduleDrain();
+    if (foundJob) scheduleDrain();
   }
 }

@@ -23,6 +23,11 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done, tested on 1,200 documents against a real mongod |
 | Scan-cap guard, verified deletes, keyed reads for `_id` | Done (see B1) |
 | `kdb-service` systemd unit | Written (`deploy/qtask-kdb.service`); flags verified to start and report healthy |
+| **KDB 0.7.0 candidate** (`main` at the time of writing) | The whole application passes on it: 133 of 133 test files on KDB, and the default Mongo suite is unchanged |
+| The application's own test suite on KDB (`npm run test:kdb`) | Done. A preload gives each test process a private `kdb-service`; the unchanged tests run against the real routes and services |
+| Shadow mode as a test run (`npm run test:shadow`) | Done. Mongo primary, KDB mirroring every write and comparing every read: **12,275 mirrored writes, 0 failed, 0 dropped; 23 divergences in 7,266 reads (0.3%)**, down from 729. What is left is races with un-awaited writes (a `lastActiveAt` touch, queue claims), tie ordering, and sub-document ids |
+| Durability across `kill -9` on a real on-disk service | Done (`data-kdb-durability`): concurrent acknowledged writes, updates and deletes survive; the unique constraint holds on recovered data; expiry continues |
+| Atomicity across processes | Done (`data-kdb-multiprocess`): four processes lose no increment and exactly one wins a claim (server-side `replaceIf`); five processes registering one email let exactly one in (server-held unique constraint, KDB #147) |
 | **Anything touching a production dataset** | **Not done. Nothing here has seen production data or traffic** |
 
 ### What upgrading to v0.6.2 changed
@@ -134,17 +139,45 @@ Measured with 9,000 tasks, in-memory mode, one process:
 | Backfill rate | about 21,000 docs/s | |
 
 Pushdown helps by moving filtering to the server but the server still scans, so cost grows with
-namespace size. KDB has hash/btree indexes, but they need a declared schema, and this
-single-namespace server holds many collections. Treat indexes as follow-up work, not a Stage 4
-prerequisite. These are in-memory numbers; disk numbers with `--durability sync` have not been
-taken and should be before cutover.
+namespace size. **Update:** on the 0.7.0 candidate a hash index on a schemaless namespace works
+(`CREATE INDEX … USING HASH`: 10.8 ms to 5.5 ms for the same query), and `COUNT(*)` is
+sub-millisecond.
 
-### B3. Unique constraints are not atomic
+**Indexes now created (`DATA_KDB_DECLARE_INDEXES`, default on).** On connect the store declares the
+lookup indexes the Mongoose schemas declare: 27 paths (HASH, or BTREE for dates/numbers; a compound
+Mongo index becomes an index on its leading field; text indexes stay in-app, TTL indexes became
+server expiry, unique ones are constraints). Declaring is idempotent and they survive `kill -9`
+(`data-kdb-durability`). Reads: `find({userId})` on 2,000 tasks 6.2 ms to 0.4 ms.
 
-`assertUnique` is read-then-write. Two concurrent creates of the same email can both pass. This
-is documented in the store, and unchanged. KDB can enforce compound unique at commit (Layer 16),
-which needs a declared schema per namespace. The shadow-read stage will not detect this class of
-bug on its own; add a concurrent-registration check to the Stage 3 exit criteria (section 4).
+**Disk write cost: fixed in KDB #157 (after 0.7.1).** On v0.7.1, with `--durability sync`, every
+64th commit rewrote every index snapshot under the write gate, and each `CREATE INDEX` rewrote all
+of them twice: bulk load halved (226 to 102 docs/s at 2,000 docs here) and a first `connect()` on an
+empty namespace took about 17 s. #157 writes snapshots in the background, only for indexes that
+changed: per-commit p99 584-662 ms to 16-18 ms, `CREATE INDEX` x27 15-21 s to 0.3 s. Until it is
+released, backfill with `DATA_KDB_DECLARE_INDEXES=false` and declare the indexes afterwards.
+
+### B3. Unique constraints across processes — resolved by KDB #147 (not yet released)
+
+The store's own check (`assertUnique`) is read-then-write, so two *processes* could both pass it.
+With KDB #147, `CREATE UNIQUE INDEX` installs a constraint that the server enforces at commit, and
+`connect()` declares each collection's constraints. Because every collection shares one namespace
+and a server constraint binds every document carrying the field, each one is carried on a
+synthetic `_u_<collection>_<fields>` field that only its collection's documents have (a bare
+`UNIQUE clientId` would also have bound the authorization codes, which repeat the same clientId by
+design; prefixing `_c` does not help). Proven with five real processes racing to register one
+email: exactly one wins and the rest get a duplicate key, which `authService` turns into a 409.
+
+The constraint over array elements (a user's linked identity providers: one Google or Microsoft
+login may belong to one account) is now held by the server too. The store carries it as an array
+of per-element keys, one per linked login, and KDB treats an array under a unique constraint as
+multikey, as MongoDB does (KDB #157, for the release after 0.7.1). Proven with
+five processes racing to link one login to five accounts: exactly one wins. On a server without
+multikey support the in-process check still stands, and only the cross-process guarantee for this
+one rule is lost.
+
+A server older than #147 accepts the declarations and enforces nothing; the in-process check
+still stands, so it loses the extra guarantee and nothing else. The pinned KDB must include #147,
+and multikey for the linked-login rule.
 
 ### B4. Search quality differs, deliberately
 
@@ -308,12 +341,22 @@ reason when it is absent.
   into evidence.
 - **Behaviour past 10,000 documents depends on a KDB change** that is outside this repository.
 - **Performance on disk is unmeasured.** The figures in B2 are in-memory.
-- **Single process, single namespace.** One `kdb-service` is a single point of failure, as one
-  Mongo is today. KDB's peer sync could give a replica; that is not part of this plan.
-- **`@kdb/client` is loaded from the KDB checkout** (`KDB_CLIENT_MODULE`), not installed as a
-  dependency; it is `packages/kdb-client` at version 0.1.0, unchanged between the old dev build
-  and v0.6.2. Production needs it vendored or published and pinned to the v0.6.2 source before
-  Stage 2.
+- **Single `kdb-service`.** One service is a single point of failure, as one Mongo is today. KDB's
+  peer sync could give a replica; that is not part of this plan.
+- **Sub-document ids are the same in both stores.** While Mongo is primary and KDB mirrors it,
+  the shadow layer gives every sub-document a write introduces its `_id` before either store sees
+  the write (`src/data/subdocumentIds.ts`), so both store the same id and a sub-document can be
+  addressed by id on either side. Before, each store minted its own, and only the backfill at
+  cutover reconciled them. Documents keep their Mongo ids through the backfill as before.
+- **Load flakes in the test suite itself** (`socket hang up` from supertest) occur at about the same
+  rate on MongoDB and on KDB (1 in 16 runs of `collaboration` under 8-way load on each).
+- **KDB comes from a release, never a source tree.** `@kdb/client` is a dependency at the
+  release's version (installed from the release tarball; it is not on npm), and the tests'
+  `kdb-service` is the same release's binary, fetched by `npm run kdb:fetch` and checked against
+  its `SHA256SUMS`. Production runs that release's image
+  (`ghcr.io/dbeasty/kdb/kdb-service:v<version>`). The client refuses a server from another
+  release, so the one pin covers both. `KDB_SERVICE_BIN` / `KDB_CLIENT_MODULE` override them, for
+  trying a KDB build before it ships.
 
 ## 7. Follow-up work KDB v0.6.2 makes possible
 
@@ -321,7 +364,7 @@ In rough order of value, none of it required for the migration:
 
 1. Merge and release the B1 fix (above); then per-collection namespaces and hash indexes on `userId`,
    `projectIds`, `taskId`, which turn linear reads into lookups.
-2. Declare compound unique constraints to the server and drop the read-then-write check (B3).
+2. ~~Create the hash indexes the schemas already declare~~ Done; see B2 for the disk write-cost caveat.
 3. Server-side stemmed full-text and vector search in place of the in-process scoring and the
    embeddings path, accepting that rankings stop being backend-identical.
 4. `kdb-service --scrub-interval` for scheduled integrity checks, and peer sync for a warm replica.

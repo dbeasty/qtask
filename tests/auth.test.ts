@@ -309,7 +309,8 @@ describe('auth', () => {
       .send({ email: 'legal@example.com', password: 'password1234', acceptLegal: true })
       .expect(201);
 
-    const user = await mongoose.connection.collection('users').findOne({ email: 'legal@example.com' });
+    const { collection } = await import('../src/data/index.js');
+    const user = await collection('users').findOne({ email: 'legal@example.com' });
     assert.ok(user);
     assert.ok(user.legalAcceptedAt);
     assert.equal(user.legalVersion, '1.0');
@@ -566,7 +567,8 @@ describe('health', () => {
   it('reports mongodb status', async () => {
     const res = await request(app).get('/health').expect(200);
     assert.equal(res.body.status, 'ok');
-    assert.equal(res.body.checks.mongodb, 'ok');
+    // The check is keyed by the backend serving the data (see /health in app.ts).
+    assert.equal(res.body.checks.mongodb ?? res.body.checks.kdb, 'ok');
     assert.equal(res.body.checks.email, 'configured');
     assert.ok(res.body.version);
     assert.ok(res.body.gitSha);

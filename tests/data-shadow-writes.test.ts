@@ -135,6 +135,10 @@ class RecordingStore implements DataStore {
   async disconnect(): Promise<void> {
     this.connected = false;
   }
+
+  async ping(): Promise<void> {
+    if (!this.connected) throw new Error('not connected');
+  }
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {
     let existing = this.collections.get(name);
     if (!existing) {
@@ -183,6 +187,44 @@ beforeEach(async () => {
 });
 
 describe('shadow writes', () => {
+  it('replays what the caller passed at the call, not what they edited afterwards', async () => {
+    // The application reads a document, edits it, passes it to replaceOne, and may keep
+    // editing it. The mirrored write runs later; it must replay the document the primary saw.
+    const created = await store.collection('tasks').create({ userId: 'u1', title: 'before' });
+    await store.drainShadow();
+    shadow.tasks().calls.length = 0;
+
+    const edited = { ...created, title: 'at the call' } as Record<string, unknown>;
+    const filter = { _id: created._id };
+    const pending = store.collection('tasks').replaceOne(filter, edited);
+    edited.title = 'edited afterwards';
+    (filter as Record<string, unknown>)._id = 'tampered';
+    await pending;
+    await store.drainShadow();
+
+    const replay = shadow.tasks().calls.find((c) => c.op === 'replaceOne');
+    assert.ok(replay, 'the replaceOne was never mirrored');
+    assert.equal((replay.args[1] as Record<string, unknown>).title, 'at the call');
+    assert.equal((replay.args[0] as Record<string, unknown>)._id, created._id);
+  });
+
+  it('carries the primary\'s id across an updateOne upsert instead of letting the shadow mint its own', async () => {
+    const result = await store
+      .collection('tasks')
+      .updateOne({ userId: 'u9', title: 'upserted' }, { $set: { status: 'todo' } }, { upsert: true });
+    assert.ok(result.upsertedId, 'the primary should have created the document');
+    await store.drainShadow();
+
+    const created = shadow.tasks().calls.find((c) => c.op === 'create');
+    assert.ok(created, 'the shadow should have been given the created document');
+    assert.equal((created.args[0] as Record<string, unknown>)._id, result.upsertedId);
+    assert.equal(
+      shadow.tasks().calls.some((c) => c.op === 'updateOne'),
+      false,
+      'replaying the upsert would let the shadow mint a different id'
+    );
+  });
+
   it('answers reads from the primary and never asks the shadow', async () => {
     await store.collection('tasks').create({ userId: 'u1', title: 'read me' });
     await store.drainShadow();

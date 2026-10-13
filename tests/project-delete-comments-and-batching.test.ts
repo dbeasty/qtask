@@ -2,6 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { MONGO_ONLY } from './helpers/backend.js';
 
 process.env.NODE_ENV = 'test';
 process.env.QTASK_SKIP_DOTENV = 'true';
@@ -57,7 +58,7 @@ describe('deleteProject cleans up comments and batches its writes', () => {
     assert.equal(remainingComments.length, 0, 'comments on the deleted task must not be orphaned');
   });
 
-  it('batches task deletes/updates into bulk operations instead of one round trip per task', async () => {
+  it('batches task deletes/updates into bulk operations instead of one round trip per task', { skip: MONGO_ONLY }, async () => {
     const { ProjectModel, TaskModel } = await import('../src/models/index.js');
     const { projectService } = await import('../src/services/projectService.js');
 

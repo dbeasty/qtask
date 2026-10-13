@@ -61,7 +61,7 @@ import { TransportSelector } from '../sync/ble/selector.js';
 import type { PeerLinkTransport, SyncPeerLink } from '../sync/transport-contract.js';
 import { createLogger } from '../utils/logger.js';
 import { bleRadio } from './ble.js';
-import { dataPaths } from './device.js';
+import { dataPaths, loadOrCreateDeviceIdentity } from './device.js';
 import { readJson, writeJsonPrivate } from './files.js';
 import { LOCAL_OWNER_ID, LOCAL_USER_EMAIL, installOwnerUser, loadOwner, ownerDecision, saveOwner, type OwnerState } from './owner.js';
 import { qrSvg } from './qr.js';
@@ -142,6 +142,9 @@ function deviceName(env: NodeJS.ProcessEnv): string {
 async function loadSyncIdentity(dataDir: string, name: string): Promise<DeviceIdentity> {
   const store = new FileSecretStore(path.join(dataDir, 'sync', 'identity.json'));
   if (!(await store.load())) {
+    // Sync starts inside connectData(), which can run before anything else has created
+    // the device identity (an in-process createApp(), a fresh data folder).
+    loadOrCreateDeviceIdentity(dataDir);
     const signKeyPem = readFileSync(dataPaths(dataDir).deviceKeyFile, 'utf8');
     const spki = createPublicKey(createPrivateKey(signKeyPem)).export({ type: 'spki', format: 'der' });
     const tls = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });

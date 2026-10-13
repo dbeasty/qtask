@@ -11,19 +11,16 @@ import { connect, createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './kdbRelease.ts';
 
 export const ROOT = path.resolve(import.meta.dirname, '../..');
-export const KDB_ROOT = process.env.KDB_ROOT ?? path.resolve(ROOT, '../kdb');
-const KDB_ROOT_RESOLVED = existsSync(KDB_ROOT) ? KDB_ROOT : path.resolve('/Users/davidj/devel/kdb');
-export const KDB_CLIENT_MODULE = process.env.KDB_CLIENT_MODULE ?? path.resolve(KDB_ROOT_RESOLVED, 'packages/kdb-client/src/index.ts');
-export const KDB_SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? path.resolve(KDB_ROOT_RESOLVED, 'go/bin/kdb-service');
+// The released kdb-service and @kdb/client this checkout pins (see kdbRelease.ts); the
+// KDB_SERVICE_BIN / KDB_CLIENT_MODULE overrides still apply there.
+export const KDB_SERVICE_BIN = SERVICE_BIN;
+export const KDB_CLIENT_MODULE = CLIENT_MODULE;
 const NAMESPACE = 'qtask/docs';
 
-export const kdbMissing = !existsSync(KDB_SERVICE_BIN)
-  ? `kdb-service not built at ${KDB_SERVICE_BIN}`
-  : !existsSync(KDB_CLIENT_MODULE)
-    ? `@kdb/client not found at ${KDB_CLIENT_MODULE}`
-    : undefined;
+export const kdbMissing = kdbUnavailable;
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

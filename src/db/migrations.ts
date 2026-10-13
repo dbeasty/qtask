@@ -1,5 +1,5 @@
 import { collection } from '../data/index.js';
-import type { ConversationDoc, ProjectDoc, TaskDoc } from '../data/documents.js';
+import type { AppMetaDoc, ConversationDoc, ProjectDoc, TaskDoc } from '../data/documents.js';
 
 function projectDocs() {
   return collection<ProjectDoc>('projects');
@@ -13,6 +13,10 @@ function conversationDocs() {
   return collection<ConversationDoc>('conversations');
 }
 
+function appMeta() {
+  return collection<AppMetaDoc>('appMeta');
+}
+
 function callMetrics() {
   return collection('llmCallMetrics');
 }
@@ -20,7 +24,6 @@ function callMetrics() {
 function dailyMetrics() {
   return collection('llmDailyMetrics');
 }
-import mongoose from 'mongoose';
 
 const DEFAULT_PROJECT_NAME = 'Project One';
 
@@ -167,7 +170,7 @@ async function migrateConversationProjectIds(): Promise<void> {
 }
 
 async function migrateSearchEmbeddingBackfill(): Promise<void> {
-  const meta = await mongoose.connection.collection('app_meta').findOne({ key: 'search_embedding_v1' });
+  const meta = await appMeta().findOne({ key: 'search_embedding_v1' });
   if (meta) return;
 
   const { enqueueEmbeddingJob, enqueueProjectEmbeddingJob } = await import(
@@ -184,15 +187,12 @@ async function migrateSearchEmbeddingBackfill(): Promise<void> {
     ...projects.map((project) => enqueueProjectEmbeddingJob(String(project._id))),
   ]);
 
-  await mongoose.connection.collection('app_meta').insertOne({
-    key: 'search_embedding_v1',
-    at: new Date(),
-  });
+  await appMeta().create({ key: 'search_embedding_v1', at: new Date() });
 }
 
 async function migrateLlmMetricsCallTypes(): Promise<void> {
   const key = 'llm_metrics_agent_call_type_v1';
-  const done = await mongoose.connection.collection('app_meta').findOne({ key });
+  const done = await appMeta().findOne({ key });
   if (done) return;
 
   await Promise.all([
@@ -201,5 +201,5 @@ async function migrateLlmMetricsCallTypes(): Promise<void> {
     dailyMetrics().updateMany({ callType: 'chat' }, { $set: { callType: 'agent' } }),
   ]);
 
-  await mongoose.connection.collection('app_meta').insertOne({ key, at: new Date() });
+  await appMeta().create({ key, at: new Date() });
 }

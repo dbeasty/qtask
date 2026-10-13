@@ -2,6 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { MONGO_ONLY } from './helpers/backend.js';
 
 process.env.NODE_ENV = 'test';
 process.env.QTASK_SKIP_DOTENV = 'true';
@@ -20,7 +21,7 @@ after(async () => {
   await mongo.stop();
 });
 
-describe('RT-L3: task compound indexes match real query shapes', () => {
+describe('RT-L3: task compound indexes match real query shapes', { skip: MONGO_ONLY }, () => {
   it('TaskModel has a compound {userId, status} index', async () => {
     const { TaskModel } = await import('../src/models/index.js');
     const indexes = await TaskModel.collection.indexes();

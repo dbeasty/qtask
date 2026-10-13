@@ -2,6 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { MONGO_ONLY } from './helpers/backend.js';
 
 process.env.NODE_ENV = 'test';
 process.env.QTASK_SKIP_DOTENV = 'true';
@@ -31,7 +32,7 @@ async function ttlIndexSeconds(
   return match?.expireAfterSeconds as number | undefined;
 }
 
-describe('RT-L2: OAuth codes, refresh tokens, and pending consents expire automatically', () => {
+describe('RT-L2: OAuth codes, refresh tokens, and pending consents expire automatically', { skip: MONGO_ONLY }, () => {
   it('mcpOAuthAuthorizationCode has a TTL index on expiresAt', async () => {
     const { McpOAuthAuthorizationCodeModel } = await import('../src/models/index.js');
     assert.equal(await ttlIndexSeconds(McpOAuthAuthorizationCodeModel, 'expiresAt'), 0);

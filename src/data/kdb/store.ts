@@ -34,10 +34,10 @@ import { matchesFilter } from '../query/filter.js';
 import { applyUpdate, isOperatorUpdate, structuredCloneDoc } from '../query/update.js';
 import { applyProjection, applySort } from '../query/shape.js';
 import { valuesEqual } from '../query/compare.js';
-import { getPath } from '../query/paths.js';
+import { getPath, setPath } from '../query/paths.js';
 import { generateObjectId, toDocumentUuid } from './ids.js';
 import { buildWhere } from './pushdown.js';
-import { EXPIRE_FIELD, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints, ValidationError } from './schema.js';
+import { DuplicateKeyError, EXPIRE_FIELD, mixedUndefinedToNull, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints } from './schema.js';
 import type {
   BulkOperation,
   Collection,
@@ -51,6 +51,7 @@ import type {
   UpdateOptions,
   UpdateResult,
 } from '../types.js';
+import { MODEL_BY_COLLECTION } from '../modelNames.js';
 
 /** The minimum of `@kdb/client` this store depends on. Declared here so the adapter
  *  boundary is explicit and the module can be loaded dynamically. */
@@ -60,6 +61,15 @@ interface KdbClient {
   exec(ns: string, sql: string, args?: unknown[]): Promise<void>;
   /** Keyed read. Rejects with an error named KdbNotFoundError when there is no such document. */
   get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
+  /** Keyed read plus the content hash a conditional write compares against. */
+  getWithHash(ns: string, docId: string): Promise<{ body: unknown; contentHash: string }>;
+  /** Wholesale replacement: keys the new body omits are gone, in one commit. */
+  replace(ns: string, docId: string, body: unknown): Promise<string>;
+  /** Wholesale replacement that the server applies only if the document still hashes to
+   *  `expectedContentHash`; otherwise it rejects with an error named KdbPreconditionError. */
+  replaceIf(ns: string, docId: string, body: unknown, expectedContentHash: string): Promise<string>;
+  /** Keyed delete: a commit, not a scan, so it is not bounded by anything about the namespace. */
+  delete(ns: string, docId: string): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -68,65 +78,105 @@ type ConnectFn = (
   options: string | { token?: string; requestTimeoutMs?: number }
 ) => Promise<KdbClient>;
 
-const MODEL_BY_COLLECTION: Record<CollectionName, string> = {
-  users: 'User',
-  tasks: 'Task',
-  projects: 'Project',
-  comments: 'Comment',
-  activities: 'Activity',
-  conversations: 'Conversation',
-  notifications: 'Notification',
-  invites: 'Invite',
-  feedback: 'Feedback',
-  feedbackVisionJobs: 'FeedbackVisionJob',
-  embeddingJobs: 'EmbeddingJob',
-  llmCallMetrics: 'LlmCallMetric',
-  llmDailyMetrics: 'LlmDailyMetric',
-  adminAudits: 'AdminAudit',
-  mcpApiKeys: 'McpApiKey',
-  mcpSessions: 'McpSession',
-  mcpOAuthClients: 'McpOAuthClient',
-  mcpOAuthAuthorizationCodes: 'McpOAuthAuthorizationCode',
-  mcpOAuthRefreshTokens: 'McpOAuthRefreshToken',
-  mcpOAuthPendingConsents: 'McpOAuthPendingConsent',
-  userOAuthAuthCodes: 'UserOAuthAuthCode',
-};
+/**
+ * The client's `exec` is two round trips on one shared session per namespace - run the DML, then
+ * commit whatever the session holds - with nothing to stop two callers interleaving them. Two
+ * concurrent deletes both buffer, the first commit takes both, and the second commit fails with
+ * "no pending transaction to commit": a spurious error on the second caller, after its delete
+ * has in fact been applied. The application deletes concurrently as a matter of course
+ * (`Promise.all` over collections), so every DML statement goes through one queue here. Reads and
+ * upserts are unaffected: they do not touch the session's pending buffer.
+ *
+ * The right fix is in the client; this keeps the store correct against any client version, and
+ * costs nothing where DML is already one-at-a-time.
+ */
+class SerializedDmlClient implements KdbClient {
+  private tail: Promise<unknown> = Promise.resolve();
 
-/** JSON revives dates as strings; the schema knows which paths are dates, and the
- *  query engine compares dates by instant, so reads rehydrate them on the way out. */
+  constructor(private readonly inner: KdbClient) {}
+
+  upsert(ns: string, docId: string, body: unknown): Promise<string> {
+    return this.inner.upsert(ns, docId, body);
+  }
+  queryRaw(ns: string, sql: string, args?: unknown[]) {
+    return this.inner.queryRaw(ns, sql, args);
+  }
+  get(ns: string, docId: string) {
+    return this.inner.get(ns, docId);
+  }
+  getWithHash(ns: string, docId: string) {
+    return this.inner.getWithHash(ns, docId);
+  }
+  replace(ns: string, docId: string, body: unknown) {
+    return this.inner.replace(ns, docId, body);
+  }
+  replaceIf(ns: string, docId: string, body: unknown, expectedContentHash: string) {
+    return this.inner.replaceIf(ns, docId, body, expectedContentHash);
+  }
+  delete(ns: string, docId: string) {
+    return this.inner.delete(ns, docId);
+  }
+  close(): Promise<void> {
+    return this.inner.close();
+  }
+  exec(ns: string, sql: string, args?: unknown[]): Promise<void> {
+    // A failed statement must not poison the queue for the next one.
+    const run = this.tail.then(
+      () => this.inner.exec(ns, sql, args),
+      () => this.inner.exec(ns, sql, args)
+    );
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+}
+
+
+/** JSON revives dates as strings; the schema knows which paths are dates, and the query engine
+ *  compares dates by instant, so reads rehydrate them on the way out. Recurses into
+ *  sub-documents, arrays of sub-documents and arrays of dates: a store that revived only
+ *  top-level dates handed `project.trackingRollup.updatedAt` back as a string, and the first
+ *  caller to call `.toISOString()` on it failed in production code. */
 function reviveDates(schema: Schema, doc: Doc): Doc {
   const out: Doc = { ...doc };
   for (const [path, type] of Object.entries(schema.paths)) {
-    const t = type as unknown as {
-      instance?: string;
-      schema?: Schema;
-      caster?: { instance?: string };
-    };
-    const value = out[path];
+    const value = getPath(out, path);
     if (value === undefined || value === null) continue;
-    // Recurses into single nested subdocuments and arrays of subdocuments: a Date inside
-    // one (`trackingRollup.updatedAt`, a subtask's `dueDate`) would otherwise stay a
-    // string and break every `.toISOString()` downstream.
-    if (t.instance === 'Date') {
-      if (typeof value === 'string') {
-        const date = new Date(value);
-        if (!Number.isNaN(date.getTime())) out[path] = date;
-      }
-    } else if (t.schema && Array.isArray(value)) {
-      out[path] = value.map((item) =>
-        item && typeof item === 'object' ? reviveDates(t.schema as Schema, item as Doc) : item
-      );
-    } else if (t.schema && typeof value === 'object') {
-      out[path] = reviveDates(t.schema, value as Doc);
-    } else if (t.instance === 'Array' && t.caster?.instance === 'Date' && Array.isArray(value)) {
-      out[path] = value.map((item) => {
-        if (typeof item !== 'string') return item;
-        const date = new Date(item);
-        return Number.isNaN(date.getTime()) ? item : date;
-      });
-    }
+    const revived = reviveValue(type as unknown as SchemaTypeLike, value);
+    if (revived !== value) setPath(out, path, revived);
   }
   return out;
+}
+
+interface SchemaTypeLike {
+  instance?: string;
+  schema?: Schema;
+  caster?: { instance?: string };
+  $embeddedSchemaType?: { instance?: string };
+}
+
+function reviveValue(type: SchemaTypeLike, value: unknown): unknown {
+  if (type.instance === 'Date') {
+    if (typeof value !== 'string') return value;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date;
+  }
+  // A single sub-document, or an array of them: both carry the sub-schema.
+  if (type.schema) {
+    if (Array.isArray(value)) {
+      return value.map((item) => (isPlainObject(item) ? reviveDates(type.schema as Schema, item) : item));
+    }
+    return isPlainObject(value) ? reviveDates(type.schema, value) : value;
+  }
+  // An array of dates.
+  if (type.instance === 'Array' && Array.isArray(value)) {
+    const element = type.caster ?? type.$embeddedSchemaType;
+    if (element?.instance === 'Date') return value.map((item) => reviveValue(element, item));
+  }
+  return value;
+}
+
+function isPlainObject(value: unknown): value is Doc {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
 }
 
 /**
@@ -167,9 +217,56 @@ function serverRowCap(): number {
   return parsed;
 }
 
+/**
+ * A per-key async mutex. The store runs inside one process, and the operations MongoDB
+ * guarantees to be atomic on a single document (`updateOne` with a condition in the filter,
+ * `findOneAndUpdate`, `findOneAndDelete`) are read-evaluate-write here, so two callers can both
+ * pass the same condition and both write. Taking the document's lock, re-reading it and
+ * re-checking the filter under the lock restores what callers rely on: exactly one of two
+ * concurrent "claim this if unclaimed" updates wins.
+ *
+ * Scope, stated plainly: this makes a single process correct. A second process writing the same
+ * namespace (an A/B deploy overlap, a second app instance) is not excluded by it; that needs the
+ * server to arbitrate (conditional writes on a content hash), and is listed in the migration
+ * plan as a condition for running more than one instance.
+ */
+const locks = new Map<string, Promise<void>>();
+
+async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = locks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => (release = resolve));
+  const tail = previous.then(() => mine);
+  locks.set(key, tail);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (locks.get(key) === tail) locks.delete(key);
+  }
+}
+
+/** Attempts at "find a candidate, lock it, find it no longer matches" before giving up. Each
+ *  retry means another writer changed the candidate away from the filter, so the answer is
+ *  almost always "nothing matches any more" within one or two. */
+const MAX_CLAIM_ATTEMPTS = 8;
+
+/** Re-reads allowed when the server rejects a conditional write because the document changed. */
+const MAX_PRECONDITION_RETRIES = 60;
+
+/** Jittered exponential backoff for a retried conditional write: up to ~2ms, doubling to a 64ms cap. */
+function backoffMs(attempt: number): number {
+  const ceiling = Math.min(64, 2 * 2 ** Math.min(attempt, 5));
+  return Math.random() * ceiling;
+}
+
 class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private readonly unique: Array<{ fields: string[]; sparse: boolean }>;
   private readonly ttl: { path: string; graceMs: number } | null;
+  /** Unique constraints the server enforces, each carried on a synthetic field only this
+   *  collection's documents have (see declareConstraints). */
+  private readonly serverKeys: Array<{ field: string; paths: string[]; arrayPrefix?: string }>;
 
   constructor(
     readonly name: CollectionName,
@@ -180,6 +277,15 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   ) {
     this.unique = uniqueConstraints(schema);
     this.ttl = ttlSpec(schema);
+    this.serverKeys = this.unique.flatMap((constraint) => {
+      const field = serverKeyField(name, constraint.fields);
+      if (!constraint.fields.some((path) => isArrayPath(schema, path))) return [{ field, paths: constraint.fields }];
+      // Through an array: one key per element, which the server holds as a multikey constraint.
+      // Only the shape the schemas use - every part under the same array of sub-documents - has
+      // an unambiguous per-element meaning; anything else stays with the in-process check.
+      const arrayPrefix = sharedArrayPrefix(schema, constraint.fields);
+      return arrayPrefix ? [{ field, paths: constraint.fields, arrayPrefix }] : [];
+    });
   }
 
   /** Every document in the collection. The only read primitive: filtering happens
@@ -206,12 +312,18 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
       }
     }
+    // A scan has no inherent order. MongoDB's natural order is insertion order, which ObjectId
+    // order tracks, and callers that sorted nothing (or sorted on ties) see it. Returning it here
+    // makes an unsorted read stable and the same as the other backend's.
+    docs.sort((a, b) => (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0));
     return docs;
   }
 
   /** A stored body back to the application's document: bookkeeping fields off, dates revived. */
   private decode(stored: Doc): T {
-    const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, ...body } = stored;
+    const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, ...withKeys } = stored;
+    // The synthetic fields that carry unique constraints are the store's, not the document's.
+    const body = Object.fromEntries(Object.entries(withKeys).filter(([key]) => !key.startsWith('_u_')));
     return reviveDates(this.schema, body) as T;
   }
 
@@ -251,10 +363,12 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   private async matching(filter: Filter): Promise<T[]> {
-    const keys = Object.keys(filter);
-    if (keys.length === 1 && keys[0] === '_id' && typeof filter._id === 'string') {
+    // A filter that names the document is a keyed read, whatever else it says: fetch it and let
+    // the engine apply the rest. Without this a conditional update by id ({_id, status: 'open'})
+    // would scan the whole collection to find one document.
+    if (typeof filter._id === 'string') {
       const doc = await this.fetchById(filter._id);
-      return doc ? [doc] : [];
+      return doc && matchesFilter(doc, filter) ? [doc] : [];
     }
     const docs = await this.scan(filter);
     return docs.filter((doc) => matchesFilter(doc, filter));
@@ -300,8 +414,12 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   async create(doc: Doc): Promise<T> {
     const normalized = normalizeDocument(this.schema, doc, { isCreate: true });
     if (normalized._id === undefined) normalized._id = generateObjectId();
-    await this.assertUnique(normalized, null);
-    await this.writeDocument(normalized, null);
+    // The unique check and the write are one step: without the lock two concurrent creates of
+    // the same email both pass the check.
+    await this.guardUnique(async () => {
+      await this.assertUnique(normalized, null);
+      await this.writeDocument(normalized, null);
+    });
     return normalized as T;
   }
 
@@ -312,38 +430,50 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async updateOne(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<UpdateResult> {
-    const [target] = await this.find(filter, options.sort ? { sort: options.sort } : {});
-    if (!target) {
-      if (options.upsert) {
-        const created = await this.upsertFrom(filter, update);
-        return { matched: 0, modified: 0, upsertedId: created._id as string };
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter, options.sort ? { sort: options.sort } : {});
+      if (!candidate) {
+        if (options.upsert) {
+          const created = await this.upsertFrom(filter, update);
+          return { matched: 0, modified: 0, upsertedId: created._id as string };
+        }
+        return { matched: 0, modified: 0 };
       }
-      return { matched: 0, modified: 0 };
+      const claimed = await this.claim(candidate._id as string, filter, (fresh, guard) => this.applyToDocument(fresh, update, filter, guard));
+      if (claimed.hit) return { matched: 1, modified: claimed.value.changed ? 1 : 0 };
     }
-    const { changed } = await this.applyToDocument(target, update);
-    return { matched: 1, modified: changed ? 1 : 0 };
+    return { matched: 0, modified: 0 };
   }
 
   async updateMany(filter: Filter, update: Update): Promise<UpdateResult> {
     const targets = await this.matching(filter);
+    let matched = 0;
     let modified = 0;
     for (const target of targets) {
-      const { changed } = await this.applyToDocument(target, update);
-      if (changed) modified++;
+      const claimed = await this.claim(target._id as string, filter, (fresh, guard) => this.applyToDocument(fresh, update, filter, guard));
+      if (!claimed.hit) continue;
+      matched++;
+      if (claimed.value.changed) modified++;
     }
-    return { matched: targets.length, modified };
+    return { matched, modified };
   }
 
   async findOneAndUpdate(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<T | null> {
-    const [target] = await this.find(filter, options.sort ? { sort: options.sort } : {});
-    if (!target) {
-      if (!options.upsert) return null;
-      const created = await this.upsertFrom(filter, update);
-      return options.returnDocument === 'before' ? null : (created as T);
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter, options.sort ? { sort: options.sort } : {});
+      if (!candidate) {
+        if (!options.upsert) return null;
+        const created = await this.upsertFrom(filter, update);
+        return options.returnDocument === 'before' ? null : (created as T);
+      }
+      const claimed = await this.claim(candidate._id as string, filter, async (fresh, guard) => {
+        const before = structuredCloneDoc(fresh);
+        const { doc } = await this.applyToDocument(fresh, update, filter, guard);
+        return options.returnDocument === 'before' ? (before as T) : (doc as T);
+      });
+      if (claimed.hit) return claimed.value;
     }
-    const before = structuredCloneDoc(target);
-    const { doc } = await this.applyToDocument(target, update);
-    return options.returnDocument === 'before' ? (before as T) : (doc as T);
+    return null;
   }
 
   async findByIdAndUpdate(id: string, update: Update, options: UpdateOptions = {}): Promise<T | null> {
@@ -351,38 +481,55 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async replaceOne(filter: Filter, doc: Doc): Promise<UpdateResult> {
-    const [target] = await this.find(filter);
-    if (!target) return { matched: 0, modified: 0 };
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter);
+      if (!candidate) return { matched: 0, modified: 0 };
+      const claimed = await this.claim(candidate._id as string, filter, async (target, guard) => {
+        const { _id: _ignored, ...body } = doc;
+        const replacement = normalizeDocument(this.schema, body, { isCreate: true });
+        replacement._id = target._id;
+        replacement.createdAt = target.createdAt ?? replacement.createdAt;
+        const stamped = touchUpdatedAt(this.schema, replacement);
 
-    const { _id: _ignored, ...body } = doc;
-    const replacement = normalizeDocument(this.schema, body, { isCreate: true });
-    replacement._id = target._id;
-    replacement.createdAt = target.createdAt ?? replacement.createdAt;
-    const stamped = touchUpdatedAt(this.schema, replacement);
-
-    await this.assertUnique(stamped, target._id as string);
-    await this.writeDocument(stamped, target);
-    return { matched: 1, modified: 1 };
+        await this.assertUnique(stamped, target._id as string);
+        await this.writeDocument(stamped, target, guard);
+      });
+      if (claimed.hit) return { matched: 1, modified: 1 };
+    }
+    return { matched: 0, modified: 0 };
   }
 
   async deleteOne(filter: Filter): Promise<DeleteResult> {
-    const [target] = await this.find(filter);
-    if (!target) return { deleted: 0 };
-    await this.removeById(target._id as string);
-    return { deleted: 1 };
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter);
+      if (!candidate) return { deleted: 0 };
+      const claimed = await this.claim(candidate._id as string, filter, (fresh) => this.removeById(fresh._id as string));
+      if (claimed.hit) return { deleted: 1 };
+    }
+    return { deleted: 0 };
   }
 
   async deleteMany(filter: Filter): Promise<DeleteResult> {
     const targets = await this.matching(filter);
-    for (const target of targets) await this.removeById(target._id as string);
-    return { deleted: targets.length };
+    let deleted = 0;
+    for (const target of targets) {
+      const claimed = await this.claim(target._id as string, filter, (fresh) => this.removeById(fresh._id as string));
+      if (claimed.hit) deleted++;
+    }
+    return { deleted };
   }
 
   async findOneAndDelete(filter: Filter): Promise<T | null> {
-    const [target] = await this.find(filter);
-    if (!target) return null;
-    await this.removeById(target._id as string);
-    return target;
+    for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+      const [candidate] = await this.find(filter);
+      if (!candidate) return null;
+      const claimed = await this.claim(candidate._id as string, filter, async (fresh) => {
+        await this.removeById(fresh._id as string);
+        return fresh;
+      });
+      if (claimed.hit) return claimed.value;
+    }
+    return null;
   }
 
   async bulkWrite(operations: BulkOperation[]): Promise<UpdateResult> {
@@ -409,29 +556,84 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   async importDocument(doc: Doc): Promise<void> {
     if (typeof doc._id !== 'string') throw new Error(`${this.name}: cannot import a document without a string _id`);
-    // Keyed, so a bulk copy neither scans per document nor hits the scan cap.
-    const previous = await this.fetchById(doc._id);
-    await this.writeDocument(doc, previous);
+    // A wholesale replace: idempotent, drops stale keys from an earlier copy, and needs no read.
+    await this.writeDocument(doc, null);
   }
 
   // --- write helpers -------------------------------------------------------------
 
+  /** Runs `fn` while holding the collection's unique-constraint lock, if it has constraints.
+   *  Always taken before a document lock, never after, so two writers cannot deadlock. */
+  private guardUnique<R>(fn: () => Promise<R>): Promise<R> {
+    return this.unique.length > 0 ? withLock(`${this.namespace}/${this.name}#unique`, fn) : fn();
+  }
+
+  /**
+   * Acts on one document atomically with respect to other writers in this process: takes the
+   * document's lock, re-reads it, and only proceeds if it still satisfies `filter`. A miss means
+   * somebody changed or removed it between the caller finding it and now - the caller looks
+   * again rather than acting on a stale reading.
+   */
+  private claim<R>(
+    id: string,
+    filter: Filter,
+    fn: (fresh: T, guard: { hash: string }) => Promise<R>
+  ): Promise<{ hit: true; value: R } | { hit: false }> {
+    return this.guardUnique(() =>
+      withLock(`${this.namespace}/${this.name}/${id}`, async () => {
+        // The lock orders writers within this process; the guard makes the server refuse a write
+        // based on a stale reading, which is what covers a second process. A refusal means the
+        // document moved under us, so read it again and re-check the filter.
+        for (let attempt = 0; attempt < MAX_PRECONDITION_RETRIES; attempt++) {
+          const read = await this.fetchWithHash(id);
+          if (!read || !matchesFilter(read.doc, filter)) return { hit: false as const };
+          try {
+            return { hit: true as const, value: await fn(read.doc, { hash: read.hash }) };
+          } catch (error) {
+            if ((error as Error).constructor.name !== 'KdbPreconditionError') throw error;
+            // Someone else's write landed between our read and ours. Retrying at once makes every
+            // contender collide again in lockstep and starves some of them, so back off, with
+            // jitter, longer each time. (Contention inside this process is already ordered by the
+            // lock; this is for other processes writing the same document.)
+            await new Promise((resolve) => setTimeout(resolve, backoffMs(attempt)));
+          }
+        }
+        throw new Error(`${this.name}: ${id} kept changing under a conditional write; gave up after ${MAX_PRECONDITION_RETRIES} attempts`);
+      })
+    );
+  }
+
+  /** One document and the content hash a conditional write must quote, or null when absent
+   *  or belonging to another collection. */
+  private async fetchWithHash(id: string): Promise<{ doc: T; hash: string } | null> {
+    let read: { body: unknown; contentHash: string };
+    try {
+      read = await this.client().getWithHash(this.namespace, toDocumentUuid(id));
+    } catch (error) {
+      if ((error as Error).constructor.name === 'KdbNotFoundError') return null;
+      throw error;
+    }
+    const stored = read.body as Doc;
+    return stored._c === this.name ? { doc: this.decode(stored), hash: read.contentHash } : null;
+  }
+
   /** Applies an update to one document and writes it back. Returns the stored result
    *  and whether anything actually changed — `modified` must not count a no-op
    *  update, which is how a caller tells "already in that state" from "wrote it". */
-  private async applyToDocument(target: T, update: Update): Promise<{ doc: Doc; changed: boolean }> {
-    const updated = applyUpdate(target, update);
+  private async applyToDocument(target: T, update: Update, filter: Filter, guard?: { hash: string }): Promise<{ doc: Doc; changed: boolean }> {
+    // The filter is what the positional operator (`list.$.field`) resolves against.
+    const updated = applyUpdate(target, update, false, filter);
     if (!isOperatorUpdate(update)) updated._id = target._id;
     // Cast and validate what the update produced; an update can set an enum field to
     // a value the schema forbids exactly as a create can.
-    const normalized = normalizeDocument(this.schema, updated, { isCreate: false });
+    const normalized = normalizeDocument(this.schema, mixedUndefinedToNull(this.schema, updated), { isCreate: false });
 
     const changed = !sameDocument(target, normalized);
     if (!changed) return { doc: target, changed: false };
 
     const stamped = touchUpdatedAt(this.schema, normalized);
     await this.assertUnique(stamped, target._id as string);
-    await this.writeDocument(stamped, target);
+    await this.writeDocument(stamped, target, guard);
     return { doc: stamped, changed: true };
   }
 
@@ -446,26 +648,38 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       }
       seed[key] = value;
     }
-    const built = applyUpdate(seed, update, true);
+    const built = applyUpdate(seed, update, true, filter);
     return this.create(built);
   }
 
   /**
-   * Writes a document, deleting first when the new body drops a top-level key.
+   * Writes a document wholesale, in one commit.
    *
-   * KDB applies a write as a shallow root-level merge, so a key absent from the new
-   * body survives from the old one — `$unset` and whole-document replacement would
-   * silently do nothing. Delete-then-write is the documented workaround until a
-   * replace-capable document op exists; it is not atomic, which is why it is used
-   * only when a key actually went away rather than on every write.
+   * `replace` drops keys the body omits (a write used to be a shallow merge, so `$unset` and
+   * replacement needed delete-then-write, which is two commits and loses the document if the
+   * process dies between them). With a `guard` the server applies it only if the document is
+   * still the one that was read - the cross-process half of atomicity that the in-process lock
+   * cannot give. A rejected guard is a KdbPreconditionError, which `claim` retries.
    */
-  private async writeDocument(doc: Doc, previous: Doc | null): Promise<void> {
-    const id = doc._id as string;
-    if (previous) {
-      const removed = Object.keys(previous).filter((key) => !(key in doc));
-      if (removed.length > 0) await this.removeById(previous._id as string);
+  private async writeDocument(doc: Doc, _previous: Doc | null, guard?: { hash: string }): Promise<void> {
+    const key = toDocumentUuid(doc._id as string);
+    const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
+    for (const { field, paths, arrayPrefix } of this.serverKeys) {
+      const value = arrayPrefix ? serverKeyValues(doc, paths, arrayPrefix) : serverKeyValue(doc, paths);
+      if (value !== undefined) body[field] = value;
     }
-    await this.client().upsert(this.namespace, toDocumentUuid(id), { ...doc, _c: this.name, ...this.expiry(doc) });
+    try {
+      if (guard) await this.client().replaceIf(this.namespace, key, body, guard.hash);
+      else await this.client().replace(this.namespace, key, body);
+    } catch (error) {
+      // The server's unique constraint, which no in-process check can pre-empt, reports the same
+      // thing the in-process check does: a duplicate key, code 11000, which authService turns
+      // into a 409.
+      if ((error as { code?: string }).code === 'UNIQUE_VIOLATION') {
+        throw new DuplicateKeyError(`${this.name}: duplicate value for a unique field (${(error as Error).message})`);
+      }
+      throw error;
+    }
   }
 
   /** The deadline the server's expiry sweeper reads, for collections whose Mongo
@@ -478,21 +692,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   private async removeById(id: string): Promise<void> {
-    await this.client().exec(
-      this.namespace,
-      `DELETE FROM ${this.table} WHERE kdb_id = '${toDocumentUuid(id)}'`
-    );
-    // The client has no delete operation, so this is a SQL DELETE - a scan, and
-    // therefore subject to the scan cap (KdbScanCapError): past it the statement
-    // reports success and removes nothing. A keyed read costs one round trip and turns
-    // that silent failure into an error, which matters because the caller goes on to
-    // tell the user the document is gone.
-    if ((await this.fetchById(id)) !== null) {
-      throw new Error(
-        `${this.name}: delete of ${id} had no effect - the namespace is past the KDB server's scan cap ` +
-          '(docs/KDB_MIGRATION.md, blocker B1)'
-      );
-    }
+    await this.client().delete(this.namespace, toDocumentUuid(id));
   }
 
   /**
@@ -522,9 +722,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       });
 
       if (clash) {
-        throw new ValidationError(
-          `${this.name}: duplicate value for unique ${constraint.fields.join(' + ')}`
-        );
+        throw new DuplicateKeyError(`${this.name}: duplicate value for unique ${constraint.fields.join(' + ')}`);
       }
     }
   }
@@ -543,12 +741,99 @@ export class KdbDataStore implements DataStore {
     // first request wait longer than that while kdb-service recovers, and a timeout there
     // is a failed launch rather than a slow one.
     const timeout = Number(process.env.KDB_REQUEST_TIMEOUT_MS);
-    this.client = await connect(
-      config.kdb.addr,
-      Number.isFinite(timeout) && timeout > 0
-        ? { token: config.kdb.token || undefined, requestTimeoutMs: timeout }
-        : config.kdb.token
+    this.client = new SerializedDmlClient(
+      await connect(
+        config.kdb.addr,
+        Number.isFinite(timeout) && timeout > 0
+          ? { token: config.kdb.token || undefined, requestTimeoutMs: timeout }
+          : config.kdb.token
+      )
     );
+    if (config.kdb.declareConstraints || config.kdb.declareIndexes) {
+      try {
+        if (config.kdb.declareConstraints) await this.declareConstraints();
+        if (config.kdb.declareIndexes) await this.declareIndexes();
+      } catch (error) {
+        // A connection left open by a failed connect() keeps the process alive after the error
+        // that should have ended it.
+        await this.client.close().catch(() => undefined);
+        this.client = undefined;
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Hands the schema's unique constraints to the server, which enforces them at commit.
+   *
+   * The in-process check (assertUnique, under a lock) is check-then-write, so two *processes*
+   * could both pass it. A constraint the server holds cannot be raced.
+   *
+   * Every collection lives in one namespace and a server constraint binds every document that has
+   * the field, so a bare `UNIQUE clientId` would also bind the authorization codes, which repeat
+   * the same clientId by design (and prefixing `_c` would not help: all the codes share both).
+   * Each constraint is instead carried on a field only its collection's documents have, a
+   * synthetic `_u_<collection>_<fields>` holding the tuple's value; the store writes it and
+   * strips it on read. A document missing a part gets no key and claims nothing, the sparse
+   * behaviour the schemas declare.
+   *
+   * Idempotent: stating a constraint the server already holds does nothing. It fails if existing
+   * data already violates one, which is the right place to find out. A constraint through an
+   * array of sub-documents (a user's linked identity providers) is carried as an array of
+   * per-element keys, which the server enforces element by element (multikey, KDB 0.7.2).
+   *
+   * Needs a server that installs constraints for CREATE UNIQUE INDEX (KDB 0.7.0 + #147). An older
+   * one accepts the statement and enforces nothing; the in-process check still stands, so that
+   * costs the extra guarantee, not the existing one.
+   */
+  private async declareConstraints(): Promise<void> {
+    for (const name of Object.keys(MODEL_BY_COLLECTION) as CollectionName[]) {
+      for (const { field, paths } of (this.collection(name) as unknown as { serverKeys: Array<{ field: string; paths: string[]; arrayPrefix?: string }> }).serverKeys) {
+        try {
+          await this.client!.exec(config.kdb.namespacePrefix, `CREATE UNIQUE INDEX qtask_${field} ON docs (${field})`);
+        } catch (error) {
+          // Stating a constraint the server already holds is the normal case after the first
+          // start; only a refusal for another reason (existing data violating it) is a problem.
+          if (/already registered/i.test((error as Error).message)) continue;
+          throw new Error(`KDB refused the unique constraint on ${name}(${paths.join(', ')}): ${(error as Error).message}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Creates on KDB the lookup indexes the Mongoose schemas declare for MongoDB, so a filtered read
+   * is a lookup rather than a scan of the namespace.
+   *
+   * What translates, and how:
+   *  - KDB indexes cover one path; a Mongo compound index serves its leading field as a prefix, so
+   *    each becomes an index on that field and the other columns stay a residual filter.
+   *  - Every collection lives in one namespace, so an index is per path, not per collection:
+   *    `userId` is declared by a dozen collections and created once.
+   *  - BTREE for Date and Number paths (ranges, ordering), HASH otherwise. KDB's indexes see
+   *    through arrays (`projectIds`, `collaborators.userId`) as Mongo's multikey indexes do.
+   *  - Unique, TTL and text indexes are not lookups: constraints and expiry are declared
+   *    separately, and text search is done by the application.
+   *
+   * Idempotent: stating an index the server already holds is the normal case after the first start.
+   * Indexes only change cost, never an answer, so a server without them still returns the same rows.
+   */
+  private async declareIndexes(): Promise<void> {
+    const wanted = declaredIndexes();
+    for (const [path, kind] of wanted) {
+      const index = `qtask_i_${path.replace(/[^A-Za-z0-9_]/g, '_')}`;
+      try {
+        await this.client!.exec(config.kdb.namespacePrefix, `CREATE INDEX ${index} ON docs (${path}) USING ${kind}`);
+      } catch (error) {
+        if (/already registered/i.test((error as Error).message)) continue;
+        throw new Error(`KDB refused the index on ${path}: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  async ping(): Promise<void> {
+    if (!this.client) throw new Error('KDB store is not connected');
+    await this.client.queryRaw(config.kdb.namespacePrefix, 'SELECT 1');
   }
 
   async disconnect(): Promise<void> {
@@ -601,6 +886,93 @@ function sameDocument(a: Doc, b: Doc): boolean {
   const bKeys = Object.keys(b).sort();
   if (aKeys.length !== bKeys.length || aKeys.some((key, i) => key !== bKeys[i])) return false;
   return aKeys.every((key) => valuesEqual(a[key], b[key]));
+}
+
+/** The field that carries one collection's unique constraint on the server. */
+function serverKeyField(collection: string, fields: string[]): string {
+  return `_u_${collection}_${fields.join('_').replace(/[^A-Za-z0-9_]/g, '_')}`;
+}
+
+/** A constraint tuple's value as one comparable string, or undefined when any part is missing
+ *  (a document that lacks a part claims nothing). Dates compare by instant, as in the engine. */
+function serverKeyValue(doc: Doc, fields: string[]): string | undefined {
+  const parts: unknown[] = [];
+  for (const field of fields) {
+    const value = getPath(doc, field);
+    if (value === undefined || value === null) return undefined;
+    parts.push(value instanceof Date ? value.toISOString() : value);
+  }
+  return JSON.stringify(parts);
+}
+
+/**
+ * A constraint through an array of sub-documents as one key per element, e.g. a user's linked
+ * logins `identityProviders.[provider, providerUserId]` as `['["google","1"]', '["github","7"]']`.
+ * The server treats an array under a unique constraint as multikey (KDB 0.7.2), so no two users
+ * may hold the same login. Pairs are taken within one element, which is what the rule means; an
+ * element missing a part claims nothing, and so does an empty list.
+ */
+function serverKeyValues(doc: Doc, fields: string[], arrayPrefix: string): string[] | undefined {
+  const elements = getPath(doc, arrayPrefix);
+  if (!Array.isArray(elements)) return undefined;
+  const rest = fields.map((field) => field.slice(arrayPrefix.length + 1));
+  const keys = new Set<string>();
+  for (const element of elements) {
+    if (element === null || typeof element !== 'object') continue;
+    const value = serverKeyValue(element as Doc, rest);
+    if (value !== undefined) keys.add(value);
+  }
+  return keys.size > 0 ? [...keys] : undefined;
+}
+
+/** The array of sub-documents every part of a constraint sits under, when there is exactly one. */
+function sharedArrayPrefix(schema: Schema, fields: string[]): string | undefined {
+  const prefixes = fields.map((field) => {
+    const segments = field.split('.');
+    for (let i = 1; i < segments.length; i++) {
+      const prefix = segments.slice(0, i).join('.');
+      if ((schema.path(prefix) as unknown as { instance?: string } | undefined)?.instance === 'Array') return prefix;
+    }
+    return undefined;
+  });
+  const first = prefixes[0];
+  return first && prefixes.every((prefix) => prefix === first) ? first : undefined;
+}
+
+/**
+ * The lookup indexes the Mongoose schemas declare, as path to kind (see declareIndexes for how a
+ * MongoDB index maps onto KDB's). Exported for the tests that check what the store asks for.
+ */
+export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
+  const wanted = new Map<string, 'HASH' | 'BTREE'>();
+  for (const name of Object.keys(MODEL_BY_COLLECTION) as CollectionName[]) {
+    const model = mongoose.models[MODEL_BY_COLLECTION[name]];
+    if (!model) continue;
+    const schema = model.schema as unknown as Schema;
+    const declared = (schema as unknown as { indexes(): Array<[Record<string, unknown>, Record<string, unknown>?]> }).indexes();
+    for (const [fields, options] of declared) {
+      if (options?.unique || options?.expireAfterSeconds !== undefined) continue;
+      const keys = Object.keys(fields);
+      if (keys.length === 0 || keys.some((key) => fields[key] === 'text')) continue;
+      const lead = keys[0]!;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(lead)) continue;
+      const instance = (schema.path(lead) as unknown as { instance?: string } | undefined)?.instance;
+      const kind = instance === 'Date' || instance === 'Number' ? 'BTREE' : 'HASH';
+      // A path wanted ordered by any collection is ordered for all of them.
+      if (kind === 'BTREE' || !wanted.has(lead)) wanted.set(lead, kind);
+    }
+  }
+  return wanted;
+}
+
+/** Whether a dotted path passes through an array, which a field tuple cannot express. */
+function isArrayPath(schema: Schema, path: string): boolean {
+  const segments = path.split('.');
+  for (let i = 1; i <= segments.length; i++) {
+    const type = schema.path(segments.slice(0, i).join('.')) as unknown as { instance?: string } | undefined;
+    if (type?.instance === 'Array') return true;
+  }
+  return false;
 }
 
 function schemaFor(modelName: string): Schema {

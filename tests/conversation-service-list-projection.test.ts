@@ -2,6 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { MONGO_ONLY } from './helpers/backend.js';
 
 process.env.NODE_ENV = 'test';
 process.env.QTASK_SKIP_DOTENV = 'true';
@@ -20,7 +21,7 @@ after(async () => {
   await mongo.stop();
 });
 
-describe('listConversations only loads the fields its summary actually needs', () => {
+describe('listConversations only loads the fields its summary actually needs', { skip: MONGO_ONLY }, () => {
   it('projects out full message history instead of loading every conversation in full', async () => {
     const { ConversationModel } = await import('../src/models/index.js');
     const { conversationService } = await import('../src/services/conversationService.js');
