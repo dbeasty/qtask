@@ -4,8 +4,14 @@
  *   npm run migrate:kdb -- backfill [--collection=tasks] [--dry-run]
  *   npm run migrate:kdb -- verify   [--collection=tasks]
  *   npm run migrate:kdb -- counts
+ *   npm run migrate:kdb -- declare
  *
  * It only ever reads MongoDB. KDB is written by `backfill` and by nothing else here.
+ *
+ * `declare` creates on KDB the lookup indexes and unique constraints the schemas declare (what the
+ * app also does on every connect). For a large first load, run the backfill with
+ * DATA_KDB_DECLARE_INDEXES=false and `declare` afterwards: one index build over the loaded data is
+ * cheaper than maintaining every index through every copied write.
  *
  * Why a backfill at all: shadow writes (DATA_SHADOW_WRITES) mirror *new* traffic, so
  * on their own the KDB side holds only what was written since they were switched on.
@@ -25,30 +31,36 @@
 
 import mongoose from 'mongoose';
 import { compareDocLists } from '../data/shadow/compare.js';
+import { ttlSpec } from '../data/kdb/schema.js';
+import { MODEL_BY_COLLECTION } from '../data/modelNames.js';
 import type { MongoDataStore } from '../data/mongo/store.js';
 import type { KdbDataStore } from '../data/kdb/store.js';
 import type { CollectionName, Doc } from '../data/types.js';
 
-const ALL_COLLECTIONS: CollectionName[] = [
-  'users', 'projects', 'tasks', 'comments', 'activities', 'conversations', 'notifications',
-  'invites', 'feedback', 'feedbackVisionJobs', 'embeddingJobs', 'llmCallMetrics', 'llmDailyMetrics',
-  'adminAudits', 'mcpApiKeys', 'mcpSessions', 'mcpOAuthClients', 'mcpOAuthAuthorizationCodes',
-  'mcpOAuthRefreshTokens', 'mcpOAuthPendingConsents', 'userOAuthAuthCodes',
-];
+/**
+ * Every collection the data layer knows, from the table both stores use. A hand-kept list here
+ * once left out `appMeta` - the one-shot data-migration markers - so a KDB built by the backfill
+ * would have re-run every data migration at its first start on KDB.
+ */
+export const ALL_COLLECTIONS = Object.keys(MODEL_BY_COLLECTION) as CollectionName[];
 
 const PAGE = 500;
 const CONCURRENCY = 16;
+/** One import commit carries at most this many documents and this many bytes of JSON (a commit
+ *  travels as one wire frame, capped at 16 MiB). */
+const COMMIT_DOCS = 250;
+const COMMIT_BYTES = 4 * 1024 * 1024;
 
 interface Args {
-  command: 'backfill' | 'verify' | 'counts';
+  command: 'backfill' | 'verify' | 'counts' | 'declare';
   only?: CollectionName;
   dryRun: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
   const [command, ...rest] = argv;
-  if (command !== 'backfill' && command !== 'verify' && command !== 'counts') {
-    throw new Error('usage: migrate-mongo-to-kdb <backfill|verify|counts> [--collection=<name>] [--dry-run]');
+  if (command !== 'backfill' && command !== 'verify' && command !== 'counts' && command !== 'declare') {
+    throw new Error('usage: migrate-mongo-to-kdb <backfill|verify|counts|declare> [--collection=<name>] [--dry-run]');
   }
   const args: Args = { command, dryRun: false };
   for (const flag of rest) {
@@ -80,50 +92,106 @@ async function inChunks<T>(items: T[], size: number, work: (item: T) => Promise<
   }
 }
 
+/** Splits a page into import commits, bounded by document count and by encoded size. */
+export function commitGroups(docs: Doc[], maxDocs = COMMIT_DOCS, maxBytes = COMMIT_BYTES): Doc[][] {
+  const groups: Doc[][] = [];
+  let current: Doc[] = [];
+  let bytes = 0;
+  for (const doc of docs) {
+    const size = JSON.stringify(doc).length;
+    if (current.length > 0 && (current.length >= maxDocs || bytes + size > maxBytes)) {
+      groups.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(doc);
+    bytes += size;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
 async function backfill(mongo: MongoDataStore, kdb: KdbDataStore, names: CollectionName[], dryRun: boolean): Promise<void> {
+  const started = Date.now();
+  let total = 0;
   for (const name of names) {
+    const t0 = Date.now();
     let copied = 0;
     for await (const page of pages(mongo, name)) {
-      if (!dryRun) await inChunks(page, CONCURRENCY, (doc) => kdb.importDocument(name, doc));
+      // A few multi-document commits per page rather than a commit per document: the per-commit
+      // fsync is the cost that matters (see KdbDataStore.importMany).
+      if (!dryRun) for (const group of commitGroups(page)) await kdb.importMany(name, group);
       copied += page.length;
     }
-    console.log(`${dryRun ? 'would copy' : 'copied'} ${String(copied).padStart(8)}  ${name}`);
+    total += copied;
+    const seconds = (Date.now() - t0) / 1000;
+    console.log(
+      `${dryRun ? 'would copy' : 'copied'} ${String(copied).padStart(8)}  ${name.padEnd(28)}` +
+        (dryRun ? '' : ` ${seconds.toFixed(1)}s`)
+    );
   }
+  if (!dryRun) {
+    const seconds = (Date.now() - started) / 1000;
+    console.log(`copied ${String(total).padStart(8)}  TOTAL in ${seconds.toFixed(1)}s (${Math.round(total / Math.max(seconds, 0.001))} docs/s)`);
+  }
+}
+
+/**
+ * Whether a document's TTL deadline has passed. MongoDB's TTL monitor removes such a document up to
+ * a minute late, while KDB hides it from reads the moment it expires, so a document in this state
+ * is legitimately absent from the copy and must not be reported as missing.
+ */
+function ttlExpired(name: CollectionName, doc: Doc, now: number): boolean {
+  const schema = mongoose.models[MODEL_BY_COLLECTION[name]]?.schema;
+  const ttl = schema ? ttlSpec(schema) : null;
+  if (!ttl) return false;
+  const at = doc[ttl.path];
+  const ms = at instanceof Date ? at.getTime() : typeof at === 'string' ? Date.parse(at) : NaN;
+  return Number.isFinite(ms) && ms + ttl.graceMs <= now;
 }
 
 /** Returns the number of collections that disagree. */
 async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: CollectionName[]): Promise<number> {
+  const started = Date.now();
   let bad = 0;
   for (const name of names) {
     const target = kdb.collection(name);
-    let checked = 0;
     let missing = 0;
+    let expired = 0;
     const differing: string[] = [];
     const fields = new Set<string>();
 
     for await (const page of pages(mongo, name)) {
-      // Keyed reads, not a scan: KDB's SQL scans stop at 10,000 documents (blocker B1
-      // in docs/KDB_MIGRATION.md), and a verifier that silently looks at a prefix
-      // would report a clean bill of health for data it never saw.
+      // Keyed reads, not a scan of the collection: the page's ids as one `kdb_id IN (...)` lookup
+      // (pushdown is forced on in main), so the cost follows the page, not the namespace.
       const copies = new Map<string, Doc>();
-      await inChunks(page, CONCURRENCY, async (doc) => {
+      for (const copy of await target.find({ _id: { $in: page.map((doc) => doc._id as string) } })) {
+        copies.set(copy._id as string, copy);
+      }
+      // Whatever that did not return is asked for again by key, one at a time: "missing" is a
+      // finding, so it must not rest on a single query's answer.
+      await inChunks(page.filter((doc) => !copies.has(doc._id as string)), CONCURRENCY, async (doc) => {
         const copy = await target.findById(doc._id as string);
         if (copy) copies.set(doc._id as string, copy);
       });
+      const now = Date.now();
       for (const doc of page) {
         const copy = copies.get(doc._id as string);
-        if (!copy) { missing++; continue; }
+        if (!copy) {
+          if (ttlExpired(name, doc, now)) expired++;
+          else missing++;
+          continue;
+        }
         const divergence = compareDocLists(name, 'verify', {}, [doc], [copy]);
         if (divergence) {
           differing.push(doc._id as string);
           divergence.fields?.forEach((field) => fields.add(field));
         }
       }
-      checked += page.length;
     }
 
     const mongoCount = await mongo.collection(name).countDocuments({});
-    // Surplus can only be found by listing KDB, which the scan cap can forbid. Say so
+    // Surplus can only be found by counting KDB, which the scan-cap guard can forbid. Say so
     // rather than report extra=0: "could not look" is not "nothing there".
     let kdbCount: number | string;
     let extra: number | string;
@@ -131,7 +199,7 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
       kdbCount = await target.countDocuments({});
       // Extras are expected to be small and transient while shadow writes are on (a
       // delete mirrored after the scan above); a persistent surplus is a real finding.
-      extra = Math.max(0, kdbCount - (mongoCount - missing));
+      extra = Math.max(0, kdbCount - (mongoCount - missing - expired));
     } catch (error) {
       if ((error as Error).name !== 'KdbScanCapError') throw error;
       kdbCount = 'unknown';
@@ -143,26 +211,30 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
     console.log(
       `${ok ? 'ok     ' : 'DIFFERS'} ${name.padEnd(28)} mongo=${mongoCount} kdb=${kdbCount} ` +
         `missing=${missing} differing=${differing.length} extra=${extra}` +
+        (expired ? ` expired=${expired}` : '') +
         (fields.size ? `  fields=[${[...fields].sort().join(', ')}]` : '') +
         (differing.length ? `  e.g. ${differing.slice(0, 3).join(', ')}` : '')
     );
-    void checked;
   }
+  console.log(`verified in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   return bad;
 }
 
-/** Reads only MongoDB. Answers "will this fit under KDB's scan cap?" before any KDB exists. */
+/** Reads only MongoDB: how much there is to copy, before any KDB exists. */
 async function counts(mongo: MongoDataStore, names: CollectionName[]): Promise<void> {
-  const SCAN_CAP = 10_000;
   let total = 0;
   for (const name of names) {
     const n = await mongo.collection(name).countDocuments({});
     total += n;
     console.log(`${String(n).padStart(9)}  ${name}`);
   }
-  console.log(`${String(total).padStart(9)}  TOTAL  (kdb-service v0.6.2 scans at most ${SCAN_CAP} documents per namespace, and holds every collection in one)`);
-  if (total >= SCAN_CAP) {
-    console.log('PAST THE CAP: blocker B1 in docs/KDB_MIGRATION.md applies - do not read-flip until it is resolved.');
+  // One kdb-service namespace holds every collection. Since KDB v0.8.0 nothing truncates at
+  // 10,000 documents (blocker B1 is fixed). The limit that does grow with this total is
+  // kdb-service's --scan-row-budget (rows one scan may examine, default 1,000,000), which an
+  // unindexed scan of any collection reaches once the whole namespace is that large.
+  console.log(`${String(total).padStart(9)}  TOTAL  (one KDB namespace; kdb-service --scan-row-budget defaults to 1000000)`);
+  if (total >= 1_000_000) {
+    console.log('AT OR PAST 1,000,000 DOCUMENTS: raise kdb-service --scan-row-budget before cutover (docs/KDB_MIGRATION.md).');
   }
 }
 
@@ -177,10 +249,20 @@ async function main(): Promise<void> {
   // scan. Pushdown only narrows (see kdb/pushdown.ts), so it is safe to force on. The
   // config snapshot is taken at import, hence the dynamic imports below.
   process.env.DATA_KDB_PUSHDOWN = 'true';
+  if (args.command === 'declare') process.env.DATA_KDB_DECLARE_INDEXES = 'true';
   await import('../models/index.js');
   const { config } = await import('../config/index.js');
   const { MongoDataStore } = await import('../data/mongo/store.js');
   const { KdbDataStore } = await import('../data/kdb/store.js');
+  if (args.command === 'declare') {
+    // Declaring happens in connect(), idempotently; timing it is the whole command. No Mongo.
+    const kdb = new KdbDataStore();
+    const started = Date.now();
+    await kdb.connect();
+    console.log(`declared indexes and unique constraints in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    await kdb.disconnect();
+    return;
+  }
   await mongoose.connect(config.mongodbUri, { family: 4 });
   const mongo = new MongoDataStore();
   if (args.command === 'counts') {
@@ -207,7 +289,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error((error as Error).message);
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error((error as Error).message);
+    process.exitCode = 1;
+  });
+}

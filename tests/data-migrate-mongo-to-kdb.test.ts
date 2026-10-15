@@ -43,7 +43,7 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     mongod = await MongoMemoryServer.create();
     service = spawn(
       SERVICE_BIN,
-      ['--memory', '--namespace', 'qtaskmig/docs', '--peer-addr', '', '--stream-addr', '', '--sql-addr', `tcp://127.0.0.1:${PORT}?bind=true`, '--log-level', 'error'],
+      ['--memory', '--namespace', 'qtaskmig/docs', '--expire-field', '_expireAt', '--peer-addr', '', '--stream-addr', '', '--sql-addr', `tcp://127.0.0.1:${PORT}?bind=true`, '--log-level', 'error'],
       { stdio: 'ignore' }
     );
     await waitForPort(PORT);
@@ -66,6 +66,16 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     for (let i = 0; i < 1200; i++) {
       await tasks.create({ userId: owner._id, title: `Task ${i}`, status: i % 3 ? 'todo' : 'done', tags: ['t' + (i % 5)], steps: [{ text: 'a' }] });
     }
+    // A data-migration marker: a KDB copy without these re-runs every one-shot migration.
+    await mongo.collection('appMeta').create({ key: 'search_embedding_v1', at: new Date() });
+    // An authorization code past its TTL that MongoDB's monitor (60 s period) has not removed yet.
+    // KDB hides it at once, so it is legitimately absent from the copy and verify must say so
+    // rather than call it missing.
+    await mongoose.connection.collection('mcpoauthauthorizationcodes').insertOne({
+      codeHash: 'expired-code', clientId: 'c', userId: String(owner._id), scope: 's', codeChallenge: 'x',
+      codeChallengeMethod: 'S256', redirectUri: 'https://example.com/cb', resource: 'r',
+      expiresAt: new Date(Date.now() - 1_000), createdAt: new Date(), updatedAt: new Date(),
+    });
   });
 
   after(async () => {
@@ -78,8 +88,9 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     const result = await run('counts');
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /1200\s+tasks/);
-    assert.match(result.stdout, /1201\s+TOTAL/);
-    assert.doesNotMatch(result.stdout, /PAST THE CAP/);
+    assert.match(result.stdout, /1\s+appMeta/);
+    assert.match(result.stdout, /120[23]\s+TOTAL/); // 1203 until Mongo's TTL monitor removes the expired code
+    assert.doesNotMatch(result.stdout, /PAST/);
   });
 
   it('verify fails before the copy exists', async () => {
@@ -103,6 +114,10 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     assert.equal(check.status, 0, check.stdout + check.stderr);
     assert.match(check.stdout, /ok\s+tasks\s+mongo=1200 kdb=1200 missing=0 differing=0 extra=0/);
     assert.match(check.stdout, /ok\s+users\s+mongo=1 kdb=1/);
+    // Every collection the data layer knows is copied, the migration markers included.
+    assert.match(copy.stdout, /copied\s+1\s+appMeta/);
+    assert.match(check.stdout, /ok\s+appMeta\s+mongo=1 kdb=1 missing=0 differing=0 extra=0/);
+    assert.match(check.stdout, /ok\s+mcpOAuthAuthorizationCodes\s+mongo=[01] kdb=0 missing=0/);
   });
 
   it('is idempotent', async () => {
@@ -127,6 +142,18 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     const check = await run('verify', '--collection=tasks');
     assert.equal(check.status, 1);
     assert.match(check.stdout, /extra=1/);
+  });
+});
+
+describe('migrate-mongo-to-kdb commit groups', () => {
+  it('bounds an import commit by document count and by size', async () => {
+    const { commitGroups } = await import('../src/scripts/migrate-mongo-to-kdb.ts');
+    const docs = Array.from({ length: 7 }, (_, i) => ({ _id: String(i), pad: 'x'.repeat(100) }));
+    assert.deepEqual(commitGroups(docs, 3, 1_000_000).map((g) => g.length), [3, 3, 1]);
+    assert.deepEqual(commitGroups(docs, 100, 250).map((g) => g.length), [2, 2, 2, 1]);
+    // A document larger than the byte bound still goes, alone.
+    assert.deepEqual(commitGroups([{ _id: 'big', pad: 'y'.repeat(500) }, ...docs.slice(0, 1)], 100, 250).map((g) => g.length), [1, 1]);
+    assert.deepEqual(commitGroups([]), []);
   });
 });
 
