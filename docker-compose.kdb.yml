@@ -58,6 +58,9 @@ services:
       - --memory-budget-mb=${KDB_MEMORY_BUDGET_MB:-1536}
       - --scrub-interval=24h
       - --log-format=json
+    # The budget above is what kdb-service admits work against; in the 100,000-task rehearsal
+    # collection-wide reads went past a 4 GiB limit regardless (docs/KDB_MIGRATION.md, B5); the kernel
+    # would kill it at this one. restart: unless-stopped brings it back (a 3 min reopen at that size).
     mem_limit: ${KDB_MEM_LIMIT:-2g}
     stop_grace_period: 45s
     volumes:
