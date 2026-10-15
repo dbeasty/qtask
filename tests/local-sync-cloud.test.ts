@@ -11,7 +11,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request from './helpers/http.js';
 import type { Express } from 'express';
 import { waitForNewestToken } from './helpers/testEmail.ts';
 import { LocalDevice, freePort, kdbMissing, pairDevices, waitFor } from './helpers/local-device.ts';
@@ -44,11 +44,11 @@ describe('a device signs in to the cloud, and its paired device follows', { skip
 
     const { testEmailOutbox } = await import('../src/services/emailService.ts');
     const previous = testEmailOutbox.verification.length;
-    await request(app).post('/api/auth/register').send({ email, password, acceptLegal: true }).expect(201);
+    await request(server).post('/api/auth/register').send({ email, password, acceptLegal: true }).expect(201);
     const token = await waitForNewestToken(() => testEmailOutbox.verification, previous);
-    await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
-    const login = await request(app).post('/api/auth/login').send({ email, password }).expect(200);
-    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`).expect(200);
+    await request(server).post('/api/auth/verify-email').send({ token }).expect(200);
+    const login = await request(server).post('/api/auth/login').send({ email, password }).expect(200);
+    const me = await request(server).get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`).expect(200);
     account = { token: login.body.token, userId: me.body.user.id };
 
     const mdnsPort = await freePort();
@@ -67,7 +67,7 @@ describe('a device signs in to the cloud, and its paired device follows', { skip
   });
 
   const hubTasks = async () =>
-    (await request(app).get('/api/tasks?limit=500').set('Authorization', `Bearer ${account.token}`).expect(200)).body.tasks as Array<{
+    (await request(server).get('/api/tasks?limit=500').set('Authorization', `Bearer ${account.token}`).expect(200)).body.tasks as Array<{
       _id: string;
       title: string;
     }>;
@@ -95,7 +95,7 @@ describe('a device signs in to the cloud, and its paired device follows', { skip
   });
 
   it('brings web edits down', async () => {
-    const created = await request(app).post('/api/tasks').set('Authorization', `Bearer ${account.token}`).send({ title: 'Made on the web' }).expect(201);
+    const created = await request(server).post('/api/tasks').set('Authorization', `Bearer ${account.token}`).send({ title: 'Made on the web' }).expect(201);
     const id = created.body.task._id;
     await a.sync('POST', '/now');
     await waitFor('the web task on the device', async () => (await a.api('GET', `/api/tasks/${id}`)).status === 200, 30_000);

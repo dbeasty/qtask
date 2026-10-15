@@ -12,7 +12,7 @@ import { connect } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { resolve } from 'node:path';
-import request from 'supertest';
+import request, { serve, type Test } from './helpers/http.js';
 import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 import type { Express } from 'express';
 
@@ -60,7 +60,7 @@ describe('local mode on KDB', { skip }, () => {
     await waitForPort(PORT);
 
     const { createApp } = await import('../src/app.js');
-    app = await createApp({ startWorker: false });
+    app = await serve(await createApp({ startWorker: false }));
   });
 
   after(async () => {
@@ -71,7 +71,7 @@ describe('local mode on KDB', { skip }, () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const dev = (req: request.Test) => req.set('x-qtask-device-token', TOKEN);
+  const dev = (req: Test) => req.set('x-qtask-device-token', TOKEN);
 
   it('issues a session for the one local user, idempotently', async () => {
     const a = await dev(request(app).post('/api/auth/local-session')).expect(200);

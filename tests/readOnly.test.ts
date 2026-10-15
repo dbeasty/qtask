@@ -2,7 +2,7 @@ import { before, after, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 import { waitForNewestToken } from './helpers/testEmail.js';
 
@@ -20,7 +20,7 @@ async function createTestApp(env: Record<string, string | undefined> = {}) {
   }
 
   const { createApp } = await import('../src/app.js');
-  return createApp({ connect: true, startWorker: false });
+  return serve(await createApp({ connect: true, startWorker: false }));
 }
 
 before(async () => {

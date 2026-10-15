@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-user-secret';
@@ -10,7 +10,7 @@ process.env.ADMIN_PROXY_SECRET = 'trusted-proxy-secret';
 process.env.ADMIN_COOKIE_SECURE = 'false';
 
 const { createAdminApp } = await import('../src/admin/app.js');
-const app = await createAdminApp({ connect: false, serveClient: false });
+const app = await serve(await createAdminApp({ connect: false, serveClient: false }));
 
 describe('admin mTLS exchange', () => {
   it('rejects spoofed certificate headers without the proxy secret', async () => {

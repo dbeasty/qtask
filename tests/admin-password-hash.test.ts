@@ -2,7 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 import { hashPassword } from '../src/utils/passwordHash.js';
 
@@ -34,8 +34,8 @@ before(async () => {
     import('../src/app.js'),
     import('../src/admin/app.js'),
   ]);
-  app = await createApp({ connect: true, startWorker: false });
-  adminApp = await createAdminApp({ connect: false, serveClient: false });
+  app = await serve(await createApp({ connect: true, startWorker: false }));
+  adminApp = await serve(await createAdminApp({ connect: false, serveClient: false }));
 });
 
 after(async () => {
