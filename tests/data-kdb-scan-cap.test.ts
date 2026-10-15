@@ -20,6 +20,7 @@ process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 const PORT = Number(process.env.KDB_TEST_PORT_CAP ?? 7817);
 const NS = 'qtaskcap/docs';
 const LOADED = 10_050;
+const BULK = 'x'.repeat(1_800);
 const skip = kdbUnavailable;
 
 import { toDocumentUuid } from '../src/data/kdb/ids.ts';
@@ -60,6 +61,8 @@ describe('KDB scan cap', { skip }, () => {
         Array.from({ length: Math.min(150, LOADED - i) }, (_, j) =>
           client.upsert(NS, toDocumentUuid(objectId(i + j)), {
             _id: objectId(i + j), _c: 'tasks', userId: 'u1', title: `t${i + j}`, status: 'todo',
+            // Enough text that the collection (about 18 MiB) is past what one SQL reply may carry.
+            description: BULK,
           })
         )
       );
@@ -127,6 +130,18 @@ describe('KDB scan cap', { skip }, () => {
     } finally {
       delete process.env.KDB_SERVER_ROW_CAP;
     }
+  });
+
+  it('reads a whole collection larger than one SQL reply may be', async () => {
+    // Since KDB 0.8.0 an unpaged reply over 15 MiB is refused with RESOURCE_EXHAUSTED; a scan
+    // that grows with the data has to be read a page at a time, and this one is about 18 MiB.
+    // Counted, not assumed: earlier tests here delete a few.
+    const expected = await store.collection('tasks').countDocuments({ userId: 'u1' });
+    assert.ok(expected > 10_000, `fixture too small: ${expected}`);
+    const all = await store.collection('tasks').find({ userId: 'u1' });
+    assert.equal(all.length, expected);
+    assert.equal(new Set(all.map((doc) => doc._id)).size, expected, 'a page boundary repeated or lost a document');
+    assert.equal(all[all.length - 1]!.description, BULK);
   });
 });
 

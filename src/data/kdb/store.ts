@@ -58,6 +58,10 @@ import { MODEL_BY_COLLECTION } from '../modelNames.js';
 interface KdbClient {
   upsert(ns: string, docId: string, body: unknown): Promise<string>;
   queryRaw(ns: string, sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: string[][] }>;
+  /** The same query a page at a time (pageSize 0: the largest page the server allows). A single
+   *  unpaged reply is capped (15 MiB encoded since KDB 0.8.0), so anything that can grow with the
+   *  data - a collection scan - is read this way. */
+  queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number): AsyncIterable<{ columns: string[]; rows: string[][] }>;
   exec(ns: string, sql: string, args?: unknown[]): Promise<void>;
   /** Keyed read. Rejects with an error named KdbNotFoundError when there is no such document. */
   get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
@@ -73,7 +77,15 @@ interface KdbClient {
   close(): Promise<void>;
 }
 
-type ConnectFn = (addr: string, token: string) => Promise<KdbClient>;
+type ConnectFn = (addr: string, options: { token?: string }) => Promise<KdbClient>;
+
+/**
+ * Rows per page of a collection scan. Each page is one reply, and a reply over 15 MiB encoded is
+ * refused, so the page is sized by documents rather than left to the server's maximum: 2,000
+ * documents stays under the cap up to an average of about 7 KiB each, several times qtask's
+ * largest documents (a task with its steps, subtasks and materials).
+ */
+const SCAN_PAGE_ROWS = 2_000;
 
 /**
  * The client's `exec` is two round trips on one shared session per namespace - run the DML, then
@@ -97,6 +109,9 @@ class SerializedDmlClient implements KdbClient {
   }
   queryRaw(ns: string, sql: string, args?: unknown[]) {
     return this.inner.queryRaw(ns, sql, args);
+  }
+  queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number) {
+    return this.inner.queryRawPages(ns, sql, args, pageSize);
   }
   get(ns: string, docId: string) {
     return this.inner.get(ns, docId);
@@ -292,21 +307,24 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     // Pushdown only ever narrows: the caller re-checks every row with the shared
     // engine, so a clause the server cannot express is just left to that check.
     const pushed = config.kdb.pushdown ? buildWhere(filter) : null;
-    const { rows } = await this.client().queryRaw(
+    const docs: T[] = [];
+    const pages = this.client().queryRawPages(
       this.namespace,
       `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
-      [this.name, ...(pushed?.args ?? [])]
+      [this.name, ...(pushed?.args ?? [])],
+      SCAN_PAGE_ROWS
     );
-    const docs: T[] = [];
-    for (const row of rows) {
-      const json = row[1];
-      if (!json) continue;
-      try {
-        docs.push(this.decode(JSON.parse(json) as Doc));
-      } catch {
-        // A document that will not parse is corruption, not a query result. Skipping
-        // it would hide that; failing the whole read makes it visible immediately.
-        throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
+    for await (const { rows } of pages) {
+      for (const row of rows) {
+        const json = row[1];
+        if (!json) continue;
+        try {
+          docs.push(this.decode(JSON.parse(json) as Doc));
+        } catch {
+          // A document that will not parse is corruption, not a query result. Skipping
+          // it would hide that; failing the whole read makes it visible immediately.
+          throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
+        }
       }
     }
     // A scan has no inherent order. MongoDB's natural order is insertion order, which ObjectId
@@ -733,7 +751,12 @@ export class KdbDataStore implements DataStore {
   async connect(): Promise<void> {
     const { connect } = await loadClient();
     capCheck.at = undefined;
-    this.client = new SerializedDmlClient(await connect(config.kdb.addr, config.kdb.token));
+    this.client = new SerializedDmlClient(await connect(
+        config.kdb.addr,
+        // An options object: passed as a bare string the token was silently dropped, and every
+        // connection to a server with access control would have been anonymous.
+        config.kdb.token ? { token: config.kdb.token } : {}
+      ));
     if (config.kdb.declareConstraints || config.kdb.declareIndexes) {
       try {
         if (config.kdb.declareConstraints) await this.declareConstraints();
