@@ -418,3 +418,6 @@ In rough order of value, none of it required for the migration:
 3. Server-side stemmed full-text and vector search in place of the in-process scoring and the
    embeddings path, accepting that rankings stop being backend-identical.
 4. `kdb-service --scrub-interval` for scheduled integrity checks, and peer sync for a warm replica.
+5. Client replicas (`@kdb/replica`, v0.8.0): evaluated against qtask's own device sync in
+   `docs/KDB_REPLICA_EVALUATION.md` - not a replacement for it; a possible read-mostly web client
+   once the cloud runs on KDB.
