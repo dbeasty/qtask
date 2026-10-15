@@ -17,6 +17,7 @@ const PNG = Buffer.from(
 
 let mongo: MongoMemoryServer;
 let storageRoot: string;
+let testStorage: import('./helpers/testObjectStorage.ts').TestObjectStorage | undefined;
 
 before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -33,6 +34,7 @@ after(async () => {
   stopFeedbackVisionWorker();
   setScreenshotClassifierForTests(null);
   setObjectStorageForTests(null);
+  await testStorage?.stop();
   await new Promise((resolve) => setTimeout(resolve, 50));
   await mongoose.disconnect();
   await mongo.stop();
@@ -42,7 +44,7 @@ after(async () => {
 describe('feedbackVisionQueue', () => {
   it('processes a job immediately on enqueue', async () => {
     const { FeedbackModel, FeedbackVisionJobModel } = await import('../src/models/index.js');
-    const { LocalObjectStorage } = await import('../src/services/storage/local.js');
+    const { createTestObjectStorage } = await import('./helpers/testObjectStorage.ts');
     const { setObjectStorageForTests } = await import('../src/services/storage/index.js');
     const { setScreenshotClassifierForTests } = await import('../src/services/feedbackVisionService.js');
     const {
@@ -51,7 +53,9 @@ describe('feedbackVisionQueue', () => {
       stopFeedbackVisionWorker,
     } = await import('../src/services/feedbackVisionQueue.js');
 
-    const storage = new LocalObjectStorage(storageRoot);
+    // STORAGE_BACKEND=kdb runs this against KDB attachments (tests/helpers/testObjectStorage.ts).
+    testStorage = await createTestObjectStorage(storageRoot, Number(process.env.KDB_TEST_PORT_STORAGE_VISION ?? 7923));
+    const storage = testStorage.storage;
     setObjectStorageForTests(storage);
     setScreenshotClassifierForTests(async () => ({
       isScreenshot: true,

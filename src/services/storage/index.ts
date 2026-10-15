@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { config } from '../../config/index.js';
 import { LocalObjectStorage } from './local.js';
+import { KdbObjectStorage } from './kdb.js';
 import { S3ObjectStorage } from './s3.js';
 import type { ObjectStorage } from './types.js';
 
@@ -8,6 +9,7 @@ export {
   assertSafeStorageKey,
   extensionForContentType,
   STORAGE_KEY_PATTERN,
+  StorageIntegrityError,
   type ObjectStorage,
   type StoredObject,
 } from './types.js';
@@ -22,6 +24,10 @@ export function createObjectStorage(): ObjectStorage {
     }
     return new S3ObjectStorage({ bucket, region, endpoint, accessKeyId, secretAccessKey });
   }
+  if (config.storage.backend === 'kdb') {
+    const { addr, namespace, token } = config.storage.kdb;
+    return new KdbObjectStorage({ addr, namespace, token });
+  }
   const localPath = path.resolve(config.storage.localPath);
   return new LocalObjectStorage(localPath);
 }
@@ -31,6 +37,13 @@ export function getObjectStorage(): ObjectStorage {
     storageInstance = createObjectStorage();
   }
   return storageInstance;
+}
+
+/** Closes the process-wide backend's connection, if it holds one (the KDB backend does). */
+export async function closeObjectStorage(): Promise<void> {
+  const current = storageInstance;
+  storageInstance = null;
+  await current?.close?.();
 }
 
 /** Test helper — replace the singleton storage backend. */

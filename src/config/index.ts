@@ -124,8 +124,23 @@ export const config = {
     embeddingNumGpu: parseInt(process.env.OLLAMA_EMBEDDING_NUM_GPU ?? '0', 10),
   },
   storage: {
-    backend: process.env.STORAGE_BACKEND === 's3' ? ('s3' as const) : ('local' as const),
+    backend:
+      process.env.STORAGE_BACKEND === 's3'
+        ? ('s3' as const)
+        : process.env.STORAGE_BACKEND === 'kdb'
+          ? ('kdb' as const)
+          : ('local' as const),
     localPath: process.env.STORAGE_LOCAL_PATH ?? './data/uploads',
+    /**
+     * STORAGE_BACKEND=kdb: each file is an attachment of its own record in a KDB namespace
+     * (src/services/storage/kdb.ts). Defaults to the data layer's server and namespace, so a
+     * DATA_KDB deployment needs nothing more; the STORAGE_KDB_* variables point uploads elsewhere.
+     */
+    kdb: {
+      addr: process.env.STORAGE_KDB_ADDR ?? process.env.KDB_ADDR ?? 'tcp://127.0.0.1:7700',
+      namespace: process.env.STORAGE_KDB_NAMESPACE ?? process.env.KDB_NAMESPACE_PREFIX ?? 'qtask',
+      token: process.env.STORAGE_KDB_TOKEN ?? process.env.KDB_TOKEN ?? '',
+    },
     s3: {
       bucket: process.env.S3_BUCKET,
       region: process.env.S3_REGION,

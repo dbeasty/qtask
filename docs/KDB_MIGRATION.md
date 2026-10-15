@@ -203,10 +203,14 @@ acknowledged write is fsynced); data under `/var/lib/qtask/kdb/data`; `--namespa
 `KDB_NAMESPACE_PREFIX` (use `qtask/docs`, the form the tests exercise). Health: `curl
 127.0.0.1:7701/healthz` and `/readyz`.
 
-**Auth and transport (gap as of v0.8.0).** A standalone `kdb-service` cannot be given qtask's
-credentials: without `--rbac` it checks none, and with it users exist only if created through the
-Go API (no flag, file or `CREATE USER`). Until KDB adds that, `kdb-service` must only be reachable
-from the application host (loopback or a private network), which is what the plan assumes.
+**Auth and transport.** Without `--rbac`, `kdb-service` checks no credentials. With `--rbac` and
+`--data-dir`, v0.8.0 keeps a durable user registry that the same binary provisions while the
+service is stopped: `kdb-service user role --data-dir D --role qtask --grants
+"read:qtask/*,write:qtask/*"`, then `kdb-service user create --data-dir D --user app --password
+... --roles qtask`; the app then connects with `KDB_TOKEN=app:<password>` (checked by hand against
+the v0.8.0 binary: no token and a wrong password are refused at the handshake, the right one
+reads and writes). Tokens are still static `user:password` pairs, so keep `kdb-service` reachable
+only from the application host (loopback or a private network), which is what the plan assumes.
 
 **Auth and transport.** v0.6.2 has TLS and token auth, but the plan assumes loopback and a host
 firewall like MongoDB today. If KDB ever leaves loopback, enable TLS and set `KDB_TOKEN` first.
@@ -221,6 +225,42 @@ restore has been done once, there is no KDB backup, only files.
 **Resource budget.** `kdb-service` governs memory itself (auto-detects the container or host
 limit, 75% of RAM by default). On the shared app server alongside Mongo and Node, set
 `--memory-budget-mb` explicitly.
+
+### Uploaded files on KDB (`STORAGE_BACKEND=kdb`)
+
+Independent of the data migration, uploads (today: feedback screenshots) can be stored as KDB
+attachments instead of on the local disk or S3 (`src/services/storage/kdb.ts`, KDB v0.8.0+).
+
+- **Layout.** One record per file, `{ _c: 'files', key, updatedAt }`, at a document id hashed from
+  the storage key, with the bytes as its attachment `content` (media type and size live on the
+  attachment). Every operation is a keyed read or write of that one record; nothing scans, and the
+  data layer's collection scans (`WHERE _c = ?`) never see these records. A put uploads the bytes
+  (1 MiB chunks, hashed and checked against the server's content hash), then commits record and
+  attachment together; a file's first put costs one extra commit to create the record. A delete
+  removes the record and its attachment in one commit.
+- **Config.** `STORAGE_BACKEND=kdb`. It uses the data layer's `KDB_ADDR`, `KDB_NAMESPACE_PREFIX`
+  and `KDB_TOKEN` unless `STORAGE_KDB_ADDR`, `STORAGE_KDB_NAMESPACE`, `STORAGE_KDB_TOKEN` are set.
+  The namespace must be one the service serves (its `--namespace`): v0.8.0 refuses a session on
+  any other. It works with Mongo as the data backend too. `local` stays the default.
+- **When to use it.** When KDB already runs beside the app and you want uploads in the same
+  backups, durability (`--durability sync`) and integrity checks as the data, without a writable
+  upload directory or an S3 bucket. Keep `local` or `s3` for large or many files you need to purge.
+- **Integrity.** Reads are verified against the content hash (whole reads before the last page is
+  released, ranged reads chunk by chunk with Merkle proofs). Damaged bytes surface as
+  `StorageIntegrityError` (`code: 'INTEGRITY'`), never as a missing file; the feedback vision
+  queue records it as the job's error and retries, the admin attachment route answers 500.
+- **Limits.** Deleting or overwriting a file does not free space: KDB keeps attachment history by
+  default (replaced versions become deltas), so the attachment store only grows until history is
+  truncated. A namespace that has stored an attachment cannot be opened by KDB builds before
+  v0.8.0 (no downgrade). The storage interface is buffer-based, so the app still holds a whole
+  upload in memory (as multer does today, 5 MB max); the backend also offers `putStream`,
+  `openRead` (whole or ranged, streamed) and `stat` for larger files, whose memory does not grow
+  with the file: about 4 MiB of buffers to upload and 15 MiB to download (the client's transport
+  buffer; the same for 8, 40 and 64 MiB files), where a buffered `get` of 20 MiB took 22 MiB.
+- **Tests.** `tests/storage-kdb.test.ts` (real on-disk service: binary/empty/>1 MiB round trips,
+  overwrite, racing puts, delete, missing, 40 MiB streaming and ranged reads, a byte flipped on
+  disk surfacing as `StorageIntegrityError`, `kill -9` and restart). The feedback suites run
+  against it with `STORAGE_BACKEND=kdb` (`tests/helpers/testObjectStorage.ts`).
 
 ## 4. The stages
 

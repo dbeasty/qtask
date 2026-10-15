@@ -30,7 +30,8 @@ let mongo: MongoMemoryServer;
 let app: Express;
 let adminApp: Express;
 let storageRoot: string;
-let storage: import('../src/services/storage/local.js').LocalObjectStorage;
+let storage: import('../src/services/storage/types.js').ObjectStorage;
+let testStorage: import('./helpers/testObjectStorage.ts').TestObjectStorage;
 let userToken: string;
 let userId: string;
 let FeedbackModel: typeof import('../src/models/index.js').FeedbackModel;
@@ -75,7 +76,7 @@ before(async () => {
   process.env.MONGODB_URI = mongo.getUri();
   storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'qtask-feedback-'));
   const [
-    { LocalObjectStorage },
+    { createTestObjectStorage },
     { setObjectStorageForTests },
     { setScreenshotClassifierForTests: setClassifier },
     { FeedbackModel: feedbackModel },
@@ -87,7 +88,7 @@ before(async () => {
     { startFeedbackVisionWorker: startWorker },
     { stopFeedbackVisionWorker: stopWorker },
   ] = await Promise.all([
-    import('../src/services/storage/local.js'),
+    import('./helpers/testObjectStorage.ts'),
     import('../src/services/storage/index.js'),
     import('../src/services/feedbackVisionService.js'),
     import('../src/models/index.js'),
@@ -99,7 +100,9 @@ before(async () => {
     import('../src/services/feedbackVisionQueue.js'),
     import('../src/services/feedbackVisionQueue.js'),
   ]);
-  storage = new LocalObjectStorage(storageRoot);
+  // STORAGE_BACKEND=kdb runs this file against KDB attachments (tests/helpers/testObjectStorage.ts).
+  testStorage = await createTestObjectStorage(storageRoot, Number(process.env.KDB_TEST_PORT_STORAGE_FEEDBACK ?? 7922));
+  storage = testStorage.storage;
   setObjectStorageForTests(storage);
   setScreenshotClassifierForTests = setClassifier;
   setScreenshotClassifierForTests(acceptScreenshot);
@@ -130,6 +133,7 @@ after(async () => {
   const { setObjectStorageForTests } = await import('../src/services/storage/index.js');
   setScreenshotClassifierForTests(null);
   setObjectStorageForTests(null);
+  await testStorage?.stop();
   await mongoose.disconnect();
   await mongo.stop();
   await fs.rm(storageRoot, { recursive: true, force: true });
