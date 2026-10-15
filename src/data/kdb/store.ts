@@ -192,44 +192,6 @@ function isPlainObject(value: unknown): value is Doc {
 }
 
 /**
- * kdb-service v0.6.2 stops a non-indexed scan after collecting 10,000 document ids,
- * *before* the WHERE clause runs (go/kdb/sql/executor.go, MaxRows). On a namespace
- * holding more than that, every SQL read examines only the first 10,000 documents and
- * says nothing: COUNT(*) reports 10000, and a lookup of document 10,001 by id finds
- * nothing. qtask reads and writes (unique checks, key-removal detection) all go
- * through those scans, so past the cap the answers are wrong rather than slow.
- *
- * Wrong answers that look right are the worst way for a database to fail, so the store
- * refuses instead. Set KDB_SERVER_ROW_CAP=0 once the server no longer truncates (the
- * regression test in tests/data-kdb-scan-cap.test.ts says when), or to the cap the
- * server was actually configured with.
- */
-export class KdbScanCapError extends Error {
-  constructor(count: number, cap: number) {
-    super(
-      `KDB namespace holds at least ${count} documents, which reaches the server's ${cap}-row scan cap; ` +
-        'SQL reads would silently ignore everything past it. Refusing to answer rather than return a truncated result. ' +
-        'See docs/KDB_MIGRATION.md (blocker B1).'
-    );
-    this.name = 'KdbScanCapError';
-  }
-}
-
-/** Shared by every collection: the cap is a property of the one namespace, not of a collection. */
-const capCheck: { at?: number; count: number } = { count: 0 };
-
-const DEFAULT_SERVER_ROW_CAP = 10_000;
-const CAP_RECHECK_MS = 5_000;
-
-function serverRowCap(): number {
-  const raw = process.env.KDB_SERVER_ROW_CAP;
-  if (raw === undefined || raw === '') return DEFAULT_SERVER_ROW_CAP;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`KDB_SERVER_ROW_CAP must be a non-negative integer, got "${raw}"`);
-  return parsed;
-}
-
-/**
  * A per-key async mutex. The store runs inside one process, and the operations MongoDB
  * guarantees to be atomic on a single document (`updateOne` with a condition in the filter,
  * `findOneAndUpdate`, `findOneAndDelete`) are read-evaluate-write here, so two callers can both
@@ -303,7 +265,6 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   /** Every document in the collection. The only read primitive: filtering happens
    *  above this, in the shared engine. */
   private async scan(filter: Filter = {}): Promise<T[]> {
-    await this.assertWithinScanCap();
     // Pushdown only ever narrows: the caller re-checks every row with the shared
     // engine, so a clause the server cannot express is just left to that check.
     // A disjunction KDB cannot serve from an index is asked one branch at a time instead (see
@@ -353,9 +314,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   /**
-   * One document by id through KDB's keyed read, which does not scan and so is not
-   * subject to the scan cap (see KdbScanCapError). Returns null for a missing document
-   * and for one that belongs to another collection - ids are unique across the
+   * One document by id through KDB's keyed read, which does not scan. Returns null for a
+   * missing document and for one that belongs to another collection - ids are unique across the
    * namespace, but a collection must never serve another's document.
    */
   private async fetchById(id: string): Promise<T | null> {
@@ -367,24 +327,6 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       throw error;
     }
     return stored._c === this.name ? this.decode(stored) : null;
-  }
-
-  /** Checks (at most every few seconds) that the namespace is still small enough for
-   *  the server to scan completely. COUNT(*) is itself capped, so a result at or past
-   *  the cap means "at least this many", which is all the check needs. */
-  private async assertWithinScanCap(): Promise<void> {
-    const cap = serverRowCap();
-    if (cap === 0) return;
-    const now = Date.now();
-    if (capCheck.at === undefined || now - capCheck.at > CAP_RECHECK_MS) {
-      const { rows } = await this.client().queryRaw(this.namespace, `SELECT COUNT(*) FROM ${this.table}`);
-      capCheck.count = Number(rows[0]?.[0] ?? 0);
-      capCheck.at = now;
-    }
-    // Exactly the cap, not "at least": a truncating server can never report more than
-    // the cap, while a server with the fix reports the true count, which may be larger
-    // and must not be refused.
-    if (capCheck.count === cap) throw new KdbScanCapError(capCheck.count, cap);
   }
 
   private async matching(filter: Filter): Promise<T[]> {
@@ -800,7 +742,6 @@ export class KdbDataStore implements DataStore {
 
   async connect(): Promise<void> {
     const { connect } = await loadClient();
-    capCheck.at = undefined;
     // KDB_REQUEST_TIMEOUT_MS raises the client's per-request deadline (30 s by default).
     // The Mac app sets it: opening a store with a few thousand documents can make the
     // first request wait longer than that while kdb-service recovers, and a timeout there
@@ -941,7 +882,6 @@ export class KdbDataStore implements DataStore {
     // One namespace holds every collection (see the file comment), so one statement
     // empties them all.
     await this.client.exec(config.kdb.namespacePrefix, 'DELETE FROM docs');
-    capCheck.at = undefined;
   }
 }
 

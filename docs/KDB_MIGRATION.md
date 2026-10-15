@@ -17,11 +17,11 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 |---|---|
 | Backend abstraction, Mongo + KDB stores | Done |
 | Shadow writes (`DATA_SHADOW_WRITES`), shadow reads (`DATA_SHADOW_READS`) | Done |
-| **Pinned to the KDB v0.8.0 release** | Done. `@kdb/client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 336/336 (3 retired-guard skips); whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
+| **Pinned to the KDB v0.8.0 release** | Done. `@kdb/client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
 | Filter pushdown to KDB SQL (`DATA_KDB_PUSHDOWN`) | Done, flagged off. Differential test against the in-process engine |
 | Server-side expiry replacing Mongo TTL indexes | Done (`_expireAt` + `--expire-field`) |
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done, tested on 1,200 documents against a real mongod |
-| Scan-cap guard, verified deletes, keyed reads for `_id` | Done (see B1) |
+| Keyed reads for `_id`; the scan-cap guard (retired with KDB 0.7, see B1) | Done |
 | `kdb-service` systemd unit | Written (`deploy/qtask-kdb.service`); flags verified to start and report healthy |
 | **KDB 0.7.0 candidate** (`main` at the time of writing) | The whole application passes on it: 133 of 133 test files on KDB, and the default Mongo suite is unchanged |
 | The application's own test suite on KDB (`npm run test:kdb`) | Done. A preload gives each test process a private `kdb-service`; the unchanged tests run against the real routes and services |
@@ -47,85 +47,21 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 
 ## 2. Blockers
 
-### B1. Scans silently stop at 10,000 documents (blocks any dataset that large)
+### B1. Scans silently stopped at 10,000 documents - resolved; the guard is retired
 
-**Status: fixed upstream on KDB branch `fix/scan-cap-before-filter` (pushed, not yet merged or
-released).** The release binary v0.6.2 still has the defect, so everything below about the guard
-applies until the pinned KDB version is a release containing the fix. What the branch does
-(`docs/kdb-scan-cap-plan.md` in the KDB repo has the detail):
+`kdb-service` v0.6.2 collected the first 10,000 document ids of a non-indexed scan and only then
+applied `WHERE`, so on a larger namespace `COUNT(*)` said 10000, filtered reads returned a prefix
+of the answer with no error, and lookups and deletes past the cap quietly did nothing. qtask
+guarded against it: the store counted the namespace and refused to scan once it reached the cap
+(`KdbScanCapError`, `KDB_SERVER_ROW_CAP`), and served `_id` operations through keyed reads.
 
-- Scans no longer stop at `MaxRows` before `WHERE` runs, in both the Go server and the Kotlin
-  engine (one shared fixture holds them to the same answers). Index lookups and ranked searches
-  are no longer cut either.
-- A result larger than the bound is `RESOURCE_EXHAUSTED`, not a prefix. The bound is now
-  `--max-result-rows` (default 10000), so a deployment that reads whole collections can raise it.
-- `kdb_id = ?` / `IN (...)` is a keyed lookup, so `UPDATE`/`DELETE` by id no longer scan.
-- Both clients give `RESOURCE_EXHAUSTED` its own non-retryable error (the TS client used to call it
-  "server busy"), and the TS client can delete by key.
-
-Verified against this repository: the full data suite passes against a build of the branch
-(257 passed; the 3 guard tests skip because the server no longer truncates).
-
-Consequences for qtask once it moves to that release: pin the new version, set
-`--max-result-rows` high enough for the largest unfiltered read (or keep `DATA_KDB_PUSHDOWN` on so
-reads are filtered), and retire the workarounds below. Keep `KDB_SERVER_ROW_CAP` as is; the guard
-stands down by itself on a fixed server.
-
-Original description:
-
-Found while benchmarking. In `kdb-service` v0.6.2 a non-indexed scan collects the first 10,000
-document ids and *then* applies `WHERE` (`go/kdb/sql/executor.go`, `MaxRows`). In a namespace
-with more documents:
-
-- `COUNT(*)` returns 10000.
-- A filtered `SELECT` examines only the first 10,000 documents, so it returns a prefix of the
-  right answer, with no error and no marker.
-- `WHERE kdb_id = '<a document past the cap>'` finds nothing.
-- `DELETE ... WHERE kdb_id = ...` reports success and removes nothing.
-
-`kdb-service` opens exactly one namespace, so all 21 collections share the 10,000. Pushdown does
-not help, because the cap applies before the filter. qtask's unique-constraint checks and its
-delete-then-write path run on those scans, so past the cap writes become wrong too, not just
-reads.
-
-What qtask does about it now, all tested against a real server loaded past the cap
-(`tests/data-kdb-scan-cap.test.ts`):
-
-- The store refuses to answer a scan once the namespace reaches the cap (`KdbScanCapError`),
-  rather than return a truncated result.
-- Operations by exact `_id` (`findById`, `updateOne({_id})`, `findByIdAndUpdate`, the backfill's
-  existence check) use KDB's keyed `get`, which is not a scan, and keep working at any size.
-- A delete is verified with a keyed read afterwards and throws if the document is still there.
-- `verify` uses keyed reads, and says `extra=unknown` rather than `extra=0` when it cannot list.
-
-What it does not do, and cannot from this side: make filtered queries correct past the cap, or
-delete past it. That needs a fix in KDB. Options, in order of preference:
-
-1. Apply `WHERE` during the scan and cap the *result*, not the examined ids; honour `LIMIT`.
-2. Give the TS client a delete-by-id operation (the wire format has `DeleteOp`; the client's
-   `Transaction` only carries writes).
-3. Wire the multi-namespace host (Layer 17, present in the embed API) into `kdb-service`, so
-   each collection has its own budget instead of 21 sharing one.
-
-Go/no-go input needed now: how many documents production holds.
-
-```bash
-MONGODB_URI=... npm run migrate:kdb -- counts
-```
-
-It reads only MongoDB. If the total is under 10,000, B1 does not block the first stages, but the
-guard will stop the store the day the namespace crosses it, so this is a deadline, not an
-exemption. If it is over, do not go past Stage 3 until B1 is fixed in KDB. Stages 2 and 3 are
-still useful: they are how you find out how the real data behaves.
-
-The regression test self-reports: against a server that no longer truncates it skips the guard
-checks and runs the post-fix checks instead. The guard itself only fires when `COUNT(*)` equals
-the cap exactly (all a truncating server can report), so it stands down automatically on a fixed
-server; `KDB_SERVER_ROW_CAP=0` forces it off.
-
-Still open: a release containing the fix, and qtask's pin moving to it. An unfiltered read of a
-collection with more rows than `--max-result-rows` fails loudly rather than truncating; size the
-flag for the largest such read.
+KDB 0.7 fixed it at the source: `WHERE` runs during the scan, and a reply too large to send is
+refused with `RESOURCE_EXHAUSTED` instead of being cut short (since 0.8.0 the bound is 15 MiB).
+The store reads scans a page at a time, so it does not hit that bound either. qtask is pinned to
+v0.8.0, where the guard could never fire, so it is gone along with its setting; the keyed reads
+stay because they are simply faster. `tests/data-kdb-large-namespace.test.ts` keeps the server
+honest past 10,000 documents: selective queries and deletes, collection isolation, and a paged
+read of a collection larger than one reply.
 
 ### B2. No indexes, so reads are linear
 
@@ -270,7 +206,7 @@ before Stage 5.
 
 ### Stage 0 — Prove it on production-shaped data (before touching production)
 
-- `counts` against production (or a restore of it) to settle B1.
+- `counts` against production (or a restore of it), to size the backfill.
 - Run `backfill` and `verify` against a **restored copy** of production Mongo and a scratch KDB.
   This is the first time real data meets the tool: look for documents that fail to round-trip.
 - Take disk timings (B2) with `--durability sync`.
@@ -359,8 +295,8 @@ Rollback: unset `DATA_KDB`, restart. Mongo has every write made since the flip b
 shadow. This is the property that makes the cutover reversible, and it only holds while shadow
 writes stay on.
 
-Exit: 14 days with no rollback trigger. Rollback triggers: any `KdbScanCapError`, shadow `failed`
-growing, `verify` differing, or p95 latency regression the team will not accept.
+Exit: 14 days with no rollback trigger. Rollback triggers: any `RESOURCE_EXHAUSTED`, shadow
+`failed` growing, `verify` differing, or p95 latency regression the team will not accept.
 
 ### Stage 5 — Retire Mongo
 
@@ -378,7 +314,7 @@ a verified KDB backup first.
 | `data-shadow-writes*`, `data-shadow-reads` | Mirroring and comparison behave, including a manufactured divergence |
 | `data-kdb-pushdown` | Pushdown never changes an answer (differential), every schema path is a valid column |
 | `data-kdb-expiry` | Only collections with a Mongo TTL index expire; invites survive |
-| `data-kdb-scan-cap` | Guard, keyed reads and verified deletes against a server past 10,000 documents |
+| `data-kdb-large-namespace` | Selective queries, deletes, collection isolation and paged scans against a server past 10,000 documents |
 | `data-migrate-mongo-to-kdb` | Backfill/verify/counts as an operator runs them, including that verify can fail |
 
 Run with `node --import tsx --test tests/data-*.test.ts`. The KDB suites expect a KDB checkout
@@ -389,7 +325,6 @@ reason when it is absent.
 
 - **No production exposure.** Everything above is a rehearsal. Stage 0 and 2 exist to turn this
   into evidence.
-- **Behaviour past 10,000 documents depends on a KDB change** that is outside this repository.
 - **Performance on disk is unmeasured.** The figures in B2 are in-memory.
 - **Single `kdb-service`.** One service is a single point of failure, as one Mongo is today. KDB's
   peer sync could give a replica; that is not part of this plan.

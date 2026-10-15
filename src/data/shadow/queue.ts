@@ -26,7 +26,8 @@ export interface ShadowStats {
   applied: number;
   /** Operations that reached the shadow and failed. */
   failed: number;
-  /** Operations refused because the queue was full — the shadow is stale by this many. */
+  /** Operations refused because the queue was full, or abandoned by a shutdown that could not
+   *  wait for them — the shadow is stale by this many. */
   dropped: number;
   /** Operations waiting to be applied. */
   pending: number;
@@ -110,6 +111,32 @@ export class ShadowQueue {
     while (this.tasks.length > 0 || this.running) {
       await this.idle;
     }
+  }
+
+  /**
+   * Waits for the queue to empty, but for no longer than `timeoutMs`. Resolves whether it did.
+   * Each operation is bounded by its backend's own timeouts, but a full queue against a backend
+   * that has gone away is a thousand of them back to back - hours, for a shutdown.
+   */
+  async drainWithin(timeoutMs: number): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    try {
+      return await Promise.race([this.drain().then(() => true as const), expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Discards everything not yet started, counting it as dropped. Returns how many. The
+   *  operation already running, if any, is left to its backend to finish or fail. */
+  abandon(): number {
+    const abandoned = this.tasks.length;
+    this.tasks.length = 0;
+    this.dropped += abandoned;
+    return abandoned;
   }
 
   stats(): ShadowStats {

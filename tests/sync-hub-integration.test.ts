@@ -9,7 +9,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request from './helpers/http.js';
 import type { Express } from 'express';
 import { waitForNewestToken } from './helpers/testEmail.ts';
 import { makePeer, type Peer } from './helpers/syncHarness.ts';
@@ -51,11 +51,11 @@ after(async () => {
 async function registerAndVerify(email: string, password = 'password1234') {
   const { testEmailOutbox } = await import('../src/services/emailService.ts');
   const previous = testEmailOutbox.verification.length;
-  await request(app).post('/api/auth/register').send({ email, password, acceptLegal: true }).expect(201);
+  await request(server).post('/api/auth/register').send({ email, password, acceptLegal: true }).expect(201);
   const token = await waitForNewestToken(() => testEmailOutbox.verification, previous);
-  await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
-  const login = await request(app).post('/api/auth/login').send({ email, password }).expect(200);
-  const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`).expect(200);
+  await request(server).post('/api/auth/verify-email').send({ token }).expect(200);
+  const login = await request(server).post('/api/auth/login').send({ email, password }).expect(200);
+  const me = await request(server).get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`).expect(200);
   return { token: login.body.token as string, userId: me.body.user.id as string };
 }
 
@@ -84,9 +84,9 @@ function deviceClient(device: Peer, token: () => string | undefined) {
 
 describe('device <-> hub through the real app', () => {
   it('rejects unauthenticated sync calls', async () => {
-    await request(app).post('/api/sync/hello').send({}).expect(401);
-    await request(app).post('/api/sync/pull').send({}).expect(401);
-    await request(app).post('/api/sync/push').send({ from: 'x', docs: [] }).expect(401);
+    await request(server).post('/api/sync/hello').send({}).expect(401);
+    await request(server).post('/api/sync/pull').send({}).expect(401);
+    await request(server).post('/api/sync/push').send({ from: 'x', docs: [] }).expect(401);
   });
 
   it('syncs offline work up, web edits down, and converges a same-field conflict', async () => {
@@ -116,11 +116,11 @@ describe('device <-> hub through the real app', () => {
     assert.equal((await client.status()).pendingChanges, 0);
 
     // the existing REST API reads the same store, so the web sees the offline work
-    const tasks = await request(app).get('/api/tasks').set('Authorization', `Bearer ${user.token}`).expect(200);
+    const tasks = await request(server).get('/api/tasks').set('Authorization', `Bearer ${user.token}`).expect(200);
     const titles = (tasks.body.tasks as Array<{ title: string }>).map((t) => t.title).sort();
     assert.ok(titles.includes('written on the plane'));
     assert.ok(titles.includes('also on the plane'));
-    const comments = await request(app).get(`/api/tasks/${t1._id}/comments`).set('Authorization', `Bearer ${user.token}`).expect(200);
+    const comments = await request(server).get(`/api/tasks/${t1._id}/comments`).set('Authorization', `Bearer ${user.token}`).expect(200);
     assert.equal(comments.body.comments.length, 1);
 
     // --- a repeat sync is a no-op ----------------------------------------------
@@ -129,7 +129,7 @@ describe('device <-> hub through the real app', () => {
     assert.equal(noop?.pulled, 0);
 
     // --- web edit comes down ---------------------------------------------------
-    await request(app).patch(`/api/tasks/${t2._id}`).set('Authorization', `Bearer ${user.token}`).send({ priority: 'high' }).expect(200);
+    await request(server).patch(`/api/tasks/${t2._id}`).set('Authorization', `Bearer ${user.token}`).send({ priority: 'high' }).expect(200);
     const down = await client.syncNow();
     assert.ok((down?.pulled ?? 0) >= 1);
     assert.equal((await device.inner.collection('tasks').findById(String(t2._id)))?.priority, 'high');
@@ -137,24 +137,24 @@ describe('device <-> hub through the real app', () => {
     // --- same field edited on both sides while apart --------------------------
     await device.store.collection('tasks').updateOne({ _id: t1._id }, { $set: { title: 'device title' } });
     await new Promise((r) => setTimeout(r, 5));
-    await request(app).patch(`/api/tasks/${t1._id}`).set('Authorization', `Bearer ${user.token}`).send({ title: 'web title' }).expect(200);
+    await request(server).patch(`/api/tasks/${t1._id}`).set('Authorization', `Bearer ${user.token}`).send({ title: 'web title' }).expect(200);
     const merged = await client.syncNow();
     assert.ok(merged);
     await client.syncNow();
-    const webTitle = (await request(app).get(`/api/tasks/${t1._id}`).set('Authorization', `Bearer ${user.token}`).expect(200)).body.task.title;
+    const webTitle = (await request(server).get(`/api/tasks/${t1._id}`).set('Authorization', `Bearer ${user.token}`).expect(200)).body.task.title;
     const deviceTitle = (await device.inner.collection('tasks').findById(String(t1._id)))?.title;
     assert.equal(webTitle, 'web title', 'later write wins on the hub');
     assert.equal(deviceTitle, 'web title', 'and on the device');
 
     // the loser is in the activity log both can read
-    const activity = await request(app).get(`/api/tasks/${t1._id}/activity`).set('Authorization', `Bearer ${user.token}`).expect(200);
+    const activity = await request(server).get(`/api/tasks/${t1._id}/activity`).set('Authorization', `Bearer ${user.token}`).expect(200);
     const entries = JSON.stringify(activity.body);
     assert.match(entries, /sync_conflict|device title/);
     const deviceLog = await device.inner.collection('activities').find({ action: 'sync_conflict' });
     assert.equal(deviceLog.length, 1);
 
     // --- delete on the web removes it from the device --------------------------
-    await request(app).delete(`/api/tasks/${t2._id}`).set('Authorization', `Bearer ${user.token}`).expect(204);
+    await request(server).delete(`/api/tasks/${t2._id}`).set('Authorization', `Bearer ${user.token}`).expect(204);
     await client.syncNow();
     assert.equal(await device.inner.collection('tasks').findById(String(t2._id)), null);
   });
@@ -162,8 +162,8 @@ describe('device <-> hub through the real app', () => {
   it('keeps one user\'s documents out of another user\'s device', async () => {
     const owner = await registerAndVerify('sync-owner@example.com');
     const other = await registerAndVerify('sync-other@example.com');
-    const projectRes = await request(app).post('/api/projects').set('Authorization', `Bearer ${owner.token}`).send({ name: 'Private' }).expect(201);
-    await request(app).post('/api/tasks').set('Authorization', `Bearer ${owner.token}`).send({ title: 'secret', projectId: projectRes.body.project._id }).expect(201);
+    const projectRes = await request(server).post('/api/projects').set('Authorization', `Bearer ${owner.token}`).send({ name: 'Private' }).expect(201);
+    await request(server).post('/api/tasks').set('Authorization', `Bearer ${owner.token}`).send({ title: 'secret', projectId: projectRes.body.project._id }).expect(201);
 
     const device = await makePeer('other-phone');
     const client = deviceClient(device, () => other.token);
@@ -179,12 +179,12 @@ describe('device <-> hub through the real app', () => {
   it('enforces collaborator roles on push', async () => {
     const owner = await registerAndVerify('sync-role-owner@example.com');
     const viewer = await registerAndVerify('sync-role-viewer@example.com');
-    const projectRes = await request(app).post('/api/projects').set('Authorization', `Bearer ${owner.token}`).send({ name: 'Roles' }).expect(201);
+    const projectRes = await request(server).post('/api/projects').set('Authorization', `Bearer ${owner.token}`).send({ name: 'Roles' }).expect(201);
     const projectId = projectRes.body.project._id as string;
-    const taskRes = await request(app).post('/api/tasks').set('Authorization', `Bearer ${owner.token}`).send({ title: 'read only for viewers', projectId }).expect(201);
+    const taskRes = await request(server).post('/api/tasks').set('Authorization', `Bearer ${owner.token}`).send({ title: 'read only for viewers', projectId }).expect(201);
     const taskId = taskRes.body.task._id as string;
-    const invite = await request(app).post(`/api/projects/${projectId}/collaborators`).set('Authorization', `Bearer ${owner.token}`).send({ email: 'sync-role-viewer@example.com', role: 'viewer' }).expect(201);
-    await request(app).post(`/api/invites/${invite.body.invite._id}/accept`).set('Authorization', `Bearer ${viewer.token}`).expect(200);
+    const invite = await request(server).post(`/api/projects/${projectId}/collaborators`).set('Authorization', `Bearer ${owner.token}`).send({ email: 'sync-role-viewer@example.com', role: 'viewer' }).expect(201);
+    await request(server).post(`/api/invites/${invite.body.invite._id}/accept`).set('Authorization', `Bearer ${viewer.token}`).expect(200);
 
     const device = await makePeer('viewer-phone');
     const client = deviceClient(device, () => viewer.token);
@@ -194,7 +194,7 @@ describe('device <-> hub through the real app', () => {
     await device.store.collection('tasks').updateOne({ _id: taskId }, { $set: { title: 'viewer rewrote it' } });
     const result = await client.syncNow();
     assert.ok((result?.rejected.length ?? 0) >= 1, 'viewer push was refused');
-    const onHub = await request(app).get(`/api/tasks/${taskId}`).set('Authorization', `Bearer ${owner.token}`).expect(200);
+    const onHub = await request(server).get(`/api/tasks/${taskId}`).set('Authorization', `Bearer ${owner.token}`).expect(200);
     assert.equal(onHub.body.task.title, 'read only for viewers');
   });
 

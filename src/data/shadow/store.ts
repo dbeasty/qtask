@@ -396,13 +396,15 @@ export class ShadowDataStore implements DataStore {
   private readonly queue: ShadowQueue;
 
   private readonly reads: ReadComparison | undefined;
+  private readonly drainTimeoutMs: number;
 
   constructor(
     private readonly primary: DataStore,
     private readonly shadow: DataStore,
-    options: { maxPending?: number; compareReads?: boolean; readSampleRate?: number } = {}
+    options: { maxPending?: number; compareReads?: boolean; readSampleRate?: number; drainTimeoutMs?: number } = {}
   ) {
     this.queue = new ShadowQueue(options.maxPending);
+    this.drainTimeoutMs = options.drainTimeoutMs ?? 10_000;
     this.reads = options.compareReads
       ? new ReadComparison(options.readSampleRate ?? 1)
       : undefined;
@@ -435,8 +437,18 @@ export class ShadowDataStore implements DataStore {
 
   async disconnect(): Promise<void> {
     // Drain first: a queued write that never landed is a divergence that would be
-    // blamed on the backend at the next comparison.
-    await this.queue.drain();
+    // blamed on the backend at the next comparison. But not for ever: with a backend
+    // already gone (a primary shut down first, a shadow that stopped answering) every
+    // queued operation waits out its own timeout, and shutdown would wait on all of them.
+    // Whatever is left at the deadline is abandoned and counted, and closing the stores
+    // fails the one in flight.
+    if (!(await this.queue.drainWithin(this.drainTimeoutMs))) {
+      const abandoned = this.queue.abandon();
+      log.warn('shadow queue did not drain before disconnect; abandoning the rest', {
+        drainTimeoutMs: this.drainTimeoutMs,
+        abandoned,
+      });
+    }
     await Promise.allSettled([this.primary.disconnect(), this.shadow.disconnect()]);
   }
 

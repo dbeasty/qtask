@@ -11,6 +11,7 @@ import {
   resetMcpTestData,
   stageWriteWithMeta,
 } from './helpers/mcp.js';
+import { serve } from './helpers/http.js';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-mcp-session-jwt-secret';
@@ -24,7 +25,7 @@ before(async () => {
   process.env.MONGODB_URI = mongo.getUri();
 
   const { createApp } = await import('../src/app.js');
-  app = await createApp({ connect: true, startWorker: false });
+  app = await serve(await createApp({ connect: true, startWorker: false }));
 });
 
 beforeEach(async () => {

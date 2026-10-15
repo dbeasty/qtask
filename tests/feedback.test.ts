@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 import type { VisionCheckResult } from '../src/services/feedbackVisionService.js';
 
@@ -112,9 +112,9 @@ before(async () => {
   startFeedbackVisionWorker = startWorker;
   stopFeedbackVisionWorker = stopWorker;
 
-  app = await createApp({ connect: true, startWorker: false });
+  app = await serve(await createApp({ connect: true, startWorker: false }));
   startFeedbackVisionWorker();
-  adminApp = await createAdminApp({ connect: false, serveClient: false });
+  adminApp = await serve(await createAdminApp({ connect: false, serveClient: false }));
 
   const { UserModel } = await import('../src/models/index.js');
   const bcrypt = (await import('bcryptjs')).default;

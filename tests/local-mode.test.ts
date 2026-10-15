@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import request from 'supertest';
+import request, { serve, type Test } from './helpers/http.js';
 import type { Express } from 'express';
 
 process.env.NODE_ENV = 'test';
@@ -144,14 +144,14 @@ describe('the local-mode app', () => {
     process.env.QTASK_DEVICE_TOKEN = TOKEN;
     process.env.QTASK_DATA_DIR = dir;
     const { createApp } = await import('../src/app.js');
-    app = await createApp({ connect: false, startWorker: false });
+    app = await serve(await createApp({ connect: false, startWorker: false }));
   });
   after(() => {
     delete process.env.QTASK_LOCAL;
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const authed = (req: request.Test) => req.set(DEVICE_TOKEN_HEADER, TOKEN);
+  const authed = (req: Test) => req.set(DEVICE_TOKEN_HEADER, TOKEN);
 
   it('rejects every request that lacks the device token', async () => {
     for (const p of ['/health', '/api/version', '/api/tasks', '/api/auth/me', '/']) {
@@ -211,7 +211,7 @@ describe('online mode is unchanged', () => {
   it('serves /api/version with mode "online" and no device token', async () => {
     delete process.env.QTASK_LOCAL;
     const { createApp } = await import('../src/app.js');
-    const app = await createApp({ connect: false, startWorker: false });
+    const app = await serve(await createApp({ connect: false, startWorker: false }));
     const res = await request(app).get('/api/version').expect(200);
     assert.equal(res.body.mode, 'online');
     // Sign-in is mounted: a bad body is a validation error, not a 404.

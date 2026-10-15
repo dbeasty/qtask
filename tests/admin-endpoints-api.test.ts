@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 
 process.env.NODE_ENV = 'test';
@@ -24,7 +24,7 @@ before(async () => {
   // Boot through the app's own lifecycle rather than opening a driver connection
   // by hand: the data layer, not Mongoose, is what the services talk to now, and
   // connecting the driver alone leaves the store uninitialized.
-  adminApp = await createAdminApp({ connect: true, serveClient: false });
+  adminApp = await serve(await createAdminApp({ connect: true, serveClient: false }));
 });
 
 after(async () => {

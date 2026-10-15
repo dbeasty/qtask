@@ -102,9 +102,8 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
     const fields = new Set<string>();
 
     for await (const page of pages(mongo, name)) {
-      // Keyed reads, not a scan: KDB's SQL scans stop at 10,000 documents (blocker B1
-      // in docs/KDB_MIGRATION.md), and a verifier that silently looks at a prefix
-      // would report a clean bill of health for data it never saw.
+      // Keyed reads, one per Mongo document: what gets checked is exactly what Mongo
+      // holds, however the two stores happen to order or page a listing.
       const copies = new Map<string, Doc>();
       await inChunks(page, CONCURRENCY, async (doc) => {
         const copy = await target.findById(doc._id as string);
@@ -123,20 +122,10 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
     }
 
     const mongoCount = await mongo.collection(name).countDocuments({});
-    // Surplus can only be found by listing KDB, which the scan cap can forbid. Say so
-    // rather than report extra=0: "could not look" is not "nothing there".
-    let kdbCount: number | string;
-    let extra: number | string;
-    try {
-      kdbCount = await target.countDocuments({});
-      // Extras are expected to be small and transient while shadow writes are on (a
-      // delete mirrored after the scan above); a persistent surplus is a real finding.
-      extra = Math.max(0, kdbCount - (mongoCount - missing));
-    } catch (error) {
-      if ((error as Error).name !== 'KdbScanCapError') throw error;
-      kdbCount = 'unknown';
-      extra = 'unknown';
-    }
+    const kdbCount = await target.countDocuments({});
+    // Extras are expected to be small and transient while shadow writes are on (a
+    // delete mirrored after the scan above); a persistent surplus is a real finding.
+    const extra = Math.max(0, kdbCount - (mongoCount - missing));
     const ok = missing === 0 && differing.length === 0 && extra === 0;
     if (!ok) bad++;
 
@@ -151,19 +140,15 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
   return bad;
 }
 
-/** Reads only MongoDB. Answers "will this fit under KDB's scan cap?" before any KDB exists. */
+/** Reads only MongoDB. Sizes the backfill before any KDB exists. */
 async function counts(mongo: MongoDataStore, names: CollectionName[]): Promise<void> {
-  const SCAN_CAP = 10_000;
   let total = 0;
   for (const name of names) {
     const n = await mongo.collection(name).countDocuments({});
     total += n;
     console.log(`${String(n).padStart(9)}  ${name}`);
   }
-  console.log(`${String(total).padStart(9)}  TOTAL  (kdb-service v0.6.2 scans at most ${SCAN_CAP} documents per namespace, and holds every collection in one)`);
-  if (total >= SCAN_CAP) {
-    console.log('PAST THE CAP: blocker B1 in docs/KDB_MIGRATION.md applies - do not read-flip until it is resolved.');
-  }
+  console.log(`${String(total).padStart(9)}  TOTAL`);
 }
 
 async function main(): Promise<void> {

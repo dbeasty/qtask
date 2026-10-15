@@ -2,7 +2,7 @@ import { after, before, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 
 process.env.NODE_ENV = 'test';
@@ -19,7 +19,7 @@ before(async () => {
   originalFetch = globalThis.fetch;
 
   const { createApp } = await import('../src/app.js');
-  app = await createApp({ connect: true, startWorker: false });
+  app = await serve(await createApp({ connect: true, startWorker: false }));
 });
 
 after(async () => {
