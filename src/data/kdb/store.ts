@@ -316,24 +316,36 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     // Pushdown only ever narrows: the caller re-checks every row with the shared
     // engine, so a clause the server cannot express is just left to that check.
     const pushed = config.kdb.pushdown ? buildWhere(filter) : null;
+    // A filter naming documents by id (`{_id: {$in: [...]}}`) is a keyed lookup, whatever else it
+    // says and whether or not pushdown is on, the same way fetchById is. It is sent as the id
+    // predicate alone: kdb-service v0.8.0 answers `kdb_id IN (...)` by key, but stops doing so once
+    // another conjunct comes first (`_c = ? AND kdb_id IN (...)` read the whole namespace: 2.7 s
+    // instead of 6 ms for 100 ids at 27,000 documents). The collection is checked here instead.
+    const keyed = isPlainObject(filter._id) && Array.isArray((filter._id as Doc).$in) ? buildWhere({ _id: filter._id }) : null;
     const docs: T[] = [];
-    const pages = this.client().queryRawPages(
-      this.namespace,
-      `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
-      [this.name, ...(pushed?.args ?? [])],
-      SCAN_PAGE_ROWS
-    );
+    const pages = keyed
+      ? this.client().queryRawPages(this.namespace, `SELECT kdb_id, _doc FROM ${this.table} WHERE ${keyed.sql}`, keyed.args, SCAN_PAGE_ROWS)
+      : this.client().queryRawPages(
+          this.namespace,
+          `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
+          [this.name, ...(pushed?.args ?? [])],
+          SCAN_PAGE_ROWS
+        );
     for await (const { rows } of pages) {
       for (const row of rows) {
         const json = row[1];
         if (!json) continue;
+        let stored: Doc;
         try {
-          docs.push(this.decode(JSON.parse(json) as Doc));
+          stored = JSON.parse(json) as Doc;
         } catch {
           // A document that will not parse is corruption, not a query result. Skipping
           // it would hide that; failing the whole read makes it visible immediately.
           throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
         }
+        // Ids are unique across the namespace, but a collection never serves another's document.
+        if (keyed && stored._c !== this.name) continue;
+        docs.push(this.decode(stored));
       }
     }
     // A scan has no inherent order. MongoDB's natural order is insertion order, which ObjectId
@@ -393,6 +405,10 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (typeof filter._id === 'string') {
       const doc = await this.fetchById(filter._id);
       return doc && matchesFilter(doc, filter) ? [doc] : [];
+    }
+    // `_id: {$in: []}` matches nothing, whatever the rest says; no need to read the collection.
+    if (isPlainObject(filter._id) && Array.isArray((filter._id as Doc).$in) && ((filter._id as Doc).$in as unknown[]).length === 0) {
+      return [];
     }
     const docs = await this.scan(filter);
     return docs.filter((doc) => matchesFilter(doc, filter));
@@ -896,8 +912,13 @@ export class KdbDataStore implements DataStore {
    *    `userId` is declared by a dozen collections and created once.
    *  - BTREE for Date and Number paths (ranges, ordering), HASH otherwise. KDB's indexes see
    *    through arrays (`projectIds`, `collaborators.userId`) as Mongo's multikey indexes do.
-   *  - Unique, TTL and text indexes are not lookups: constraints and expiry are declared
-   *    separately, and text search is done by the application.
+   *  - A unique index is a lookup too (a login finds its user by email, every MCP request its key
+   *    by keyHash), so its leading field is indexed like any other; the constraint itself is
+   *    declared separately (declareConstraints), on a synthetic field. TTL indexes became server
+   *    expiry, and text search is done by the application.
+   *  - `_c`, the collection discriminator every query carries: without it, reading a small
+   *    collection examines the whole namespace (measured: every collection's unfiltered read cost
+   *    the same as reading all 27,000 documents of a rehearsal dataset).
    *
    * Idempotent: stating an index the server already holds is the normal case after the first start.
    * Indexes only change cost, never an answer, so a server without them still returns the same rows.
@@ -1033,14 +1054,14 @@ function sharedArrayPrefix(schema: Schema, fields: string[]): string | undefined
  * MongoDB index maps onto KDB's). Exported for the tests that check what the store asks for.
  */
 export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
-  const wanted = new Map<string, 'HASH' | 'BTREE'>();
+  const wanted = new Map<string, 'HASH' | 'BTREE'>([['_c', 'HASH']]);
   for (const name of Object.keys(MODEL_BY_COLLECTION) as CollectionName[]) {
     const model = mongoose.models[MODEL_BY_COLLECTION[name]];
     if (!model) continue;
     const schema = model.schema as unknown as Schema;
     const declared = (schema as unknown as { indexes(): Array<[Record<string, unknown>, Record<string, unknown>?]> }).indexes();
     for (const [fields, options] of declared) {
-      if (options?.unique || options?.expireAfterSeconds !== undefined) continue;
+      if (options?.expireAfterSeconds !== undefined) continue;
       const keys = Object.keys(fields);
       if (keys.length === 0 || keys.some((key) => fields[key] === 'text')) continue;
       const lead = keys[0]!;

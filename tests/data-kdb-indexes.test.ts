@@ -47,12 +47,18 @@ describe('which indexes the store asks KDB for', () => {
     // Dates and numbers are ordered, so ranges can use them.
     assert.equal(wanted.get('startedAt'), 'BTREE');
     assert.equal(wanted.get('expiresAt'), 'BTREE', 'an invite\'s plain expiresAt index (the TTL ones are expiry, not lookups)');
-    // Not lookups: text search is the application's, uniqueness and expiry are declared elsewhere.
+    // Not lookups: text search is the application's, and TTL indexes became server expiry.
     for (const path of ['title', 'description', 'body', 'name', 'notes']) {
       assert.equal(wanted.has(path), false, `${path} is a text index in Mongo`);
     }
-    assert.equal(wanted.has('email'), false, 'a unique index is a constraint, not a lookup index');
-    assert.equal(wanted.has('codeHash'), false);
+    // A unique field is looked up too (login by email, every MCP request by keyHash): the
+    // constraint is declared separately, the lookup is an ordinary index.
+    assert.equal(wanted.get('email'), 'HASH');
+    assert.equal(wanted.get('keyHash'), 'HASH');
+    assert.equal(wanted.get('codeHash'), 'HASH');
+    // The collection discriminator every query carries, so a small collection is not read by
+    // examining the whole namespace.
+    assert.equal(wanted.get('_c'), 'HASH');
   });
 
   it('never asks for the same path twice', async () => {
@@ -157,6 +163,19 @@ describe('indexes on a real kdb-service', { skip }, () => {
       assert.equal(await source.countDocuments(filter), expected.length);
     });
   }
+
+  it('reads documents named by id with a keyed lookup, never another collection\'s', async () => {
+    const someTasks = every.tasks!.slice(0, 5).map((d) => d._id as string);
+    const aProject = every.projects![0]!._id as string;
+    // Pushdown off or on, an `_id: {$in}` filter is answered by key; a project id among task ids
+    // must not come back from the tasks collection.
+    const found = await tasks.find({ _id: { $in: [...someTasks, aProject, '6a0000000000000000000000'] } });
+    assert.deepEqual(found.map((d) => d._id).sort(), [...someTasks].sort());
+    assert.equal(await tasks.countDocuments({ _id: { $in: someTasks }, status: 'todo' }), every.tasks!.filter((d) => someTasks.includes(d._id as string) && d.status === 'todo').length);
+    assert.deepEqual(await tasks.find({ _id: { $in: [] } }), []);
+    assert.equal(await tasks.countDocuments({}), every.tasks!.length, 'an unfiltered count is the server\'s COUNT(*) for the collection');
+    assert.equal(await projects.countDocuments({}), every.projects!.length);
+  });
 
   it('keeps an index current as documents change', async () => {
     const created = await tasks.create({ userId: 'idx-mover', title: 'moves', status: 'todo', projectIds: ['px'] });
