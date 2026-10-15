@@ -19,6 +19,8 @@ import { RegisterPage } from './pages/RegisterPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { TasksPage } from './pages/TasksPage';
 import { SearchPage } from './pages/SearchPage';
+import { DevicesPage } from './pages/DevicesPage';
+import { localSync } from './api/localSync';
 import type { Selection } from './components/TaskHierarchyTree';
 import { TermsPage } from './pages/TermsPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
@@ -26,6 +28,7 @@ import { WelcomePage } from './pages/WelcomePage';
 import { NotificationBell } from './components/NotificationBell';
 import { InviteAcceptPage } from './pages/InviteAcceptPage';
 import { checkHealth, listInvites, listProjects } from './api/client';
+import { ensureLocalSession, isLocalMode } from './runtime';
 import {
   captureInviteTokenFromUrl,
   clearPendingInviteToken,
@@ -46,7 +49,7 @@ import {
 import '../../shared/theme-tokens.css';
 import './styles.css';
 
-type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about';
+type View = 'projects' | 'agent' | 'tasks' | 'search' | 'help' | 'about' | 'devices';
 
 interface SessionRestore {
   tasks?: {
@@ -132,8 +135,13 @@ export function App() {
   const taskLinkCapturedRef = useRef(false);
   const [sessionRestore, setSessionRestore] = useState<SessionRestore | null>(null);
   const [agentWorking, setAgentWorking] = useState(false);
+  const [newProjectRequest, setNewProjectRequest] = useState(0);
+  const [pairRequest, setPairRequest] = useState(0);
 
   const preferences = getUserPreferences(user);
+  // The Mac app runs offline with no account: hide what needs a server, a network or
+  // other people (agent, invites and notifications, feedback, MCP, passwords, sign-out).
+  const local = isLocalMode();
 
   const setAppView = useCallback((next: View) => {
     setView(next);
@@ -147,12 +155,13 @@ export function App() {
   }, []);
 
   const refreshPendingInvites = useCallback(() => {
+    if (local) return;
     listInvites('pending')
       .then(({ invites }) => setPendingInviteCount(invites.length))
       .catch(() => {
         // optional shell chrome
       });
-  }, []);
+  }, [local]);
 
   const handleTourComplete = useCallback(async () => {
     setShowTourPrompt(false);
@@ -289,7 +298,8 @@ export function App() {
 
     const prefs = getUserPreferences(user);
     const session = getAppSessionState();
-    const startupView = resolveStartupView(prefs.startupView, session);
+    const resolvedView = resolveStartupView(prefs.startupView, session);
+    const startupView = local && resolvedView === 'agent' ? 'projects' : resolvedView;
 
     defaultViewSetRef.current = true;
     setView(startupView);
@@ -315,7 +325,8 @@ export function App() {
     }
     if (!defaultViewSetRef.current || tourPromptCheckedRef.current) return;
     tourPromptCheckedRef.current = true;
-    if (!getUserPreferences(user).completedDemoTour) {
+    // The tour is driven through the AI agent, which a local device does not have.
+    if (!local && !getUserPreferences(user).completedDemoTour) {
       setShowTourPrompt(true);
     }
   }, [user]);
@@ -380,6 +391,80 @@ export function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [user, searchQuery]);
+
+  // Device sync (Mac app): when another device's changes are applied here, reload the
+  // task and project views. A long poll on the backend's revision counter: it answers as
+  // soon as a sync applied something (or after 25 s with nothing). When the device's owner
+  // changed (it signed in, or adopted a paired device's account) the session is renewed.
+  useEffect(() => {
+    if (!user || !local) return;
+    const controller = new AbortController();
+    let stopped = false;
+    void (async () => {
+      let revision: number | undefined;
+      let ownerRevision: number | undefined;
+      while (!stopped) {
+        try {
+          const next = await localSync.revision(revision, revision === undefined ? 0 : 25_000, controller.signal);
+          if (ownerRevision !== undefined && next.ownerRevision !== ownerRevision) {
+            await ensureLocalSession();
+            window.location.reload();
+            return;
+          }
+          if (revision !== undefined && next.revision !== revision) {
+            setTasksVersion((v) => v + 1);
+            setProjectsVersion((v) => v + 1);
+          }
+          revision = next.revision;
+          ownerRevision = next.ownerRevision;
+        } catch {
+          if (stopped) return;
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+      }
+    })();
+    return () => {
+      stopped = true;
+      controller.abort();
+    };
+  }, [user, local]);
+
+  // Menu commands from the Mac app (File > New Task, Find, ...). The bridge turns the
+  // native message into a `qtask:command` event; on the web nothing ever dispatches it.
+  useEffect(() => {
+    if (!user) return;
+    const onCommand = (event: Event) => {
+      const command = (event as CustomEvent<string>).detail;
+      if (command === 'new-task') {
+        const projectId = activeProjectIdRef.current;
+        if (projectId) {
+          setPendingCreateForProjectId(projectId);
+          setAppView('tasks');
+        } else {
+          setAppView('projects');
+        }
+      } else if (command === 'new-project') {
+        setAppView('projects');
+        setNewProjectRequest((n) => n + 1);
+      } else if (command === 'find') {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      } else if (command === 'view-projects') {
+        setAppView('projects');
+      } else if (command === 'view-tasks') {
+        setAppView('tasks');
+      } else if (command === 'view-devices' && local) {
+        setAppView('devices');
+      } else if (command === 'pair-device' && local) {
+        setAppView('devices');
+        setPairRequest((n) => n + 1);
+      } else if (command === 'sync-now' && local) {
+        void localSync.syncNow().catch(() => undefined);
+      }
+    };
+    window.addEventListener('qtask:command', onCommand);
+    return () => window.removeEventListener('qtask:command', onCommand);
+  }, [user, setAppView, local]);
 
   if (loading) {
     return (
@@ -540,13 +625,15 @@ export function App() {
             />
           </div>
           <div className="header-user">
-            <NotificationBell
-              onInvitesChanged={() => {
-                refreshPendingInvites();
-                handleProjectsChanged();
-              }}
-              onOpenTask={openTaskFromShell}
-            />
+            {local ? null : (
+              <NotificationBell
+                onInvitesChanged={() => {
+                  refreshPendingInvites();
+                  handleProjectsChanged();
+                }}
+                onOpenTask={openTaskFromShell}
+              />
+            )}
             <button
               ref={userMenuTriggerRef}
               type="button"
@@ -568,12 +655,12 @@ export function App() {
                 onChangePassword={() => setChangePasswordOpen(true)}
                 onOpenMcpSettings={() => setMcpSettingsOpen(true)}
                 onOpenHelp={() => setView('help')}
-                onStartTour={handleStartTour}
+                onStartTour={local ? undefined : handleStartTour}
                 onOpenFeedback={() => {
                   setFeedbackDialogOpen(true);
                   setUserMenuOpen(false);
                 }}
-                feedbackEnabled={feedbackEnabled}
+                feedbackEnabled={feedbackEnabled && !local}
                 onOpenAbout={() => setView('about')}
                 onUpdateDisplayName={(displayName) => updateProfile({ displayName })}
                 onUpdatePreferences={updatePreferences}
@@ -585,16 +672,20 @@ export function App() {
         </div>
 
         <div className="header-row header-row-bottom">
-          <p className="header-tagline muted">AI-native task management · MCP server</p>
+          <p className="header-tagline muted">
+            {local ? 'Works offline · your tasks live on this Mac and your paired devices' : 'AI-native task management · MCP server'}
+          </p>
           <nav className="header-views-nav" aria-label="Views" data-demo-step="header-views">
             <span className="header-views-label">Views</span>
-            <button
-              type="button"
-              className={`${view === 'agent' ? 'nav-active' : ''}${agentWorking ? ' nav-working' : ''}`}
-              onClick={() => setAppView('agent')}
-            >
-              Agent{agentWorking ? '…' : ''}
-            </button>
+            {local ? null : (
+              <button
+                type="button"
+                className={`${view === 'agent' ? 'nav-active' : ''}${agentWorking ? ' nav-working' : ''}`}
+                onClick={() => setAppView('agent')}
+              >
+                Agent{agentWorking ? '…' : ''}
+              </button>
+            )}
             <button
               type="button"
               className={view === 'projects' ? 'nav-active' : ''}
@@ -609,6 +700,15 @@ export function App() {
             >
               Tasks
             </button>
+            {local ? (
+              <button
+                type="button"
+                className={view === 'devices' ? 'nav-active' : ''}
+                onClick={() => setAppView('devices')}
+              >
+                Devices
+              </button>
+            ) : null}
           </nav>
         </div>
       </header>
@@ -627,6 +727,7 @@ export function App() {
       ) : null}
 
       <main>
+        {local ? null : (
         <div className={view === 'agent' ? 'view-panel' : 'view-panel view-panel--hidden'}>
           <AgentPage
             editsDisabled={deploymentReadOnly}
@@ -656,6 +757,7 @@ export function App() {
             onAgentWorkingChange={setAgentWorking}
           />
         </div>
+        )}
         {view === 'projects' ? (
           <ProjectsPage
             editsDisabled={deploymentReadOnly}
@@ -681,6 +783,7 @@ export function App() {
             onTasksChanged={handleTasksChanged}
             onProjectsChanged={handleProjectsChanged}
             externalRefreshKey={projectsVersion}
+            newProjectRequest={newProjectRequest}
             restoredListExpanded={sessionRestore?.projects?.listExpanded}
             onSessionRestoreConsumed={sessionRestore ? handleSessionRestoreConsumed : undefined}
           />
@@ -700,9 +803,9 @@ export function App() {
         ) : view === 'help' ? (
           <HelpPage
             onBack={() => setAppView('projects')}
-            onStartTour={handleStartTour}
-            onOpenFeedback={feedbackEnabled ? () => setFeedbackDialogOpen(true) : undefined}
-            feedbackEnabled={feedbackEnabled}
+            onStartTour={local ? undefined : handleStartTour}
+            onOpenFeedback={feedbackEnabled && !local ? () => setFeedbackDialogOpen(true) : undefined}
+            feedbackEnabled={feedbackEnabled && !local}
           />
         ) : view === 'about' ? (
           <AboutPage
@@ -711,6 +814,8 @@ export function App() {
             aiVersion={aiVersion}
             onBack={() => setAppView('projects')}
           />
+        ) : view === 'devices' && local ? (
+          <DevicesPage pairRequest={pairRequest} onBack={() => setAppView('projects')} />
         ) : view === 'tasks' ? (
           <TasksPage
             editsDisabled={deploymentReadOnly}

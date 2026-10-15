@@ -77,7 +77,7 @@ interface KdbClient {
   close(): Promise<void>;
 }
 
-type ConnectFn = (addr: string, options: { token?: string }) => Promise<KdbClient>;
+type ConnectFn = (addr: string, options: { token?: string; requestTimeoutMs?: number }) => Promise<KdbClient>;
 
 /**
  * Rows per page of a collection scan. Each page is one reply, and a reply over 15 MiB encoded is
@@ -751,12 +751,20 @@ export class KdbDataStore implements DataStore {
   async connect(): Promise<void> {
     const { connect } = await loadClient();
     capCheck.at = undefined;
-    this.client = new SerializedDmlClient(await connect(
-        config.kdb.addr,
-        // An options object: passed as a bare string the token was silently dropped, and every
-        // connection to a server with access control would have been anonymous.
-        config.kdb.token ? { token: config.kdb.token } : {}
-      ));
+    // KDB_REQUEST_TIMEOUT_MS raises the client's per-request deadline (30 s by default).
+    // The Mac app sets it: opening a store with a few thousand documents can make the
+    // first request wait longer than that while kdb-service recovers, and a timeout there
+    // is a failed launch rather than a slow one.
+    const timeout = Number(process.env.KDB_REQUEST_TIMEOUT_MS);
+    this.client = new SerializedDmlClient(
+      await connect(config.kdb.addr, {
+        // Always an options object: a bare string as the second argument is read as options
+        // with no token, so the token was silently dropped and every connection to a server
+        // with access control would have been anonymous.
+        ...(config.kdb.token ? { token: config.kdb.token } : {}),
+        ...(Number.isFinite(timeout) && timeout > 0 ? { requestTimeoutMs: timeout } : {}),
+      })
+    );
     if (config.kdb.declareConstraints || config.kdb.declareIndexes) {
       try {
         if (config.kdb.declareConstraints) await this.declareConstraints();

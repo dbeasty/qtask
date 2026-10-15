@@ -109,7 +109,7 @@ export type CollectionName =
  * `collection` is the only way in.
  */
 export interface DataStore {
-  readonly backend: 'mongo' | 'kdb';
+  readonly backend: 'mongo' | 'kdb' | 'memory';
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Resolves when the backend answers; rejects when it is down or not connected. For /health. */
