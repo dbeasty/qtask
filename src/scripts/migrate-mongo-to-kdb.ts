@@ -46,6 +46,8 @@ export const ALL_COLLECTIONS = Object.keys(MODEL_BY_COLLECTION) as CollectionNam
 
 const PAGE = 500;
 const CONCURRENCY = 16;
+/** Keyed reads in flight during verify. */
+const VERIFY_CONCURRENCY = 64;
 /**
  * One import commit carries at most this many documents and this many bytes of JSON. The byte bound
  * is about reads, not the 16 MiB wire frame: kdb-service v0.8.0 stores a commit as one compressed
@@ -168,15 +170,13 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
     const fields = new Set<string>();
 
     for await (const page of pages(mongo, name)) {
-      // Keyed reads, not a scan of the collection: the page's ids as one `kdb_id IN (...)` lookup
-      // (pushdown is forced on in main), so the cost follows the page, not the namespace.
+      // Keyed reads, many in flight, not SQL: the cost follows the page, not the namespace, and the
+      // server never holds more than one document per request. (An `IN (...)` of 500 ids per
+      // statement was tried: on 100,000 tasks with embeddings kdb-service v0.8.0 grew past a 4 GiB
+      // container limit and was OOM-killed, --memory-budget-mb notwithstanding; keyed gets read the
+      // same 100,000 tasks in 13 s at 761 MiB.)
       const copies = new Map<string, Doc>();
-      for (const copy of await target.find({ _id: { $in: page.map((doc) => doc._id as string) } })) {
-        copies.set(copy._id as string, copy);
-      }
-      // Whatever that did not return is asked for again by key, one at a time: "missing" is a
-      // finding, so it must not rest on a single query's answer.
-      await inChunks(page.filter((doc) => !copies.has(doc._id as string)), CONCURRENCY, async (doc) => {
+      await inChunks(page, VERIFY_CONCURRENCY, async (doc) => {
         const copy = await target.findById(doc._id as string);
         if (copy) copies.set(doc._id as string, copy);
       });

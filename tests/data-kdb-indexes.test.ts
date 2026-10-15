@@ -173,6 +173,12 @@ describe('indexes on a real kdb-service', { skip }, () => {
     assert.deepEqual(found.map((d) => d._id).sort(), [...someTasks].sort());
     assert.equal(await tasks.countDocuments({ _id: { $in: someTasks }, status: 'todo' }), every.tasks!.filter((d) => someTasks.includes(d._id as string) && d.status === 'todo').length);
     assert.deepEqual(await tasks.find({ _id: { $in: [] } }), []);
+    // More ids than one statement carries (100): every batch is asked, nothing is lost or repeated.
+    const many = [...every.tasks!.map((d) => d._id as string), ...every.projects!.map((d) => d._id as string),
+      ...Array.from({ length: 30 }, (_, i) => '6c' + String(i).padStart(22, '0'))];
+    assert.ok(many.length > 150);
+    const all = await tasks.find({ _id: { $in: many } });
+    assert.deepEqual(all.map((d) => d._id).sort(), every.tasks!.map((d) => d._id).sort());
     assert.equal(await tasks.countDocuments({}), every.tasks!.length, 'an unfiltered count is the server\'s COUNT(*) for the collection');
     assert.equal(await projects.countDocuments({}), every.projects!.length);
   });

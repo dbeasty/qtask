@@ -89,6 +89,9 @@ type ConnectFn = (addr: string, options: { token?: string; requestTimeoutMs?: nu
  */
 const SCAN_PAGE_ROWS = 2_000;
 
+/** Ids per keyed `kdb_id IN (...)` statement (see scan). */
+const KEYED_BATCH = 100;
+
 /**
  * The client's `exec` is two round trips on one shared session per namespace - run the DML, then
  * commit whatever the session holds - with nothing to stop two callers interleaving them. Two
@@ -356,17 +359,25 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     // predicate alone: kdb-service v0.8.0 answers `kdb_id IN (...)` by key, but stops doing so once
     // another conjunct comes first (`_c = ? AND kdb_id IN (...)` read the whole namespace: 2.7 s
     // instead of 6 ms for 100 ids at 27,000 documents). The collection is checked here instead.
-    const keyed = isPlainObject(filter._id) && Array.isArray((filter._id as Doc).$in) ? buildWhere({ _id: filter._id }) : null;
+    // At most KEYED_BATCH ids per statement: on 100,000 tasks with embeddings, 500 large documents
+    // per statement drove kdb-service v0.8.0 past a 4 GiB container limit (OOM-killed); 100 held at
+    // about 1 GiB.
+    const ids = isPlainObject(filter._id) && Array.isArray((filter._id as Doc).$in) ? ((filter._id as Doc).$in as unknown[]) : null;
+    const keyedBatches = ids && buildWhere({ _id: filter._id })
+      ? Array.from({ length: Math.ceil(ids.length / KEYED_BATCH) }, (_, i) => buildWhere({ _id: { $in: ids.slice(i * KEYED_BATCH, (i + 1) * KEYED_BATCH) } })!)
+      : null;
+    const keyed = keyedBatches !== null;
     const docs: T[] = [];
-    const pages = keyed
-      ? this.client().queryRawPages(this.namespace, `SELECT kdb_id, _doc FROM ${this.table} WHERE ${keyed.sql}`, keyed.args, SCAN_PAGE_ROWS)
-      : this.client().queryRawPages(
+    const client = this.client();
+    const queries = keyedBatches
+      ? keyedBatches.map((where) => () => client.queryRawPages(this.namespace, `SELECT kdb_id, _doc FROM ${this.table} WHERE ${where.sql}`, where.args, SCAN_PAGE_ROWS))
+      : [() => client.queryRawPages(
           this.namespace,
           `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
           [this.name, ...(pushed?.args ?? [])],
           SCAN_PAGE_ROWS
-        );
-    for await (const { rows } of pages) {
+        )];
+    for (const query of queries) for await (const { rows } of query()) {
       for (const row of rows) {
         const json = row[1];
         if (!json) continue;
