@@ -1,6 +1,6 @@
 [Unit]
 Description=QTask KDB (document store)
-Documentation=file:///opt/qtask/docs/KDB_MIGRATION.md
+Documentation=file:///opt/qtask/live/docs/KDB_MIGRATION.md
 After=network.target
 Before=qtask.service
 
@@ -9,18 +9,53 @@ Type=simple
 User=qtask
 Group=qtask
 WorkingDirectory=/var/lib/qtask/kdb
-# Pinned: v0.6.2. Installed from the KDB release (dist/bin/kdb-service-linux-<arch>),
-# never built on the host. See docs/KDB_MIGRATION.md before changing it.
+# Pinned: KDB v0.8.0, installed by deploy/install-kdb.sh from the release assets
+# (kdb-service-linux-<arch>, checked against the release's SHA256SUMS), never built on the host.
+# @kdb/client 0.8.0 refuses a server from another release line, so this pin and package.json's
+# move together. See docs/KDB_MIGRATION.md before changing anything here.
 #
 # Flags that are not optional:
-#  --namespace         must equal KDB_NAMESPACE_PREFIX in /opt/qtask/.env. This binary opens
-#                      exactly one namespace; every collection lives inside it.
-#  --peer-addr ''      v0.6.2 listens for peer sync on 127.0.0.1:9091 and streams on :9092
-#  --stream-addr ''    by default. qtask uses neither, and a second instance (staging, a
-#                      restore drill) would fail to start on the collision.
+#  --namespace         must equal KDB_NAMESPACE_PREFIX in /opt/qtask/.env. kdb-service opens one
+#                      namespace; every collection lives inside it.
 #  --expire-field      the store stamps _expireAt on collections that had a Mongo TTL index;
 #                      without this flag expired auth codes and tokens are never reclaimed.
-#  --sql-addr          loopback only. The client speaks this port; nothing else should.
+#  --durability sync   an acknowledged write is fsynced (the default; stated so nobody "tunes" it).
+#  --sql-addr          loopback only. kdb-service has no usable credentials yet: without --rbac it
+#                      checks none, and with --rbac users can only be created through the Go API.
+#                      Whoever can reach this port can read and write everything.
+#  --peer-addr ''      peer sync and the stream listener are off by default since v0.8.0 (v0.6.2
+#  --stream-addr ''    bound :9091/:9092); kept explicit so a changed default cannot open them.
+#                      qtask uses neither. (The v0.8.0 cap of 64 peer-sync connections therefore
+#                      does not apply here.)
+#
+# Operations endpoints, all loopback, all plain HTTP:
+#  --admin-addr        /healthz, /readyz, /metrics. No auth.
+#  --control-addr      the control plane. deploy/kdb-backup.sh uses it for online backups
+#  --control-write     (POST /v1/ns/qtask%2Fdocs/backups needs --control-write). Without --rbac it
+#  --control-backup-dir  accepts any credentials, so loopback is the only protection; keep it so.
+#                      --control-promote stays off: nothing restores over the live namespace from
+#                      the control plane. Restores are offline (kdb-inspect restore into a new
+#                      data dir, then swap), as rehearsed by scripts/kdb-restore-drill.ts.
+#  --control-ui=false  no browser UI on the server.
+#
+# v0.8.0 storage defaults are kept as shipped: the commit graph file, the paged live tree and
+# bounded live bodies are on (memory stays flat as the data grows). The first open of a namespace
+# written by an older release rewrites its tree segment once; qtask's namespace starts on v0.8.0.
+# To fall back to in-heap structures: Environment=KDB_GRAPH_FILE=off KDB_TREE_FILE=off
+# KDB_BOUNDED_LIVE_BODIES=off.
+#
+# Resource limits: kdb-service governs its own memory against --memory-budget-mb (0 = 75% of the
+# host's RAM, too much on a box shared with Node and MongoDB). In the 100,000-task rehearsal
+# (docs/KDB_MIGRATION.md section 8) RSS was 0.7-1.0 GiB idle and 1.4 GiB at most while building
+# indexes - but collection-wide reads went past 4 GiB regardless of this budget (blocker B5), so
+# it is not a hard ceiling. Give the host room for that, or cap the unit with MemoryMax= and
+# accept that such a read restarts the service.
+# --scan-row-budget caps the rows one scan may examine (default 1,000,000): every collection lives
+# in this one namespace, so an unindexed scan examines all of it. Raise it before the namespace
+# approaches a million documents (`npm run migrate:kdb -- counts`).
+#
+# --scrub-interval re-reads every document against its content hash once a day and logs damage
+# (there are no peers to repair from; a damaged document means restoring from backup).
 ExecStart=/opt/qtask/bin/kdb-service \
   --data-dir /var/lib/qtask/kdb/data \
   --namespace qtask/docs \
@@ -28,17 +63,29 @@ ExecStart=/opt/qtask/bin/kdb-service \
   --peer-addr "" \
   --stream-addr "" \
   --admin-addr 127.0.0.1:7701 \
+  --control-addr 127.0.0.1:7702 \
+  --control-write \
+  --control-ui=false \
+  --control-backup-dir /var/lib/qtask/backups/kdb \
   --expire-field _expireAt \
   --expire-interval 1m \
   --durability sync \
+  --memory-budget-mb 1536 \
+  --scrub-interval 24h \
   --log-format json \
   --log-level info
 Restart=on-failure
 RestartSec=5
 # Exit 75 is the supervisor contract for an orderly stop under sustained memory pressure.
 RestartForceExitStatus=75
+# SIGTERM drains admitted writes for up to --drain-timeout (30 s) before closing storage.
 TimeoutStopSec=60
 LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/qtask/kdb /var/lib/qtask/backups/kdb
 
 [Install]
 WantedBy=multi-user.target

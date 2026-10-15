@@ -47,15 +47,18 @@ describe('which indexes the store asks KDB for', () => {
     // Dates and numbers are ordered, so ranges can use them.
     assert.equal(wanted.get('startedAt'), 'BTREE');
     assert.equal(wanted.get('expiresAt'), 'BTREE', 'an invite\'s plain expiresAt index (the TTL ones are expiry, not lookups)');
-    // Not lookups: text search is the application's, expiry is declared elsewhere.
+    // Not lookups: text search is the application's, and TTL indexes became server expiry.
     for (const path of ['title', 'description', 'body', 'name', 'notes']) {
       assert.equal(wanted.has(path), false, `${path} is a text index in Mongo`);
     }
-    // A unique field is looked up too (login by email, a code by its hash): the constraint sits on
-    // a synthetic field no query names, so the named field needs its own lookup index.
+    // A unique field is looked up too (login by email, every MCP request by keyHash): the
+    // constraint is declared separately, the lookup is an ordinary index.
     assert.equal(wanted.get('email'), 'HASH');
+    assert.equal(wanted.get('keyHash'), 'HASH');
     assert.equal(wanted.get('codeHash'), 'HASH');
-    assert.equal(wanted.get('_c'), 'HASH', 'every query names its collection');
+    // The collection discriminator every query carries, so a small collection is not read by
+    // examining the whole namespace.
+    assert.equal(wanted.get('_c'), 'HASH');
   });
 
   it('never asks for the same path twice', async () => {
@@ -160,6 +163,25 @@ describe('indexes on a real kdb-service', { skip }, () => {
       assert.equal(await source.countDocuments(filter), expected.length);
     });
   }
+
+  it('reads documents named by id with a keyed lookup, never another collection\'s', async () => {
+    const someTasks = every.tasks!.slice(0, 5).map((d) => d._id as string);
+    const aProject = every.projects![0]!._id as string;
+    // Pushdown off or on, an `_id: {$in}` filter is answered by key; a project id among task ids
+    // must not come back from the tasks collection.
+    const found = await tasks.find({ _id: { $in: [...someTasks, aProject, '6a0000000000000000000000'] } });
+    assert.deepEqual(found.map((d) => d._id).sort(), [...someTasks].sort());
+    assert.equal(await tasks.countDocuments({ _id: { $in: someTasks }, status: 'todo' }), every.tasks!.filter((d) => someTasks.includes(d._id as string) && d.status === 'todo').length);
+    assert.deepEqual(await tasks.find({ _id: { $in: [] } }), []);
+    // More ids than one statement carries (100): every batch is asked, nothing is lost or repeated.
+    const many = [...every.tasks!.map((d) => d._id as string), ...every.projects!.map((d) => d._id as string),
+      ...Array.from({ length: 30 }, (_, i) => '6c' + String(i).padStart(22, '0'))];
+    assert.ok(many.length > 150);
+    const all = await tasks.find({ _id: { $in: many } });
+    assert.deepEqual(all.map((d) => d._id).sort(), every.tasks!.map((d) => d._id).sort());
+    assert.equal(await tasks.countDocuments({}), every.tasks!.length, 'an unfiltered count is the server\'s COUNT(*) for the collection');
+    assert.equal(await projects.countDocuments({}), every.projects!.length);
+  });
 
   it('keeps an index current as documents change', async () => {
     const created = await tasks.create({ userId: 'idx-mover', title: 'moves', status: 'todo', projectIds: ['px'] });

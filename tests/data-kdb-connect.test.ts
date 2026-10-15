@@ -29,4 +29,21 @@ describe('KDB store connection', () => {
     assert.equal(calls[0]!.addr, 'tcp://127.0.0.1:1');
     assert.deepEqual(calls[0]!.options, { token: 'qtask:s3cret' });
   });
+
+  it('does not count the whole namespace before reading', async () => {
+    // The scan-cap guard that did (a namespace-wide COUNT(*) every few seconds, which with
+    // --expire-field reads every document body) is retired: no server qtask can talk to truncates.
+    await import('../src/models/index.ts');
+    const { KdbDataStore } = await import('../src/data/kdb/store.ts');
+    const { statements } = (await import('./helpers/recordingKdbClient.ts')) as { statements: string[] };
+    const store = new KdbDataStore();
+    await store.connect();
+    try {
+      statements.length = 0;
+      await store.collection('tasks').find({ userId: 'u1' });
+      assert.equal(statements.filter((sql) => /^SELECT COUNT\(\*\) FROM docs$/.test(sql)).length, 0);
+    } finally {
+      await store.disconnect();
+    }
+  });
 });

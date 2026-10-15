@@ -27,11 +27,14 @@ export function pinnedKdbVersion(): string | undefined {
   return lock.packages['node_modules/@kdb/client']?.version;
 }
 
-function assetName(): string {
+/** The release's tools this repository uses: the server, and kdb-inspect for backups and restores. */
+export type KdbTool = 'kdb-service' | 'kdb-inspect';
+
+function assetName(tool: KdbTool = 'kdb-service'): string {
   const os = platform() === 'darwin' ? 'darwin' : platform() === 'linux' ? 'linux' : undefined;
   const cpu = arch() === 'arm64' ? 'arm64' : arch() === 'x64' ? 'amd64' : undefined;
-  if (!os || !cpu) throw new Error(`no kdb-service release asset for ${platform()}/${arch()}`);
-  return `kdb-service-${os}-${cpu}`;
+  if (!os || !cpu) throw new Error(`no ${tool} release asset for ${platform()}/${arch()}`);
+  return `${tool}-${os}-${cpu}`;
 }
 
 async function download(url: string): Promise<Buffer> {
@@ -41,11 +44,16 @@ async function download(url: string): Promise<Buffer> {
 }
 
 export async function fetchKdbService(version = pinnedKdbVersion()): Promise<string> {
+  return fetchKdbTool('kdb-service', version);
+}
+
+/** Downloads one of the release's tools into `.kdb/<version>/<tool>`, checksum-verified. */
+export async function fetchKdbTool(tool: KdbTool, version = pinnedKdbVersion()): Promise<string> {
   if (!version) throw new Error('@kdb/client is not in package-lock.json - run npm install');
-  const target = join(ROOT, '.kdb', version, 'kdb-service');
+  const target = join(ROOT, '.kdb', version, tool);
   if (existsSync(target)) return target;
 
-  const name = assetName();
+  const name = assetName(tool);
   const base = `https://github.com/${REPO}/releases/download/v${version}`;
   const [binary, sums] = await Promise.all([download(`${base}/${name}`), download(`${base}/SHA256SUMS`)]);
 
@@ -67,4 +75,6 @@ export async function fetchKdbService(version = pinnedKdbVersion()): Promise<str
 
 if (import.meta.main) {
   console.log(`kdb-service v${pinnedKdbVersion()} at ${await fetchKdbService()}`);
+  // kdb-inspect takes and restores backups (deploy/kdb-backup.sh, scripts/kdb-restore-drill.ts).
+  if (process.argv.includes('--with-inspect')) console.log(`kdb-inspect v${pinnedKdbVersion()} at ${await fetchKdbTool('kdb-inspect')}`);
 }

@@ -74,6 +74,8 @@ interface KdbClient {
   replaceIf(ns: string, docId: string, body: unknown, expectedContentHash: string): Promise<string>;
   /** Keyed delete: a commit, not a scan, so it is not bounded by anything about the namespace. */
   delete(ns: string, docId: string): Promise<string>;
+  /** Several writes in one commit. `baseVersion` must be a commit hash; a stale one is rebased. */
+  commit(tx: { namespace: string; baseVersion: string; writes: Array<{ docId: string; body: unknown; replace?: boolean }> }): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -86,6 +88,9 @@ type ConnectFn = (addr: string, options: { token?: string; requestTimeoutMs?: nu
  * largest documents (a task with its steps, subtasks and materials).
  */
 const SCAN_PAGE_ROWS = 2_000;
+
+/** Ids per keyed `kdb_id IN (...)` statement (see scan). */
+const KEYED_BATCH = 100;
 
 /**
  * The client's `exec` is two round trips on one shared session per namespace - run the DML, then
@@ -108,16 +113,26 @@ class SerializedDmlClient implements KdbClient {
     return this.inner.upsert(ns, docId, body);
   }
   queryRaw(ns: string, sql: string, args?: unknown[]) {
-    return this.inner.queryRaw(ns, sql, args);
+    return retryWhenBusy(() => this.inner.queryRaw(ns, sql, args));
   }
-  queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number) {
-    return this.inner.queryRawPages(ns, sql, args, pageSize);
+  async *queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number) {
+    // Only the first page is retried: a later one would need the continuation the failed call
+    // lost, and starting over would repeat rows the caller already has.
+    let pages!: AsyncIterator<{ columns: string[]; rows: string[][] }>;
+    let page = await retryWhenBusy(() => {
+      pages = this.inner.queryRawPages(ns, sql, args, pageSize)[Symbol.asyncIterator]();
+      return pages.next();
+    });
+    while (!page.done) {
+      yield page.value;
+      page = await pages.next();
+    }
   }
   get(ns: string, docId: string) {
-    return this.inner.get(ns, docId);
+    return retryWhenBusy(() => this.inner.get(ns, docId));
   }
   getWithHash(ns: string, docId: string) {
-    return this.inner.getWithHash(ns, docId);
+    return retryWhenBusy(() => this.inner.getWithHash(ns, docId));
   }
   replace(ns: string, docId: string, body: unknown) {
     return this.inner.replace(ns, docId, body);
@@ -127,6 +142,9 @@ class SerializedDmlClient implements KdbClient {
   }
   delete(ns: string, docId: string) {
     return this.inner.delete(ns, docId);
+  }
+  commit(tx: Parameters<KdbClient['commit']>[0]) {
+    return this.inner.commit(tx);
   }
   close(): Promise<void> {
     return this.inner.close();
@@ -142,6 +160,26 @@ class SerializedDmlClient implements KdbClient {
   }
 }
 
+/**
+ * Runs a read again when the server refuses it as BUSY - kdb-service v0.8.0's answer to a read
+ * that arrives in a high memory-pressure zone ("rejecting scan - memory pressure zone high (retry
+ * after 100ms)"), which it marks retryable. Seen in the restore drill on a 110,000-document
+ * namespace under --memory-budget-mb 1536. A handful of attempts, backing off from the server's
+ * hint to at most 2 s, about 6 s in all; past that the refusal is the caller's to see. Writes are
+ * not retried here: a write the server refused is the claim loop's to retry, with a fresh read.
+ */
+export async function retryWhenBusy<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const busy = (error as { code?: string }).code === 'BUSY' || (error as Error).constructor?.name === 'KdbBusyError';
+      if (!busy || attempt >= attempts - 1) throw error;
+      const hint = Number((error as { retryAfterMs?: number }).retryAfterMs) || 100;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, hint * 2 ** attempt)));
+    }
+  }
+}
 
 /** JSON revives dates as strings; the schema knows which paths are dates, and the query engine
  *  compares dates by instant, so reads rehydrate them on the way out. Recurses into
@@ -190,6 +228,10 @@ function reviveValue(type: SchemaTypeLike, value: unknown): unknown {
 function isPlainObject(value: unknown): value is Doc {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
 }
+
+/** The latest commit this process has seen per namespace: the base a multi-document import
+ *  commit is built on (see importMany). Any real commit will do; the server rebases a stale one. */
+const lastCommit = new Map<string, string>();
 
 /**
  * A per-key async mutex. The store runs inside one process, and the operations MongoDB
@@ -267,35 +309,56 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   private async scan(filter: Filter = {}): Promise<T[]> {
     // Pushdown only ever narrows: the caller re-checks every row with the shared
     // engine, so a clause the server cannot express is just left to that check.
-    // A disjunction KDB cannot serve from an index is asked one branch at a time instead (see
+    // A filter naming documents by id (`{_id: {$in: [...]}}`) is a keyed lookup, whatever else it
+    // says and whether or not pushdown is on, the same way fetchById is. It is sent as the id
+    // predicate alone: kdb-service v0.8.0 answers `kdb_id IN (...)` by key, but stops doing so once
+    // another conjunct comes first (`_c = ? AND kdb_id IN (...)` read the whole namespace: 2.7 s
+    // instead of 6 ms for 100 ids at 27,000 documents). The collection is checked here instead.
+    // At most KEYED_BATCH ids per statement, so no statement carries an unbounded number of large
+    // documents. (Measured on 100,000 tasks with embeddings: reading all of them in statements of
+    // 100 or 500 ids took 41-43 s at under 1.1 GiB RSS; the size of one statement is not what
+    // exhausted the server's memory in the rehearsal - see docs/KDB_MIGRATION.md B5.)
+    const ids = isPlainObject(filter._id) && Array.isArray((filter._id as Doc).$in) ? ((filter._id as Doc).$in as unknown[]) : null;
+    const keyedBatches = ids && buildWhere({ _id: filter._id })
+      ? Array.from({ length: Math.ceil(ids.length / KEYED_BATCH) }, (_, i) => buildWhere({ _id: { $in: ids.slice(i * KEYED_BATCH, (i + 1) * KEYED_BATCH) } })!)
+      : null;
+    const keyed = keyedBatches !== null;
+    // Otherwise a disjunction KDB cannot serve from an index is asked one branch at a time (see
     // unionBranches); a document matching several branches comes back once.
     const alternatives = config.kdb.pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
+    const seen = !keyed && alternatives.length > 1 ? new Set<string>() : null;
     const docs: T[] = [];
-    const seen = alternatives.length > 1 ? new Set<string>() : null;
-    for (const alternative of alternatives) {
-      const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
-      const pages = this.client().queryRawPages(
-        this.namespace,
-        `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
-        [this.name, ...(pushed?.args ?? [])],
-        SCAN_PAGE_ROWS
-      );
-      for await (const { rows } of pages) {
-        for (const row of rows) {
-          const json = row[1];
-          if (!json) continue;
-          if (seen) {
-            if (seen.has(row[0]!)) continue;
-            seen.add(row[0]!);
-          }
-          try {
-            docs.push(this.decode(JSON.parse(json) as Doc));
-          } catch {
-            // A document that will not parse is corruption, not a query result. Skipping
-            // it would hide that; failing the whole read makes it visible immediately.
-            throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
-          }
+    const client = this.client();
+    const queries = keyedBatches
+      ? keyedBatches.map((where) => () => client.queryRawPages(this.namespace, `SELECT kdb_id, _doc FROM ${this.table} WHERE ${where.sql}`, where.args, SCAN_PAGE_ROWS))
+      : alternatives.map((alternative) => () => {
+          const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
+          return client.queryRawPages(
+            this.namespace,
+            `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
+            [this.name, ...(pushed?.args ?? [])],
+            SCAN_PAGE_ROWS
+          );
+        });
+    for (const query of queries) for await (const { rows } of query()) {
+      for (const row of rows) {
+        const json = row[1];
+        if (!json) continue;
+        if (seen) {
+          if (seen.has(row[0]!)) continue;
+          seen.add(row[0]!);
         }
+        let stored: Doc;
+        try {
+          stored = JSON.parse(json) as Doc;
+        } catch {
+          // A document that will not parse is corruption, not a query result. Skipping
+          // it would hide that; failing the whole read makes it visible immediately.
+          throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
+        }
+        // Ids are unique across the namespace, but a collection never serves another's document.
+        if (keyed && stored._c !== this.name) continue;
+        docs.push(this.decode(stored));
       }
     }
     // A scan has no inherent order. MongoDB's natural order is insertion order, which ObjectId
@@ -337,6 +400,10 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       const doc = await this.fetchById(filter._id);
       return doc && matchesFilter(doc, filter) ? [doc] : [];
     }
+    // `_id: {$in: []}` matches nothing, whatever the rest says; no need to read the collection.
+    if (isPlainObject(filter._id) && Array.isArray((filter._id as Doc).$in) && ((filter._id as Doc).$in as unknown[]).length === 0) {
+      return [];
+    }
     const docs = await this.scan(filter);
     return docs.filter((doc) => matchesFilter(doc, filter));
   }
@@ -362,7 +429,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   async countDocuments(filter: Filter = {}): Promise<number> {
     // A count the server can answer exactly is asked of the server, rather than fetching every
     // matching document (each task carries a 768-number embedding) to count them here. A list
-    // page's total is such a count, with the same access filter as the page.
+    // page's total is such a count, with the same access filter as the page; the whole collection
+    // (an empty filter) is one too.
     if (config.kdb.pushdown && typeof filter._id !== 'string') {
       const counted = await this.countOnServer(filter);
       if (counted !== null) return counted;
@@ -555,6 +623,49 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     await this.writeDocument(doc, null);
   }
 
+  /**
+   * `importDocument` for many documents, in one commit: the same bodies, written wholesale.
+   *
+   * Why: a single-document `replace` is one durable commit, and kdb-service does not share an
+   * fsync between concurrent transaction commits (it does for `upsert`), so a backfill made of
+   * them runs at the disk's fsync rate - measured at about 45 documents/s on macOS with
+   * `--durability sync`, whatever the concurrency. One commit of a few hundred documents costs one
+   * fsync. Same guarantees as before: idempotent, stale keys dropped, a unique-constraint violation
+   * rejects the commit (as DuplicateKeyError), and either every document in it lands or none does.
+   *
+   * A commit names the version it was built on; a stale one is rebased by the server, applying only
+   * the fields this commit changes, so a concurrent mirrored write to another field survives. The
+   * base is the last commit this process saw for the namespace, or (the first time) the commit of
+   * the first document, written on its own.
+   */
+  async importMany(docs: Doc[]): Promise<void> {
+    if (docs.length === 0) return;
+    for (const doc of docs) {
+      if (typeof doc._id !== 'string') throw new Error(`${this.name}: cannot import a document without a string _id`);
+    }
+    let rest = docs;
+    let base = lastCommit.get(this.namespace);
+    if (!base) {
+      await this.writeDocument(docs[0]!, null);
+      base = lastCommit.get(this.namespace);
+      rest = docs.slice(1);
+      if (rest.length === 0) return;
+    }
+    try {
+      const hash = await this.client().commit({
+        namespace: this.namespace,
+        baseVersion: base!,
+        writes: rest.map((doc) => ({ docId: toDocumentUuid(doc._id as string), body: this.storedBody(doc), replace: true })),
+      });
+      if (hash) lastCommit.set(this.namespace, hash);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'UNIQUE_VIOLATION') {
+        throw new DuplicateKeyError(`${this.name}: duplicate value for a unique field (${(error as Error).message})`);
+      }
+      throw error;
+    }
+  }
+
   // --- write helpers -------------------------------------------------------------
 
   /** Runs `fn` while holding the collection's unique-constraint lock, if it has constraints.
@@ -670,14 +781,12 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   private async writeDocument(doc: Doc, _previous: Doc | null, guard?: { hash: string }): Promise<void> {
     const key = toDocumentUuid(doc._id as string);
-    const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
-    for (const { field, paths, arrayPrefix } of this.serverKeys) {
-      const value = arrayPrefix ? serverKeyValues(doc, paths, arrayPrefix) : serverKeyValue(doc, paths);
-      if (value !== undefined) body[field] = value;
-    }
+    const body = this.storedBody(doc);
     try {
-      if (guard) await this.client().replaceIf(this.namespace, key, body, guard.hash);
-      else await this.client().replace(this.namespace, key, body);
+      const hash = guard
+        ? await this.client().replaceIf(this.namespace, key, body, guard.hash)
+        : await this.client().replace(this.namespace, key, body);
+      if (hash) lastCommit.set(this.namespace, hash);
     } catch (error) {
       // The server's unique constraint, which no in-process check can pre-empt, reports the same
       // thing the in-process check does: a duplicate key, code 11000, which authService turns
@@ -687,6 +796,17 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       }
       throw error;
     }
+  }
+
+  /** A document as stored: the collection discriminator, the expiry deadline and the synthetic
+   *  fields that carry server-held unique constraints, added to the application's fields. */
+  private storedBody(doc: Doc): Doc {
+    const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
+    for (const { field, paths, arrayPrefix } of this.serverKeys) {
+      const value = arrayPrefix ? serverKeyValues(doc, paths, arrayPrefix) : serverKeyValue(doc, paths);
+      if (value !== undefined) body[field] = value;
+    }
+    return body;
   }
 
   /** The deadline the server's expiry sweeper reads, for collections whose Mongo
@@ -819,8 +939,13 @@ export class KdbDataStore implements DataStore {
    *    `userId` is declared by a dozen collections and created once.
    *  - BTREE for Date and Number paths (ranges, ordering), HASH otherwise. KDB's indexes see
    *    through arrays (`projectIds`, `collaborators.userId`) as Mongo's multikey indexes do.
-   *  - Unique, TTL and text indexes are not lookups: constraints and expiry are declared
-   *    separately, and text search is done by the application.
+   *  - A unique index is a lookup too (a login finds its user by email, every MCP request its key
+   *    by keyHash), so its leading field is indexed like any other; the constraint itself is
+   *    declared separately (declareConstraints), on a synthetic field. TTL indexes became server
+   *    expiry, and text search is done by the application.
+   *  - `_c`, the collection discriminator every query carries: without it, reading a small
+   *    collection examines the whole namespace (measured: every collection's unfiltered read cost
+   *    the same as reading all 27,000 documents of a rehearsal dataset).
    *
    * Idempotent: stating an index the server already holds is the normal case after the first start.
    * Indexes only change cost, never an answer, so a server without them still returns the same rows.
@@ -874,6 +999,11 @@ export class KdbDataStore implements DataStore {
   /** Verbatim import for the migration tool; see KdbBackedCollection.importDocument. */
   async importDocument(name: CollectionName, doc: Doc): Promise<void> {
     await (this.collection(name) as unknown as KdbBackedCollection<Doc>).importDocument(doc);
+  }
+
+  /** Verbatim import of many documents in one commit; see KdbBackedCollection.importMany. */
+  async importMany(name: CollectionName, docs: Doc[]): Promise<void> {
+    await (this.collection(name) as unknown as KdbBackedCollection<Doc>).importMany(docs);
   }
 
   async clear(): Promise<void> {

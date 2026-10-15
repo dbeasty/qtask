@@ -16,3 +16,6 @@ client-macos/.build/
 # Database benchmark (bench/docker.ts): dataset cache and results
 bench/.cache/
 bench/results/
+
+# Migration rehearsal logs (scripts/rehearsal)
+.rehearsal/
