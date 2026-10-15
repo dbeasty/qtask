@@ -3,6 +3,9 @@
  *
  *   npx tsx scripts/kdb-restore-drill.ts [--tasks=20000] [--port=8260] [--dir=.rehearsal/drill-<ts>] [--keep]
  *
+ * Uses nine ports from --port: the source service, the restore, the quiesced restore (SQL, admin,
+ * control plane each).
+ *
  * Rehearses the path deploy/kdb-backup.sh and docs/KDB_MIGRATION.md describe, with the binaries from
  * the pinned KDB release (`npm run kdb:fetch -- --with-inspect`):
  *
@@ -166,6 +169,24 @@ async function rawClient(service: Service): Promise<RawClient> {
   return connect(`tcp://127.0.0.1:${service.sql}`, { requestTimeoutMs: 120_000 });
 }
 
+/**
+ * A collection's size: the server's count, or - when the server refuses that (kdb-service v0.8.0
+ * reads every body to count, and refuses as BUSY / RESOURCE_EXHAUSTED under its memory budget;
+ * docs/KDB_MIGRATION.md B5) - how many of the ids this drill ever wrote are present, read by key.
+ * Only this drill writes these namespaces, so the two agree; the fallback is reported.
+ */
+async function countOrKeyed(store: Store, name: CollectionName, ids: string[]): Promise<number> {
+  try {
+    return await store.collection(name).countDocuments({});
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== 'BUSY' && code !== 'RESOURCE_EXHAUSTED') throw error;
+    keyedCounts.add(`${name} (${code})`);
+    return (await readAll(store, name, ids)).size;
+  }
+}
+const keyedCounts = new Set<string>();
+
 /** Every document of a collection, read by id (keyed), in pages - not a scan. */
 async function readAll(store: Store, name: CollectionName, ids: string[]): Promise<Map<string, Doc>> {
   const out = new Map<string, Doc>();
@@ -294,7 +315,7 @@ async function main(): Promise<void> {
   check(restore.status === 0, `kdb-inspect restore exits 0 (${seconds(performance.now() - t0)})`);
   if (restore.status !== 0) throw new Error(restore.stderr || restore.stdout);
   note(restore.stdout.trim().split('\n').map((l) => `    ${l}`).join('\n'));
-  const { service: restored, readyMs } = await startService(serviceBin, restoredDir, join(DIR, 'restored-backups'), BASE_PORT + 10);
+  const { service: restored, readyMs } = await startService(serviceBin, restoredDir, join(DIR, 'restored-backups'), BASE_PORT + 3);
   note(`restored data dir ${du(restoredDir)}; kdb-service ready on it in ${seconds(readyMs)} (first open)`);
 
   // Before anything re-declares them: are the constraints and indexes there?
@@ -397,10 +418,12 @@ async function main(): Promise<void> {
   check(differing === 0 && absent === 0, `untouched documents identical in source and restore (${compared} compared, ${differing} differing, ${absent} on one side only; ${seconds(performance.now() - t0)})`);
   const createdTasks = (window: Ack[]) => window.filter((a) => a.kind === 'createTask').length;
   const createdUsers = (window: Ack[]) => window.filter((a) => a.kind === 'createUser').length;
-  const restoredTaskCount = await restoredTasks.countDocuments({});
-  const restoredUserCount = await restoredUsers.countDocuments({});
   const baseTasks = ids.get('tasks')!.length;
   const baseUsers = ids.get('users')!.length;
+  const taskIds = [...ids.get('tasks')!, ...acks.filter((a) => a.kind === 'createTask').map((a) => a.id)];
+  const userIds = [...ids.get('users')!, ...acks.filter((a) => a.kind === 'createUser').map((a) => a.id)];
+  const restoredTaskCount = await countOrKeyed(restoredStore, 'tasks', taskIds);
+  const restoredUserCount = await countOrKeyed(restoredStore, 'users', userIds);
   check(restoredTaskCount >= baseTasks + createdTasks(before) && restoredTaskCount <= baseTasks + createdTasks(before) + createdTasks(during),
     `restored task count ${restoredTaskCount} within [${baseTasks + createdTasks(before)}, ${baseTasks + createdTasks(before) + createdTasks(during)}]`);
   check(restoredUserCount >= baseUsers + createdUsers(before) && restoredUserCount <= baseUsers + createdUsers(before) + createdUsers(during),
@@ -413,7 +436,8 @@ async function main(): Promise<void> {
   check(pastNow === 0, `codes that had expired before the backup are not readable on the restore (${pastNow}/${probePast.length})`);
   const waitMs = soon.getTime() - Date.now();
   note(`codes still valid at restore time: ${liveNow}/${probeLive.length}; waiting ${seconds(Math.max(0, waitMs) + 5_000)} for them to expire`);
-  check(liveNow === probeLive.length || waitMs <= 0, 'codes not yet expired are readable on the restore');
+  if (waitMs > 0) check(liveNow === probeLive.length, 'codes not yet expired are readable on the restore');
+  else note('NOT CHECKED  codes not yet expired are readable on the restore: their expiry passed before the restore was ready');
   await new Promise((r) => setTimeout(r, Math.max(0, waitMs) + 5_000));
   const liveLater = (await Promise.all(probeLive.map((id) => restoredCodes.findById(id)))).filter(Boolean).length;
   check(liveLater === 0, `after their expiry the restore no longer serves them (${liveLater}/${probeLive.length} left)`);
@@ -437,7 +461,7 @@ async function main(): Promise<void> {
   t0 = performance.now();
   const restore2 = spawnSync(inspectBin, ['restore', '--namespace', NS, '--from-backup', source.backupDir, '--backup-id', quietId, '--out', quietDir], { encoding: 'utf8' });
   check(restore2.status === 0, `restore of the quiesced backup exits 0 (${seconds(performance.now() - t0)})`);
-  const { service: quiet, readyMs: quietReady } = await startService(serviceBin, quietDir, join(DIR, 'quiet-backups'), BASE_PORT + 20);
+  const { service: quiet, readyMs: quietReady } = await startService(serviceBin, quietDir, join(DIR, 'quiet-backups'), BASE_PORT + 6);
   t0 = performance.now();
   const quietStore = await openStore(quiet, true);
   note(`quiesced restore: ready in ${seconds(quietReady)}; constraints and indexes re-declared in ${seconds(performance.now() - t0)}`);
@@ -452,7 +476,7 @@ async function main(): Promise<void> {
   for (const name of GENERATED) {
     const list = allIds.get(name) ?? [];
     const [a, b] = await Promise.all([readAll(store, name, list), readAll(quietStore, name, list)]);
-    const [ca, cb] = await Promise.all([store.collection(name).countDocuments({}), quietStore.collection(name).countDocuments({})]);
+    const [ca, cb] = await Promise.all([countOrKeyed(store, name, list), countOrKeyed(quietStore, name, list)]);
     if (ca !== cb) {
       countMismatch++;
       note(`    count differs for ${name}: source ${ca}, restore ${cb}`);
@@ -473,9 +497,10 @@ async function main(): Promise<void> {
   await store.disconnect();
   await stopService(source);
   note(`sizes: source ${du(source.dataDir)}, backups ${du(source.backupDir)} (${readdirSync(join(source.backupDir, 'backups', ...NS.split('/'))).length} kept), restored ${du(restoredDir)}, quiesced restore ${du(quietDir)}`);
+  if (keyedCounts.size) note(`the server refused to count ${[...keyedCounts].join(', ')}; counted by keyed reads of every id written instead`);
   note(failures.length === 0 ? 'DRILL PASSED' : `DRILL FAILED: ${failures.length} check(s)`);
   if (!KEEP) rmSync(DIR, { recursive: true, force: true });
-  if (failures.length) process.exitCode = 1;
+  process.exit(failures.length ? 1 : 0);
 }
 
 /** How many of these documents still exist physically (a keyed SQL lookup sees through nothing). */
@@ -489,5 +514,7 @@ async function rawRestoredCount(raw: RawClient, ids: string[], toUuid: (id: stri
 void statSync;
 main().catch((error) => {
   console.error((error as Error).stack ?? error);
-  process.exitCode = 1;
+  // Exit outright: open client connections would keep the process (and, through the exit hook,
+  // the services it started) alive.
+  process.exit(1);
 });
