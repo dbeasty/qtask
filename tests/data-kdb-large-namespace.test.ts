@@ -1,11 +1,11 @@
 /**
- * kdb-service v0.6.2 truncates non-indexed SQL scans at 10,000 documents without
- * saying so (blocker B1 in docs/KDB_MIGRATION.md). The store must therefore refuse to
- * scan a namespace that large, while keyed operations - which do not scan - keep
- * working. This runs against a real server loaded past the cap.
+ * The store against a real server holding more than 10,000 documents.
  *
- * If the server is fixed, the first test notices and skips the rest: that is the
- * signal to retire the guard (KDB_SERVER_ROW_CAP=0), not a failure.
+ * kdb-service v0.6.2 cut non-indexed SQL scans off at 10,000 documents without saying so, and the
+ * store used to refuse to scan past that (blocker B1 in docs/KDB_MIGRATION.md). KDB 0.7 fixed the
+ * server - it filters during the scan, and refuses an oversized reply rather than truncating it -
+ * and the guard is retired. These keep the server to that: selective reads and deletes find
+ * documents past the old cap, and a collection bigger than one SQL reply is read whole.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -26,19 +26,17 @@ const skip = kdbUnavailable;
 import { toDocumentUuid } from '../src/data/kdb/ids.ts';
 import type { DataStore } from '../src/data/types.ts';
 
-describe('KDB scan cap', { skip }, () => {
+describe('KDB past 10,000 documents', { skip }, () => {
   let service: ChildProcess;
   let store: DataStore;
-  let serverTruncates = true;
 
   const objectId = (n: number) => '6a' + n.toString(16).padStart(22, '0');
 
   before(async () => {
     process.env.DATA_KDB = 'true';
     delete process.env.DATA_MONGO;
-    delete process.env.KDB_SERVER_ROW_CAP;
     // Pushdown is what lets a selective query ask for its matches instead of the whole
-    // collection, which a fixed server would (rightly) refuse to return past MaxRows.
+    // collection.
     process.env.DATA_KDB_PUSHDOWN = 'true';
     process.env.KDB_CLIENT_MODULE = CLIENT_MODULE;
     process.env.KDB_ADDR = `tcp://127.0.0.1:${PORT}`;
@@ -52,7 +50,6 @@ describe('KDB scan cap', { skip }, () => {
 
     const raw = (await import(CLIENT_MODULE)) as { connect(addr: string, token: string): Promise<{
       upsert(ns: string, id: string, body: unknown): Promise<string>;
-      queryRaw(ns: string, sql: string): Promise<{ rows: string[][] }>;
       close(): Promise<void>;
     }> };
     const client = await raw.connect(process.env.KDB_ADDR!, '');
@@ -67,8 +64,6 @@ describe('KDB scan cap', { skip }, () => {
         )
       );
     }
-    const { rows } = await client.queryRaw(NS, 'SELECT COUNT(*) FROM docs');
-    serverTruncates = Number(rows[0][0]) < LOADED;
     await client.close();
 
     await import('../src/models/index.ts');
@@ -82,35 +77,7 @@ describe('KDB scan cap', { skip }, () => {
     service?.kill();
   });
 
-  it('refuses a scan instead of answering from a truncated prefix', async (t) => {
-    if (!serverTruncates) return t.skip('the server no longer truncates scans - retire the guard');
-    await assert.rejects(store.collection('tasks').find({ userId: 'u1' }), { name: 'KdbScanCapError' });
-    await assert.rejects(store.collection('tasks').countDocuments({}), { name: 'KdbScanCapError' });
-  });
-
-  it('still serves keyed reads and writes for documents past the cap', async (t) => {
-    if (!serverTruncates) return t.skip('the server no longer truncates scans');
-    const tasks = store.collection('tasks');
-    const last = objectId(LOADED - 1);
-    assert.equal((await tasks.findById(last))?.title, `t${LOADED - 1}`);
-    assert.equal((await tasks.updateOne({ _id: last }, { $set: { status: 'done' } })).modified, 1);
-    assert.equal((await tasks.findById(last))?.status, 'done');
-  });
-
-  it('fails a delete past the cap loudly instead of reporting a removal that did not happen', async (t) => {
-    if (!serverTruncates) return t.skip('the server no longer truncates scans');
-    const tasks = store.collection('tasks');
-    const last = objectId(LOADED - 2);
-    await assert.rejects(tasks.deleteOne({ _id: last }), /delete of .* had no effect/);
-    // ...and the document is still there, so the error told the truth.
-    assert.ok(await tasks.findById(last));
-    // A delete inside the cap still works: the first documents are reachable by the scan.
-    assert.equal((await tasks.deleteOne({ _id: objectId(3) })).deleted, 1);
-    assert.equal(await tasks.findById(objectId(3)), null);
-  });
-
-  it('answers selective queries and deletes past the old cap on a server with the fix', async (t) => {
-    if (serverTruncates) return t.skip('this server still truncates scans');
+  it('answers selective queries and deletes past the old cap', async () => {
     const tasks = store.collection('tasks');
     assert.equal((await tasks.find({ title: `t${LOADED - 1}` })).length, 1);
     assert.equal(await store.collection('users').countDocuments({}), 0);
@@ -122,20 +89,10 @@ describe('KDB scan cap', { skip }, () => {
     assert.equal(await store.collection('users').findById(objectId(5)), null);
   });
 
-  it('can be switched off for a server that does not truncate', async () => {
-    process.env.KDB_SERVER_ROW_CAP = '0';
-    try {
-      const docs = await store.collection('tasks').find({ title: 't1' });
-      assert.equal(docs.length, 1);
-    } finally {
-      delete process.env.KDB_SERVER_ROW_CAP;
-    }
-  });
-
   it('reads a whole collection larger than one SQL reply may be', async () => {
     // Since KDB 0.8.0 an unpaged reply over 15 MiB is refused with RESOURCE_EXHAUSTED; a scan
     // that grows with the data has to be read a page at a time, and this one is about 18 MiB.
-    // Counted, not assumed: earlier tests here delete a few.
+    // Counted, not assumed: an earlier test here deletes one.
     const expected = await store.collection('tasks').countDocuments({ userId: 'u1' });
     assert.ok(expected > 10_000, `fixture too small: ${expected}`);
     const all = await store.collection('tasks').find({ userId: 'u1' });

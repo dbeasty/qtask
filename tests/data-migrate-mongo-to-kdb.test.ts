@@ -74,12 +74,11 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     await mongod?.stop();
   });
 
-  it('counts reads only MongoDB and flags the scan cap', async () => {
+  it('counts reads only MongoDB', async () => {
     const result = await run('counts');
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /1200\s+tasks/);
     assert.match(result.stdout, /1201\s+TOTAL/);
-    assert.doesNotMatch(result.stdout, /PAST THE CAP/);
   });
 
   it('verify fails before the copy exists', async () => {
