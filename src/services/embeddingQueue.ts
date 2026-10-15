@@ -1,4 +1,5 @@
 import { collection } from '../data/index.js';
+import { isLocalMode } from '../local/config.js';
 import type {
   CommentDoc,
   EmbeddingJobDoc,
@@ -30,6 +31,9 @@ async function enqueueEntityEmbeddingJob(
   entityType: 'task' | 'project',
   entityId: string
 ): Promise<void> {
+  // Embeddings need a model server; a local-mode device has none and no worker to
+  // drain the queue, so queueing would only grow it without bound.
+  if (isLocalMode()) return;
   // A single atomic pipeline update instead of a separate findOne-then-write
   // (which raced with the job's own status changes): if the job is
   // currently 'processing', leave it running and just mark it dirty so it
@@ -46,9 +50,12 @@ async function enqueueEntityEmbeddingJob(
   );
 
   if (markedDirty.matched === 0) {
-    // `attempts` and `dirty` are spelled out on insert because a job missing
-    // `attempts` never matches processNextJob's `attempts: { $lt: MAX_ATTEMPTS }`
-    // pickup query, and would sit at 'pending' forever.
+    // `attempts` is reset, not only set on insert: every claim counts as an attempt,
+    // successful ones included, so a job that had been embedded three times before
+    // would otherwise never match processNextJob's `attempts: { $lt: MAX_ATTEMPTS }`
+    // pickup again, and every later edit would keep a stale embedding. A new edit is
+    // new work; MAX_ATTEMPTS bounds the retries of one version, not the edits of a
+    // task's lifetime.
     await jobs().updateOne(
       { entityType, entityId },
       {
@@ -57,8 +64,9 @@ async function enqueueEntityEmbeddingJob(
           entityId,
           ...(entityType === 'task' ? { taskId: entityId } : {}),
           status: 'pending',
+          attempts: 0,
         },
-        $setOnInsert: { attempts: 0, dirty: false },
+        $setOnInsert: { dirty: false },
         $unset: { lastError: '' },
       },
       { upsert: true }
@@ -132,7 +140,8 @@ async function finishEmbeddingJob(
   // being marked done. The check is in the filter, so it stays atomic with the write.
   const requeued = await jobs().updateOne(
     { _id: String(jobId), dirty: true },
-    { $set: { status: 'pending', dirty: false }, $unset: { lastError: '' } }
+    // A new version to embed, so its attempts start again (see enqueueEntityEmbeddingJob).
+    { $set: { status: 'pending', dirty: false, attempts: 0 }, $unset: { lastError: '' } }
   );
 
   if (requeued.matched === 0) {

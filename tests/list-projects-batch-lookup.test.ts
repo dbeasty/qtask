@@ -2,7 +2,7 @@ import { after, before, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve, type Response } from './helpers/http.js';
 import type { Express } from 'express';
 import { waitForNewestToken } from './helpers/testEmail.js';
 
@@ -18,7 +18,7 @@ before(async () => {
   process.env.MONGODB_URI = mongo.getUri();
 
   const { createApp } = await import('../src/app.js');
-  app = await createApp({ connect: true, startWorker: false });
+  app = await serve(await createApp({ connect: true, startWorker: false }));
 });
 
 beforeEach(async () => {
@@ -94,7 +94,7 @@ describe('listProjects batched owner/collaborator lookup', () => {
       return originalFind(...args);
     }) as typeof originalFind;
 
-    let list: request.Response;
+    let list: Response;
     try {
       list = await request(app)
         .get('/api/projects')

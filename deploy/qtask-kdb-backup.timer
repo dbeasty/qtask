@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily QTask KDB backup timer
+
+[Timer]
+# After the MongoDB backup (qtask-backup.timer, 02:30), so the two do not compete for the disk.
+OnCalendar=*-*-* 02:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

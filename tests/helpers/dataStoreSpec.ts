@@ -77,8 +77,33 @@ export function runDataStoreConformance(backend: BackendHarness): void {
         assert.equal(await tasks.findById('507f1f77bcf86cd799439011'), null);
       });
 
+      it('finds a document whose _id is a string that is not an ObjectId (MCP sessions use UUIDs)', async () => {
+        const sessions = store.collection('mcpSessions');
+        const id = '7b329239-76fc-4bff-b103-b08a340811e5';
+        await sessions.create({ _id: id, userId: 'u1', keyId: 'k1', pendingProposals: [] });
+        assert.equal((await sessions.findById(id))?._id, id);
+        const updated = await sessions.findByIdAndUpdate(id, { $set: { keyId: 'k2' } }, { returnDocument: 'after' });
+        assert.equal(updated?.keyId, 'k2');
+        assert.equal((await sessions.findById(id))?.keyId, 'k2');
+      });
+
       it('returns null rather than throwing for a malformed id', async () => {
         assert.equal(await tasks.findById('not-an-id'), null);
+      });
+
+      it('returns dates as Dates at every depth, not only at the top level', async () => {
+        const stamp = new Date('2026-05-06T07:08:09.010Z');
+        const projects = store.collection('projects');
+        const created = await projects.create({
+          userId: 'u1',
+          name: 'dated',
+          trackingRollup: { hoursSpent: 3, updatedAt: stamp },
+        });
+        const found = (await projects.findById(created._id as string))!;
+        const rollup = found.trackingRollup as { updatedAt: unknown };
+        assert.ok(rollup.updatedAt instanceof Date, `updatedAt came back as ${typeof rollup.updatedAt}`);
+        assert.equal((rollup.updatedAt as Date).toISOString(), stamp.toISOString());
+        assert.ok(found.createdAt instanceof Date);
       });
 
       it('returns plain objects a caller may mutate', async () => {
@@ -166,6 +191,67 @@ export function runDataStoreConformance(backend: BackendHarness): void {
 
       it('returns null when nothing matches', async () => {
         assert.equal(await tasks.findOne({ title: 'nothing' }), null);
+      });
+    });
+
+    describe('positional updates', () => {
+      // `pendingProposals.$.status` with the element chosen by the filter: how the agent and MCP
+      // flows approve or reject one proposal without rewriting the whole array.
+      it('updates only the array element the filter matched', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({
+          userId: 'u1',
+          pendingProposals: [
+            { id: 'a', status: 'pending' },
+            { id: 'b', status: 'pending' },
+            { id: 'c', status: 'pending' },
+          ],
+        });
+        const updated = await conversations.findOneAndUpdate(
+          { _id: created._id, userId: 'u1', 'pendingProposals.id': 'b' },
+          { $set: { 'pendingProposals.$.status': 'approved' } },
+          { returnDocument: 'after' }
+        );
+        const status = (id: string) =>
+          (updated?.pendingProposals as Array<{ id: string; status: string }>).find((p) => p.id === id)?.status;
+        assert.equal(status('a'), 'pending');
+        assert.equal(status('b'), 'approved');
+        assert.equal(status('c'), 'pending');
+      });
+
+      it('lands both of two concurrent updates to different elements', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({
+          userId: 'u1',
+          pendingProposals: [
+            { id: 'a', status: 'pending' },
+            { id: 'b', status: 'pending' },
+          ],
+        });
+        await Promise.all(
+          ['a', 'b'].map((id) =>
+            conversations.findOneAndUpdate(
+              { _id: created._id, 'pendingProposals.id': id },
+              { $set: { 'pendingProposals.$.status': 'approved' } }
+            )
+          )
+        );
+        const final = (await conversations.findById(created._id as string))!;
+        assert.deepEqual(
+          (final.pendingProposals as Array<{ status: string }>).map((p) => p.status),
+          ['approved', 'approved']
+        );
+      });
+
+      it('leaves the document alone when the filter matches no element', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({ userId: 'u1', pendingProposals: [{ id: 'a', status: 'pending' }] });
+        const result = await conversations.updateOne(
+          { _id: created._id, 'pendingProposals.id': 'zzz' },
+          { $set: { 'pendingProposals.$.status': 'approved' } }
+        );
+        assert.equal(result.matched, 0);
+        assert.equal(((await conversations.findById(created._id as string))!.pendingProposals as Array<{ status: string }>)[0].status, 'pending');
       });
     });
 
@@ -260,6 +346,84 @@ export function runDataStoreConformance(backend: BackendHarness): void {
         assert.equal(await tasks.findOneAndUpdate({ title: 'nothing' }, { $set: { status: 'done' } }), null);
       });
 
+      it('removes a field replaced with undefined, as Mongo does', async () => {
+        // `user.emailVerificationTokenHash = undefined; replaceOne(...)` is how the application
+        // retires a one-time token. If the old value survives, the token stays usable.
+        const user = await users.create({
+          email: 'undef@example.com',
+          displayName: 'U',
+          passwordHash: 'x',
+          emailVerificationTokenHash: 'secret-hash',
+          emailVerificationExpires: new Date(Date.now() + 60_000),
+        });
+        const loaded = (await users.findById(user._id as string))!;
+        loaded.emailVerificationTokenHash = undefined;
+        loaded.emailVerificationExpires = undefined;
+        await users.replaceOne({ _id: loaded._id }, loaded);
+
+        const again = (await users.findById(user._id as string))!;
+        assert.equal(again.emailVerificationTokenHash, undefined, 'the token hash must be gone');
+        assert.equal(again.emailVerificationExpires, undefined, 'the expiry must be gone');
+        assert.equal('emailVerificationTokenHash' in again, false);
+        assert.equal(await users.countDocuments({ emailVerificationTokenHash: 'secret-hash' }), 0);
+      });
+
+      it('stores undefined inside a Mixed value set by an update as null, as Mongo does', async () => {
+        // `$set: { pendingProposals: [...] }` with `toolCallIndex: undefined` inside: what the
+        // MCP session service does when it stages a proposal.
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({ userId: 'u1', pendingProposals: [] });
+        await conversations.updateOne(
+          { _id: created._id },
+          { $set: { pendingProposals: [{ id: 'a', status: 'pending', toolCallIndex: undefined }] } }
+        );
+        const found = (await conversations.findById(created._id as string))!;
+        const proposal = (found.pendingProposals as Array<Record<string, unknown>>)[0];
+        assert.equal(proposal.toolCallIndex, null);
+        assert.equal('toolCallIndex' in proposal, true);
+      });
+
+      it('drops fields the schema does not declare, at every depth (strict mode)', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({
+          userId: 'u1',
+          notInTheSchema: 'x',
+          messages: [{ role: 'user', content: 'hi', alsoNotInTheSchema: { a: 1 } }],
+        });
+        const found = (await conversations.findById(created._id as string))!;
+        assert.equal('notInTheSchema' in found, false);
+        const message = (found.messages as Array<Record<string, unknown>>)[0];
+        assert.equal(message.content, 'hi');
+        assert.equal('alsoNotInTheSchema' in message, false);
+      });
+
+      it('does not store an empty object for a field defaulting to one (minimize)', async () => {
+        const feedback = store.collection('feedback');
+        const created = await feedback.create({ userId: 'u1', message: 'm', category: 'bug' });
+        const found = (await feedback.findById(created._id as string))!;
+        assert.equal('context' in found, false, 'Mongoose minimizes an empty {} away');
+      });
+
+      it('drops an empty object inside an element pushed by an update, but keeps a $set of one', async () => {
+        const conversations = store.collection('conversations');
+        const created = await conversations.create({ userId: 'u1' });
+        await conversations.updateOne(
+          { _id: created._id },
+          { $push: { messages: { $each: [{ role: 'assistant', content: 'x', toolCalls: [{ id: 't', function: { name: 'f', arguments: {} } }] }] } } }
+        );
+        const found = (await conversations.findById(created._id as string))!;
+        const call = (found.messages as Array<{ toolCalls: Array<{ function: Record<string, unknown> }> }>)[0].toolCalls[0];
+        assert.equal(call.function.name, 'f');
+        assert.equal('arguments' in call.function, false, 'Mongoose minimizes the empty object inside a pushed element');
+      });
+
+      it('returns documents in creation order when the query asks for no order', async () => {
+        const ids: string[] = [];
+        for (let i = 0; i < 6; i++) ids.push((await tasks.create({ userId: 'order-user', title: `o${i}` }))._id as string);
+        const found = await tasks.find({ userId: 'order-user' });
+        assert.deepEqual(found.map((t) => t._id), ids);
+      });
+
       it('replaces a whole document', async () => {
         const [alpha] = await seed();
         const result = await tasks.replaceOne(
@@ -326,6 +490,73 @@ export function runDataStoreConformance(backend: BackendHarness): void {
       });
     });
 
+    describe('concurrent writes', () => {
+      it('lets exactly one of several concurrent conditional updates win', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'claim me' });
+        // "Claim it if nobody has" with the condition in the filter - how the application
+        // implements feedback replies, proposal approval and queue claims.
+        const results = await Promise.all(
+          Array.from({ length: 8 }, (_, i) =>
+            tasks.updateOne({ _id: doc._id, status: 'todo' }, { $set: { status: 'in_progress', title: `winner-${i}` } })
+          )
+        );
+        assert.equal(results.filter((r) => r.matched === 1).length, 1, 'exactly one claim may succeed');
+        assert.equal(results.filter((r) => r.modified === 1).length, 1);
+        const final = (await tasks.findById(doc._id as string))!;
+        assert.equal(final.status, 'in_progress');
+        assert.match(final.title as string, /^winner-\d$/);
+      });
+
+      it('lets exactly one concurrent findOneAndUpdate claim a document', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'queued' });
+        const claims = await Promise.all(
+          Array.from({ length: 6 }, () =>
+            tasks.findOneAndUpdate({ _id: doc._id, status: 'todo' }, { $set: { status: 'in_progress' } }, { returnDocument: 'after' })
+          )
+        );
+        assert.equal(claims.filter((c) => c !== null).length, 1);
+      });
+
+      it('does not lose concurrent increments', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'counter', percentComplete: 0 });
+        await Promise.all(Array.from({ length: 20 }, () => tasks.updateOne({ _id: doc._id }, { $inc: { percentComplete: 1 } })));
+        assert.equal((await tasks.findById(doc._id as string))?.percentComplete, 20);
+      });
+
+      it('lets exactly one of several concurrent deletes of a document report success', async () => {
+        const doc = await tasks.create({ userId: 'u1', title: 'delete once' });
+        const results = await Promise.all(Array.from({ length: 6 }, () => tasks.deleteOne({ _id: doc._id })));
+        assert.equal(results.filter((r) => r.deleted === 1).length, 1);
+      });
+
+      it('rejects one of two concurrent creates of the same unique value, as a duplicate key', async () => {
+        const settled = await Promise.allSettled([
+          users.create({ email: 'race@example.com', displayName: 'A', passwordHash: 'x' }),
+          users.create({ email: 'race@example.com', displayName: 'B', passwordHash: 'x' }),
+        ]);
+        assert.equal(settled.filter((r) => r.status === 'fulfilled').length, 1);
+        const rejected = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+        // The application turns code 11000 into a 409; both backends must raise it.
+        assert.equal((rejected.reason as { code?: unknown }).code, 11000);
+        assert.equal(await users.countDocuments({ email: 'race@example.com' }), 1);
+      });
+
+      it('deletes concurrently without a spurious error on any of them', async () => {
+        const created = await Promise.all(
+          Array.from({ length: 12 }, (_, i) => tasks.create({ userId: 'u1', title: `bulk-${i}` }))
+        );
+        // Deletes of different documents, in different shapes, all in flight at once - what
+        // `Promise.all` over several collections does in the application.
+        const results = await Promise.all([
+          ...created.slice(0, 4).map((t) => tasks.deleteOne({ _id: t._id })),
+          tasks.deleteMany({ title: { $in: created.slice(4, 8).map((t) => t.title) } }),
+          ...created.slice(8).map((t) => tasks.findOneAndDelete({ _id: t._id })),
+        ]);
+        assert.equal(results.length, 9);
+        assert.equal(await tasks.countDocuments({ userId: 'u1' }), 0);
+      });
+    });
+
     describe('constraints', () => {
       it('enforces a unique index', async () => {
         await users.create({ email: 'dup@example.com' });
@@ -335,6 +566,18 @@ export function runDataStoreConformance(backend: BackendHarness): void {
       it('lowercases and trims where the schema says to', async () => {
         const created = await users.create({ email: '  MixedCase@Example.COM ' });
         assert.equal(created.email, 'mixedcase@example.com');
+      });
+
+      it('reports every validation problem at once, not just the first', async () => {
+        await assert.rejects(
+          tasks.create({ userId: 'u1', status: 'not-a-real-status', percentComplete: 99999 }),
+          (error: Error) => {
+            assert.match(error.message, /title/, 'the missing title');
+            assert.match(error.message, /status/, 'the invalid status');
+            assert.match(error.message, /percentComplete/, 'the out-of-range percent');
+            return true;
+          }
+        );
       });
 
       it('rejects a document missing a required field', async () => {

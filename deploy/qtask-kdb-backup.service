@@ -1,0 +1,13 @@
+[Unit]
+Description=QTask daily KDB backup (online, verified)
+Documentation=file:///opt/qtask/live/docs/KDB_MIGRATION.md
+After=qtask-kdb.service
+
+[Service]
+Type=oneshot
+User=qtask
+Group=qtask
+# Asks kdb-service (control plane on 127.0.0.1:7702) for an online backup into
+# /var/lib/qtask/backups/kdb, verifies it, then prunes past 14 days (keeping at least 3).
+# Exits non-zero - a failed unit - if the backup or its verification fails.
+ExecStart=/opt/qtask/live/deploy/kdb-backup.sh backup

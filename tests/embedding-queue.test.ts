@@ -129,6 +129,25 @@ describe('embeddingQueue (event-driven)', () => {
     assert.equal(job?.status, 'pending');
   });
 
+  it('re-queues a job that has already been embedded MAX_ATTEMPTS times, so it is picked up again', async () => {
+    // Every claim counts as an attempt, successful ones included. A job embedded three times
+    // used to keep attempts at 3 when re-queued, never matched the pickup's `attempts < 3`,
+    // and every later edit of the task kept a stale embedding.
+    const { EmbeddingJobModel } = await import('../src/models/index.js');
+    const { enqueueEmbeddingJob, stopEmbeddingWorker } = await import('../src/services/embeddingQueue.js');
+
+    stopEmbeddingWorker();
+
+    const taskId = new mongoose.Types.ObjectId().toString();
+    await EmbeddingJobModel.create({ entityType: 'task', entityId: taskId, taskId, status: 'completed', attempts: 3 });
+
+    await enqueueEmbeddingJob(taskId);
+
+    const job = await EmbeddingJobModel.findOne({ taskId }).lean();
+    assert.equal(job?.status, 'pending');
+    assert.equal(job?.attempts, 0, 'a new edit is new work: its attempts start again');
+  });
+
   it('does not re-queue while a job is processing', async () => {
     const { EmbeddingJobModel } = await import('../src/models/index.js');
     const { enqueueEmbeddingJob, stopEmbeddingWorker } = await import('../src/services/embeddingQueue.js');

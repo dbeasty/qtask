@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 
 process.env.NODE_ENV = 'test';
@@ -24,7 +24,7 @@ before(async () => {
   // Boot through the app's own lifecycle rather than opening a driver connection
   // by hand: the data layer, not Mongoose, is what the services talk to now, and
   // connecting the driver alone leaves the store uninitialized.
-  adminApp = await createAdminApp({ connect: true, serveClient: false });
+  adminApp = await serve(await createAdminApp({ connect: true, serveClient: false }));
 });
 
 after(async () => {
@@ -126,7 +126,9 @@ describe('admin ollama metrics endpoints', () => {
   async function seedMetrics() {
     const { LlmCallMetricModel } = await import('../src/models/index.js');
     const base = new Date('2026-01-15T10:00:00.000Z');
-    const expiresAt = new Date(base.getTime() + 30 * 24 * 3600_000);
+    // In the future relative to *now*: the metrics are dated 2026-01-15, and a TTL that has already
+    // passed is hidden at once on KDB, where Mongo's TTL monitor only sweeps about once a minute.
+    const expiresAt = new Date(Date.now() + 30 * 24 * 3600_000);
     const metric = (
       overrides: Record<string, unknown> & { startedAt: Date; durationMs: number }
     ) => ({

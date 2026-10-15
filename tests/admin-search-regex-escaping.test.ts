@@ -2,7 +2,7 @@ import { after, before, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 import { escapeRegex } from '../src/services/searchUtils.js';
 
@@ -21,7 +21,7 @@ before(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
   const { createAdminApp } = await import('../src/admin/app.js');
-  adminApp = await createAdminApp({ connect: true, serveClient: false });
+  adminApp = await serve(await createAdminApp({ connect: true, serveClient: false }));
 });
 
 beforeEach(async () => {

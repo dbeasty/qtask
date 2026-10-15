@@ -12,6 +12,7 @@
  */
 
 import { createLogger } from '../utils/logger.js';
+import { isLocalMode } from '../local/config.js';
 import type { CollectionName, Collection, DataStore, Doc } from './types.js';
 
 const log = createLogger('data');
@@ -24,8 +25,14 @@ export type DataBackend = 'mongo' | 'kdb';
  * one means half a deployment could read from the other.
  */
 export function resolveDataBackend(env: NodeJS.ProcessEnv = process.env): DataBackend {
+  const local = isLocalMode(env);
   const wantsMongo = env.DATA_MONGO === 'true';
-  const wantsKdb = env.DATA_KDB === 'true';
+  // A local-mode device has no database server to run Mongo against: its store is the
+  // embedded KDB child the app supervises.
+  if (local && wantsMongo) {
+    throw new Error('QTASK_LOCAL uses the embedded KDB store and cannot be combined with DATA_MONGO');
+  }
+  const wantsKdb = env.DATA_KDB === 'true' || local;
 
   if (wantsMongo && wantsKdb) {
     throw new Error('DATA_MONGO and DATA_KDB are mutually exclusive — set exactly one');
@@ -86,15 +93,41 @@ export function shadowReadSampleRate(env: NodeJS.ProcessEnv = process.env): numb
   return parsed;
 }
 
+/** Whether this process is the sync hub (cloud peer). Read lazily, like the other flags. */
+function hubSyncEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.QTASK_SYNC_HUB === 'true';
+}
+
 export async function connectData(): Promise<DataStore> {
   if (store) return store;
+  let connected = await connectBackends();
+  if (hubSyncEnabled()) {
+    // The cloud hub is a sync peer: wrap the store so every service write is tracked.
+    // Off unless QTASK_SYNC_HUB=true, so a deployment that has not opted in is unchanged.
+    const { installHubSync, initHubSync } = await import('../sync/runtime.js');
+    connected = await installHubSync(connected);
+    store = connected;
+    await initHubSync();
+  } else if (isLocalMode()) {
+    // A device: wrap the store for change tracking and open its sync records, so paired
+    // devices and the cloud can sync with it (src/local/sync.ts). QTASK_LOCAL_SYNC=0 opts out.
+    const { installLocalSync, localSyncEnabled } = await import('../local/sync.js');
+    if (localSyncEnabled()) {
+      const { resolveDataDir } = await import('../local/config.js');
+      connected = await installLocalSync(connected, resolveDataDir());
+    }
+  }
+  store = connected;
+  return store;
+}
+
+async function connectBackends(): Promise<DataStore> {
   const backend = resolveDataBackend();
   const primary = await createStore(backend);
 
   if (!shadowWritesEnabled()) {
     await primary.connect();
-    store = primary;
-    return store;
+    return primary;
   }
 
   const shadowBackend: DataBackend = backend === 'mongo' ? 'kdb' : 'mongo';
@@ -113,7 +146,7 @@ export async function connectData(): Promise<DataStore> {
       compareReads,
       readSampleRate: compareReads ? shadowReadSampleRate() : undefined,
     });
-    store = shadowed;
+    return shadowed;
   } catch (error) {
     if (!(error instanceof ShadowUnavailableError)) throw error;
     // The primary is already open at this point, and the whole premise is that the
@@ -123,13 +156,21 @@ export async function connectData(): Promise<DataStore> {
       primary: backend,
       shadow: shadowBackend,
     });
-    store = primary;
+    return primary;
   }
-  return store;
 }
 
 export async function disconnectData(): Promise<void> {
   if (!store) return;
+  if (isLocalMode()) {
+    const { closeLocalSync } = await import('../local/sync.js');
+    await closeLocalSync();
+  }
+  if (hubSyncEnabled()) {
+    const { flushHubSync, setHubEngine } = await import('../sync/runtime.js');
+    await flushHubSync();
+    setHubEngine(undefined);
+  }
   await store.disconnect();
   store = undefined;
 }

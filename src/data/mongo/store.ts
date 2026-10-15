@@ -27,31 +27,9 @@ import type {
   UpdateOptions,
   UpdateResult,
 } from '../types.js';
+import { MODEL_BY_COLLECTION } from '../modelNames.js';
 
 /** Model names as registered in src/models/index.ts, by collection name. */
-const MODEL_BY_COLLECTION: Record<CollectionName, string> = {
-  users: 'User',
-  tasks: 'Task',
-  projects: 'Project',
-  comments: 'Comment',
-  activities: 'Activity',
-  conversations: 'Conversation',
-  notifications: 'Notification',
-  invites: 'Invite',
-  feedback: 'Feedback',
-  feedbackVisionJobs: 'FeedbackVisionJob',
-  embeddingJobs: 'EmbeddingJob',
-  llmCallMetrics: 'LlmCallMetric',
-  llmDailyMetrics: 'LlmDailyMetric',
-  adminAudits: 'AdminAudit',
-  mcpApiKeys: 'McpApiKey',
-  mcpSessions: 'McpSession',
-  mcpOAuthClients: 'McpOAuthClient',
-  mcpOAuthAuthorizationCodes: 'McpOAuthAuthorizationCode',
-  mcpOAuthRefreshTokens: 'McpOAuthRefreshToken',
-  mcpOAuthPendingConsents: 'McpOAuthPendingConsent',
-  userOAuthAuthCodes: 'UserOAuthAuthCode',
-};
 
 /**
  * Turns a lean Mongoose result into a plain document. ObjectIds become strings —
@@ -102,11 +80,21 @@ class MongoBackedCollection<T extends Doc> implements Collection<T> {
     return plainDoc<T>(await query.lean());
   }
 
+  /**
+   * Whether `id` could be this collection's _id. Only a collection whose _id is an ObjectId can
+   * rule an id out by its shape; one with string ids (MCP sessions are UUIDs) must pass any id
+   * through, or findById could never find a single document in it.
+   */
+  private idIsValid(id: string): boolean {
+    const idType = this.model.schema.path('_id') as unknown as { instance?: string } | undefined;
+    return idType?.instance !== 'ObjectId' || mongoose.isValidObjectId(id);
+  }
+
   async findById(id: string, options: FindOptions = {}): Promise<T | null> {
     // An id that is not a valid ObjectId is a miss, not a cast error: callers pass
     // ids straight from URLs and request bodies, and every one of them would
     // otherwise need its own validity check before every lookup.
-    if (!mongoose.isValidObjectId(id)) return null;
+    if (!this.idIsValid(id)) return null;
     let query = this.model.findById(id);
     if (options.select) query = query.select(options.select);
     return plainDoc<T>(await query.lean());
@@ -157,7 +145,7 @@ class MongoBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async findByIdAndUpdate(id: string, update: Update, options: UpdateOptions = {}): Promise<T | null> {
-    if (!mongoose.isValidObjectId(id)) return null;
+    if (!this.idIsValid(id)) return null;
     const doc = await this.model
       .findByIdAndUpdate(id, update, { new: options.returnDocument !== 'before' })
       .lean();
@@ -206,6 +194,11 @@ export class MongoDataStore implements DataStore {
 
   async disconnect(): Promise<void> {
     await mongoose.disconnect();
+  }
+
+  async ping(): Promise<void> {
+    if (mongoose.connection.readyState !== 1) throw new Error('mongodb is not connected');
+    await mongoose.connection.db?.admin().ping();
   }
 
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T> {

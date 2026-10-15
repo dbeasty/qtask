@@ -123,13 +123,16 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OLLAMA_VISION_MODEL` | `moondream` | Vision model for feedback screenshot validation (`ollama pull moondream` on the vision host) |
 | `FEEDBACK_ENABLED` | `true` | When `false`, feedback UI and API are disabled |
 | `FEEDBACK_IMAGES_ENABLED` | `true` | When `false`, feedback is text-only (no screenshot uploads or vision validation) |
-| `STORAGE_BACKEND` | `local` | `local` or `s3` for feedback screenshot storage |
+| `STORAGE_BACKEND` | `local` | `local`, `s3` or `kdb` for feedback screenshot storage (`kdb`: KDB attachments, see docs/KDB_MIGRATION.md) |
 | `STORAGE_LOCAL_PATH` | `./data/uploads` | Local directory when `STORAGE_BACKEND=local` |
 | `S3_BUCKET` | — | S3 bucket when `STORAGE_BACKEND=s3` |
 | `S3_REGION` | — | AWS region (required for S3 backend) |
 | `S3_ENDPOINT` | — | Optional custom endpoint (MinIO, etc.) |
 | `S3_ACCESS_KEY_ID` | — | S3 access key |
 | `S3_SECRET_ACCESS_KEY` | — | S3 secret key |
+| `STORAGE_KDB_ADDR` | *(`KDB_ADDR`)* | KDB server when `STORAGE_BACKEND=kdb` |
+| `STORAGE_KDB_NAMESPACE` | *(`KDB_NAMESPACE_PREFIX`)* | KDB namespace for uploads; must be the service's `--namespace` |
+| `STORAGE_KDB_TOKEN` | *(`KDB_TOKEN`)* | `user:password` for a KDB service with `--rbac` |
 | `FEEDBACK_MAX_ATTACHMENT_BYTES` | `5242880` | Max screenshot size (5 MB) |
 | `FEEDBACK_MAX_ATTACHMENTS` | `3` | Max screenshots per submission |
 | `FEEDBACK_VISION_MIN_CONFIDENCE` | `0.7` | Minimum model confidence to accept a screenshot |

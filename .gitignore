@@ -7,3 +7,15 @@ release/
 *.log
 .DS_Store
 data/uploads/
+client-macos/build/
+client-macos/.build/
+
+# Released kdb-service binaries (npm run kdb:fetch)
+.kdb/
+
+# Database benchmark (bench/docker.ts): dataset cache and results
+bench/.cache/
+bench/results/
+
+# Migration rehearsal logs (scripts/rehearsal)
+.rehearsal/

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import type { Express } from 'express';
+import { serve } from './helpers/http.js';
 import { createMcpContext, mcpCallTool, mcpInitialize, resetMcpTestData } from './helpers/mcp.js';
 
 process.env.NODE_ENV = 'test';
@@ -35,7 +36,7 @@ async function createTestApp(env: Record<string, string | undefined> = {}): Prom
     else process.env[key] = value;
   }
   const { createApp } = await import('../src/app.js');
-  return createApp({ connect: true, startWorker: false });
+  return serve(await createApp({ connect: true, startWorker: false }));
 }
 
 describe('MCP stays reachable in read-only mode; only write tools are blocked', () => {

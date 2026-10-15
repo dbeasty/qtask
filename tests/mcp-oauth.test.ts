@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 import type { Express } from 'express';
 import { registerUser } from './helpers/mcp.js';
 
@@ -26,7 +26,7 @@ before(async () => {
   process.env.MONGODB_URI = mongo.getUri();
 
   const { createApp } = await import('../src/app.js');
-  app = await createApp({ connect: true, startWorker: false });
+  app = await serve(await createApp({ connect: true, startWorker: false }));
 });
 
 beforeEach(async () => {

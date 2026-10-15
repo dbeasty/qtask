@@ -4274,3 +4274,131 @@ button.expense-tree-meta:hover {
   border-left: 2px solid var(--color-border);
   padding-left: 0.75rem;
 }
+
+/* Devices & Sync (Mac app, local mode) */
+.devices-peers,
+.devices-conflicts,
+.devices-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.devices-peer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.2rem 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.devices-peer-main {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.devices-peer-meta {
+  grid-column: 1;
+  font-size: 0.85rem;
+}
+
+.devices-unpair {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.devices-badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text-muted);
+}
+
+.devices-badge--on {
+  color: var(--color-text);
+  background: var(--color-bg-selected);
+}
+
+.devices-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+}
+
+.devices-join,
+.devices-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.devices-join input {
+  flex: 1 1 22rem;
+}
+
+.devices-cloud input {
+  flex: 1 1 12rem;
+}
+
+.devices-cloud p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.devices-pairing {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface-3);
+}
+
+.devices-invite {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.devices-qr svg {
+  width: 200px;
+  height: 200px;
+  display: block;
+  border-radius: 0.4rem;
+}
+
+.devices-invite-text {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.devices-link {
+  width: 100%;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.75rem;
+}
+
+.devices-sas-code {
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  font-variant-numeric: tabular-nums;
+  margin: 0.5rem 0;
+}
+
+.devices-toggle {
+  display: block;
+  margin-top: 0.5rem;
+}
+
+.devices-conflict,
+.devices-log li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.9rem;
+}

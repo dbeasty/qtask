@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The KDB tests spawn kdb-service and helper processes; if one ever wedges, fail in
+    # minutes rather than at GitHub's 6-hour default.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -22,17 +25,24 @@ jobs:
       - name: Install API dependencies
         run: npm ci
 
+      # The KDB tests run against the released kdb-service that @kdb/client is pinned to;
+      # without it they skip, and CI would say nothing about the KDB backend.
+      - name: Fetch the pinned kdb-service release
+        run: npm run kdb:fetch
+
       - name: Audit dependencies
         run: npm audit --audit-level=high
+
+      # Before the tests: several of them import client/src components (TaskLaborEditor,
+      # TaskMaterialsEditor, TaskStepsEditor), which resolve react from client/node_modules.
+      - name: Install client dependencies
+        run: npm ci --prefix client
 
       - name: Run tests
         run: npm test
 
       - name: Run shared package tests
         run: npm run test:shared
-
-      - name: Install client dependencies
-        run: npm ci --prefix client
 
       - name: Typecheck tests
         run: npm run typecheck:tests

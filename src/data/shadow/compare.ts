@@ -219,9 +219,25 @@ function differingFieldNames(primary: Doc, shadow: Doc): string[] {
   const out: string[] = [];
   for (const key of keys) {
     if (IGNORED_FIELDS.has(key)) continue;
-    if (!valuesEqual(primary[key], shadow[key])) out.push(key);
+    if (!valuesEqual(withoutSubdocStamps(primary[key]), withoutSubdocStamps(shadow[key]))) out.push(key);
   }
   return out.sort();
+}
+
+/**
+ * Sub-documents added by an update ($push of a subtask) get their createdAt/updatedAt stamped
+ * by whichever store applies the update, so the two differ by the milliseconds between them -
+ * the same reason the top-level updatedAt is ignored. Dropped, at depth, from both sides.
+ */
+function withoutSubdocStamps(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutSubdocStamps);
+  if (value === null || typeof value !== 'object' || value instanceof Date) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'createdAt' || key === 'updatedAt') continue;
+    out[key] = withoutSubdocStamps(inner);
+  }
+  return out;
 }
 
 function idOf(doc: Doc): string {

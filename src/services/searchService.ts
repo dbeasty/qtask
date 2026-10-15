@@ -1,4 +1,5 @@
 import { collection } from '../data/index.js';
+import { isLocalMode } from '../local/config.js';
 import type { ProjectDoc, TaskDoc } from '../data/documents.js';
 import type { SearchHit, SearchResults } from '../types/search.js';
 import type { TaskSearchFilters } from '../types/task.js';
@@ -232,7 +233,8 @@ async function hybridSearch<T extends { _id: unknown; embedding?: number[] }>(
   options?: { hybridSearch?: boolean }
 ): Promise<Array<{ item: T; score: number }>> {
   const textMatches = await model.findText(baseQuery, queryText);
-  const enableSemantic = options?.hybridSearch !== false;
+  // Local mode has no embedding model to ask, so search is lexical only (no network call).
+  const enableSemantic = options?.hybridSearch !== false && !isLocalMode();
   const semanticMatches = enableSemantic
     ? await semanticScoreCandidates(
         userId,

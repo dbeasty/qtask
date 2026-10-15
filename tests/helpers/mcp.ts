@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
-import request from 'supertest';
+import request from './http.js';
 import type { McpServerContext } from '../../src/mcp/mcpToolHandler.js';
 import type { McpKeyScope } from '../../src/types/mcp.js';
 

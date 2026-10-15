@@ -101,16 +101,19 @@ export type CollectionName =
   | 'mcpOAuthAuthorizationCodes'
   | 'mcpOAuthRefreshTokens'
   | 'mcpOAuthPendingConsents'
-  | 'userOAuthAuthCodes';
+  | 'userOAuthAuthCodes'
+  | 'appMeta';
 
 /**
  * A connected backend. `connect` and `disconnect` bracket the process lifetime;
  * `collection` is the only way in.
  */
 export interface DataStore {
-  readonly backend: 'mongo' | 'kdb';
+  readonly backend: 'mongo' | 'kdb' | 'memory';
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  /** Resolves when the backend answers; rejects when it is down or not connected. For /health. */
+  ping(): Promise<void>;
   collection<T extends Doc = Doc>(name: CollectionName): Collection<T>;
   /** Drops all data. Test-support only; a store may refuse outside NODE_ENV=test. */
   clear(): Promise<void>;

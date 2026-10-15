@@ -81,6 +81,12 @@ export const config = {
     /** Namespace prefix; each collection becomes `<prefix>/<collection>`. */
     namespacePrefix: process.env.KDB_NAMESPACE_PREFIX ?? 'qtask',
     token: process.env.KDB_TOKEN ?? '',
+    /** Narrow scans server-side with SQL. Off until the shadow bake has vouched for it. */
+    pushdown: process.env.DATA_KDB_PUSHDOWN === 'true',
+    /** Hand unique constraints to the server so they hold across processes. On by default. */
+    declareConstraints: process.env.DATA_KDB_DECLARE_CONSTRAINTS !== 'false',
+    /** Create on KDB the lookup indexes the schemas declare for MongoDB. On by default. */
+    declareIndexes: process.env.DATA_KDB_DECLARE_INDEXES !== 'false',
   },
   jwtSecret: requireSecret('JWT_SECRET', process.env.JWT_SECRET, 'dev-jwt-secret-change-me'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
@@ -118,8 +124,23 @@ export const config = {
     embeddingNumGpu: parseInt(process.env.OLLAMA_EMBEDDING_NUM_GPU ?? '0', 10),
   },
   storage: {
-    backend: process.env.STORAGE_BACKEND === 's3' ? ('s3' as const) : ('local' as const),
+    backend:
+      process.env.STORAGE_BACKEND === 's3'
+        ? ('s3' as const)
+        : process.env.STORAGE_BACKEND === 'kdb'
+          ? ('kdb' as const)
+          : ('local' as const),
     localPath: process.env.STORAGE_LOCAL_PATH ?? './data/uploads',
+    /**
+     * STORAGE_BACKEND=kdb: each file is an attachment of its own record in a KDB namespace
+     * (src/services/storage/kdb.ts). Defaults to the data layer's server and namespace, so a
+     * DATA_KDB deployment needs nothing more; the STORAGE_KDB_* variables point uploads elsewhere.
+     */
+    kdb: {
+      addr: process.env.STORAGE_KDB_ADDR ?? process.env.KDB_ADDR ?? 'tcp://127.0.0.1:7700',
+      namespace: process.env.STORAGE_KDB_NAMESPACE ?? process.env.KDB_NAMESPACE_PREFIX ?? 'qtask',
+      token: process.env.STORAGE_KDB_TOKEN ?? process.env.KDB_TOKEN ?? '',
+    },
     s3: {
       bucket: process.env.S3_BUCKET,
       region: process.env.S3_REGION,

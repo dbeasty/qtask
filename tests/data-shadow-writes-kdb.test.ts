@@ -16,9 +16,8 @@
 import { after, before, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { resolve } from 'node:path';
+import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 
 import type { DataStore, Doc } from '../src/data/types.ts';
@@ -27,16 +26,10 @@ import type { ShadowDataStore } from '../src/data/shadow/store.ts';
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 
-const KDB_ROOT = process.env.KDB_ROOT ?? resolve(import.meta.dirname, '../../kdb');
-const CLIENT_MODULE =
-  process.env.KDB_CLIENT_MODULE ?? resolve(KDB_ROOT, 'packages/kdb-client/src/index.ts');
-const SERVICE_BIN = process.env.KDB_SERVICE_BIN ?? resolve(KDB_ROOT, 'go/bin/kdb-service');
 const PORT = Number(process.env.KDB_SHADOW_TEST_PORT ?? 7813);
 
 function unavailable(): string | undefined {
-  if (!existsSync(SERVICE_BIN)) return `kdb-service not built at ${SERVICE_BIN}`;
-  if (!existsSync(CLIENT_MODULE)) return `@kdb/client not found at ${CLIENT_MODULE}`;
-  return undefined;
+  return kdbUnavailable;
 }
 
 let mongo: MongoMemoryServer;
@@ -62,7 +55,7 @@ before(async () => {
       '--memory',
       '--namespace',
       'qtaskshadow/docs',
-      '--sql-addr',
+      '--peer-addr', '', '--stream-addr', '', '--sql-addr',
       `tcp://127.0.0.1:${PORT}?bind=true`,
       '--log-level',
       'error',
@@ -117,6 +110,34 @@ describe('shadow writes into a real KDB', { skip: unavailable() }, () => {
     assert.equal(fromShadow.status, fromPrimary.status);
     assert.deepEqual(fromShadow.tags, fromPrimary.tags);
     assert.deepEqual(fromShadow.tags, ['a', 'b']);
+  });
+
+  it('gives a sub-document the same _id in both stores, at any depth', async () => {
+    const tasks = store.collection('tasks');
+    const created = await tasks.create({ userId: 'u1', title: 'with steps', steps: [{ text: 'first' }] });
+    // Pushed after creation - minted by neither store's create path - including one nested two
+    // levels down, inside a subtask, and a $set that replaces the whole list.
+    await tasks.updateOne({ _id: created._id }, { $push: { steps: { text: 'second' } } });
+    await tasks.updateOne({ _id: created._id }, { $push: { subtasks: { title: 'sub', steps: [{ text: 'inner' }] } } });
+    await tasks.updateMany({ _id: created._id }, { $push: { steps: { $each: [{ text: 'third' }, { text: 'fourth' }] } } });
+    await tasks.findOneAndUpdate({ _id: created._id }, { $set: { 'subtasks.0.steps': [{ text: 'replaced' }] } });
+    await store.drainShadow();
+
+    const fromPrimary = (await tasks.findById(String(created._id)))!;
+    const fromShadow = (await shadow.collection('tasks').findById(String(created._id)))!;
+    const ids = (doc: Doc) => ({
+      steps: (doc.steps as Doc[]).map((step) => String(step._id)),
+      subtasks: (doc.subtasks as Doc[]).map((sub) => [String(sub._id), (sub.steps as Doc[]).map((step) => String(step._id))]),
+    });
+    assert.equal((fromPrimary.steps as Doc[]).length, 4);
+    assert.deepEqual(ids(fromShadow), ids(fromPrimary));
+    // ...so addressing a sub-document by id works on both sides.
+    const second = (fromPrimary.steps as Doc[])[1]!._id;
+    await tasks.updateOne({ _id: created._id, 'steps._id': second }, { $set: { 'steps.$.text': 'edited' } });
+    await store.drainShadow();
+    const edited = (await shadow.collection('tasks').findById(String(created._id)))!;
+    assert.equal((edited.steps as Doc[])[1]!.text, 'edited');
+    assert.equal(store.stats().failed, 0, store.stats().lastError ?? '');
   });
 
   it('mirrors a delete', async () => {

@@ -4,7 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import type { Express } from 'express';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import request from 'supertest';
+import request, { serve } from './helpers/http.js';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-conversation-duplicate-secret';
@@ -18,7 +18,7 @@ before(async () => {
   process.env.MONGODB_URI = mongo.getUri();
 
   const { createApp } = await import('../src/app.js');
-  app = await createApp({ connect: true, startWorker: false });
+  app = await serve(await createApp({ connect: true, startWorker: false }));
 });
 
 after(async () => {

@@ -1,5 +1,6 @@
 import { config } from '../config/index.js';
 import { disconnectDb } from '../db/connection.js';
+import { closeObjectStorage } from '../services/storage/index.js';
 import { createAdminApp } from './app.js';
 
 async function main() {
@@ -11,6 +12,7 @@ async function main() {
   const shutdown = async () => {
     server.close();
     await disconnectDb();
+    await closeObjectStorage().catch(() => undefined);
     process.exit(0);
   };
 

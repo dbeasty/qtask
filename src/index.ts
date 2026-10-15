@@ -4,6 +4,7 @@ import { disconnectDb } from './db/connection.js';
 import { stopEmbeddingWorker } from './services/embeddingQueue.js';
 import { stopFeedbackVisionWorker } from './services/feedbackVisionQueue.js';
 import { stagingService } from './services/stagingService.js';
+import { closeObjectStorage } from './services/storage/index.js';
 import { mcpSessionService } from './services/mcpSessionService.js';
 
 async function main() {
@@ -23,6 +24,7 @@ async function main() {
     mcpSessionService.stopSweep();
     server.close();
     await disconnectDb();
+    await closeObjectStorage().catch(() => undefined);
     process.exit(0);
   };
 
