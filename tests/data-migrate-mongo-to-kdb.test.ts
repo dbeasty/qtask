@@ -31,6 +31,9 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
       const child = spawn(process.execPath, ['--import', 'tsx', 'src/scripts/migrate-mongo-to-kdb.ts', ...args], {
         env, cwd: resolve(import.meta.dirname, '..'),
+        // A run that never finishes must not outlive the test: the test runner's timeout
+        // cancels the test, but a live child keeps this file's process (and npm test) up.
+        timeout: 100_000, killSignal: 'SIGKILL',
       });
       let stdout = '';
       let stderr = '';
