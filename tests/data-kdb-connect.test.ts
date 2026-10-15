@@ -29,4 +29,28 @@ describe('KDB store connection', () => {
     assert.equal(calls[0]!.addr, 'tcp://127.0.0.1:1');
     assert.deepEqual(calls[0]!.options, { token: 'qtask:s3cret' });
   });
+
+  it('does not count the whole namespace before reading, unless the scan-cap guard is asked for', async () => {
+    await import('../src/models/index.ts');
+    const { KdbDataStore } = await import('../src/data/kdb/store.ts');
+    const { statements } = (await import('./helpers/recordingKdbClient.ts')) as { statements: string[] };
+    const store = new KdbDataStore();
+    await store.connect();
+    const namespaceCount = () => statements.filter((sql) => /^SELECT COUNT\(\*\) FROM docs$/.test(sql)).length;
+    try {
+      statements.length = 0;
+      await store.collection('tasks').find({ userId: 'u1' });
+      assert.equal(namespaceCount(), 0, 'KDB v0.8.0 does not truncate; the guard is off by default');
+
+      process.env.KDB_SERVER_ROW_CAP = '10000';
+      await store.disconnect();
+      await store.connect(); // forgets the last check
+      statements.length = 0;
+      await store.collection('tasks').find({ userId: 'u1' });
+      assert.equal(namespaceCount(), 1, 'opting in still guards against a truncating server');
+    } finally {
+      delete process.env.KDB_SERVER_ROW_CAP;
+      await store.disconnect();
+    }
+  });
 });

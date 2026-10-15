@@ -205,9 +205,14 @@ function isPlainObject(value: unknown): value is Doc {
  * through those scans, so past the cap the answers are wrong rather than slow.
  *
  * Wrong answers that look right are the worst way for a database to fail, so the store
- * refuses instead. Set KDB_SERVER_ROW_CAP=0 once the server no longer truncates (the
- * regression test in tests/data-kdb-scan-cap.test.ts says when), or to the cap the
- * server was actually configured with.
+ * could refuse instead (KDB_SERVER_ROW_CAP=10000).
+ *
+ * Off by default since the pin moved to KDB v0.8.0, which does not truncate (B1 is fixed), and
+ * whose client refuses a server from another release line - so no truncating server can be on the
+ * other end. Leaving it on was not free: the check is a `SELECT COUNT(*)` over the whole
+ * namespace every few seconds, and with --expire-field that reads every document body (measured:
+ * 0.8-20 s at 27,600 documents, depending on how they were written). It also misfired on a fixed
+ * server whose namespace held exactly the cap.
  */
 export class KdbScanCapError extends Error {
   constructor(count: number, cap: number) {
@@ -227,7 +232,7 @@ const capCheck: { at?: number; count: number } = { count: 0 };
  *  commit is built on (see importMany). Any real commit will do; the server rebases a stale one. */
 const lastCommit = new Map<string, string>();
 
-const DEFAULT_SERVER_ROW_CAP = 10_000;
+const DEFAULT_SERVER_ROW_CAP = 0;
 const CAP_RECHECK_MS = 5_000;
 
 function serverRowCap(): number {
