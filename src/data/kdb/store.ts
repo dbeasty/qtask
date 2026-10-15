@@ -110,16 +110,26 @@ class SerializedDmlClient implements KdbClient {
     return this.inner.upsert(ns, docId, body);
   }
   queryRaw(ns: string, sql: string, args?: unknown[]) {
-    return this.inner.queryRaw(ns, sql, args);
+    return retryWhenBusy(() => this.inner.queryRaw(ns, sql, args));
   }
-  queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number) {
-    return this.inner.queryRawPages(ns, sql, args, pageSize);
+  async *queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number) {
+    // Only the first page is retried: a later one would need the continuation the failed call
+    // lost, and starting over would repeat rows the caller already has.
+    let pages!: AsyncIterator<{ columns: string[]; rows: string[][] }>;
+    let page = await retryWhenBusy(() => {
+      pages = this.inner.queryRawPages(ns, sql, args, pageSize)[Symbol.asyncIterator]();
+      return pages.next();
+    });
+    while (!page.done) {
+      yield page.value;
+      page = await pages.next();
+    }
   }
   get(ns: string, docId: string) {
-    return this.inner.get(ns, docId);
+    return retryWhenBusy(() => this.inner.get(ns, docId));
   }
   getWithHash(ns: string, docId: string) {
-    return this.inner.getWithHash(ns, docId);
+    return retryWhenBusy(() => this.inner.getWithHash(ns, docId));
   }
   replace(ns: string, docId: string, body: unknown) {
     return this.inner.replace(ns, docId, body);
@@ -147,6 +157,26 @@ class SerializedDmlClient implements KdbClient {
   }
 }
 
+/**
+ * Runs a read again when the server refuses it as BUSY - kdb-service v0.8.0's answer to a read
+ * that arrives in a high memory-pressure zone ("rejecting scan - memory pressure zone high (retry
+ * after 100ms)"), which it marks retryable. Seen in the restore drill on a 110,000-document
+ * namespace under --memory-budget-mb 1536. A handful of attempts, backing off from the server's
+ * hint to at most 2 s, about 6 s in all; past that the refusal is the caller's to see. Writes are
+ * not retried here: a write the server refused is the claim loop's to retry, with a fresh read.
+ */
+export async function retryWhenBusy<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const busy = (error as { code?: string }).code === 'BUSY' || (error as Error).constructor?.name === 'KdbBusyError';
+      if (!busy || attempt >= attempts - 1) throw error;
+      const hint = Number((error as { retryAfterMs?: number }).retryAfterMs) || 100;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, hint * 2 ** attempt)));
+    }
+  }
+}
 
 /** JSON revives dates as strings; the schema knows which paths are dates, and the query engine
  *  compares dates by instant, so reads rehydrate them on the way out. Recurses into
