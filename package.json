@@ -29,6 +29,7 @@
     "perf:lan-engine": "tsx scripts/perf-lan-engine.ts",
     "hash-admin-password": "tsx src/scripts/hash-admin-password.ts",
     "migrate:kdb": "tsx src/scripts/migrate-mongo-to-kdb.ts",
+    "bench:docker": "tsx bench/docker.ts",
     "release": "bash scripts/build-release.sh",
     "release:jetson": "bash scripts/build-jetson-release.sh",
     "publish:jetson": "bash scripts/publish-jetson-release.sh",
