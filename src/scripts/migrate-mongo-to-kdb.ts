@@ -2,7 +2,7 @@
  * Copies every collection from MongoDB into KDB, and checks the copy.
  *
  *   npm run migrate:kdb -- backfill [--collection=tasks] [--dry-run]
- *   npm run migrate:kdb -- verify   [--collection=tasks]
+ *   npm run migrate:kdb -- verify   [--collection=tasks] [--count-limit=20000]
  *   npm run migrate:kdb -- counts
  *   npm run migrate:kdb -- declare
  *
@@ -63,20 +63,34 @@ interface Args {
   command: 'backfill' | 'verify' | 'counts' | 'declare';
   only?: CollectionName;
   dryRun: boolean;
+  /** verify: count the KDB copy (to find surplus documents) only for collections up to this size. */
+  countLimit: number;
 }
+
+/**
+ * Above this many documents verify does not count the KDB copy. In kdb-service v0.8.0 with
+ * --expire-field, counting (or listing the ids of) a collection reads every document body, and on
+ * the 100,000-task rehearsal listing the task ids took the service past a 4 GiB memory limit
+ * (OOM-killed). `--count-limit=0` counts everything regardless.
+ */
+const DEFAULT_COUNT_LIMIT = 20_000;
 
 function parseArgs(argv: string[]): Args {
   const [command, ...rest] = argv;
   if (command !== 'backfill' && command !== 'verify' && command !== 'counts' && command !== 'declare') {
     throw new Error('usage: migrate-mongo-to-kdb <backfill|verify|counts|declare> [--collection=<name>] [--dry-run]');
   }
-  const args: Args = { command, dryRun: false };
+  const args: Args = { command, dryRun: false, countLimit: DEFAULT_COUNT_LIMIT };
   for (const flag of rest) {
     if (flag === '--dry-run') args.dryRun = true;
     else if (flag.startsWith('--collection=')) {
       const name = flag.slice('--collection='.length) as CollectionName;
       if (!ALL_COLLECTIONS.includes(name)) throw new Error(`unknown collection "${name}"`);
       args.only = name;
+    } else if (flag.startsWith('--count-limit=')) {
+      const limit = Number(flag.slice('--count-limit='.length));
+      if (!Number.isInteger(limit) || limit < 0) throw new Error(`--count-limit must be a non-negative integer`);
+      args.countLimit = limit;
     } else throw new Error(`unknown flag ${flag}`);
   }
   return args;
@@ -159,9 +173,10 @@ function ttlExpired(name: CollectionName, doc: Doc, now: number): boolean {
 }
 
 /** Returns the number of collections that disagree. */
-async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: CollectionName[]): Promise<number> {
+async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: CollectionName[], countLimit = DEFAULT_COUNT_LIMIT): Promise<number> {
   const started = Date.now();
   let bad = 0;
+  const unchecked: string[] = [];
   for (const name of names) {
     const target = kdb.collection(name);
     let missing = 0;
@@ -170,11 +185,9 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
     const fields = new Set<string>();
 
     for await (const page of pages(mongo, name)) {
-      // Keyed reads, many in flight, not SQL: the cost follows the page, not the namespace, and the
-      // server never holds more than one document per request. (An `IN (...)` of 500 ids per
-      // statement was tried: on 100,000 tasks with embeddings kdb-service v0.8.0 grew past a 4 GiB
-      // container limit and was OOM-killed, --memory-budget-mb notwithstanding; keyed gets read the
-      // same 100,000 tasks in 13 s at 761 MiB.)
+      // Keyed reads, many in flight, not SQL: the cost follows the page, not the namespace. On
+      // 100,000 tasks with embeddings keyed gets read them all in 13 s at 761 MiB RSS; `IN (...)`
+      // statements of 500 ids took 43 s at 767 MiB.
       const copies = new Map<string, Doc>();
       await inChunks(page, VERIFY_CONCURRENCY, async (doc) => {
         const copy = await target.findById(doc._id as string);
@@ -202,16 +215,28 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
     let kdbCount: number | string;
     let extra: number | string;
     try {
+      if (countLimit > 0 && mongoCount > countLimit) {
+        // Not "0": an unchecked surplus is reported as such, and listed at the end.
+        unchecked.push(name);
+        throw Object.assign(new Error('not counted'), { name: 'NotCounted' });
+      }
       kdbCount = await target.countDocuments({});
       // Extras are expected to be small and transient while shadow writes are on (a
       // delete mirrored after the scan above); a persistent surplus is a real finding.
       extra = Math.max(0, kdbCount - (mongoCount - missing - expired));
     } catch (error) {
-      if ((error as Error).name !== 'KdbScanCapError') throw error;
-      kdbCount = 'unknown';
-      extra = 'unknown';
+      if ((error as Error).name === 'NotCounted') {
+        kdbCount = 'not-counted';
+        extra = 'unchecked';
+      } else {
+        if ((error as Error).name !== 'KdbScanCapError') throw error;
+        kdbCount = 'unknown';
+        extra = 'unknown';
+      }
     }
-    const ok = missing === 0 && differing.length === 0 && extra === 0;
+    // An unchecked surplus does not fail the run (it is listed below); one that could not be
+    // looked for because the guard refused does.
+    const ok = missing === 0 && differing.length === 0 && (extra === 0 || extra === 'unchecked');
     if (!ok) bad++;
 
     console.log(
@@ -220,6 +245,12 @@ async function verify(mongo: MongoDataStore, kdb: KdbDataStore, names: Collectio
         (expired ? ` expired=${expired}` : '') +
         (fields.size ? `  fields=[${[...fields].sort().join(', ')}]` : '') +
         (differing.length ? `  e.g. ${differing.slice(0, 3).join(', ')}` : '')
+    );
+  }
+  if (unchecked.length) {
+    console.log(
+      `NOTE: surplus documents in KDB were not looked for in ${unchecked.join(', ')} (more than ${countLimit} documents; ` +
+        'counting reads every body in kdb-service v0.8.0 - docs/KDB_MIGRATION.md B5). --count-limit=0 counts them anyway.'
     );
   }
   console.log(`verified in ${((Date.now() - started) / 1000).toFixed(1)}s`);
@@ -286,7 +317,7 @@ async function main(): Promise<void> {
     if (args.command === 'backfill') {
       await backfill(mongo, kdb, names, args.dryRun);
     } else {
-      const bad = await verify(mongo, kdb, names);
+      const bad = await verify(mongo, kdb, names, args.countLimit);
       if (bad > 0) process.exitCode = 1;
     }
   } finally {

@@ -137,6 +137,13 @@ describe('migrate-mongo-to-kdb', { skip }, () => {
     assert.equal((await run('verify', '--collection=tasks')).status, 0);
   });
 
+  it('verify does not count the KDB copy of a collection above --count-limit, and says so', async () => {
+    const check = await run('verify', '--collection=tasks', '--count-limit=1000');
+    assert.equal(check.status, 0, check.stdout + check.stderr);
+    assert.match(check.stdout, /ok\s+tasks\s+mongo=1200 kdb=not-counted missing=0 differing=0 extra=unchecked/);
+    assert.match(check.stdout, /NOTE: surplus documents in KDB were not looked for in tasks/);
+  });
+
   it('verify reports a surplus in KDB', async () => {
     await mongoose.connection.collection('tasks').deleteOne({ title: 'Task 8' });
     const check = await run('verify', '--collection=tasks');

@@ -29,6 +29,15 @@ const seed = Number(arg('seed', '20261015'));
 const iterations = Number(arg('iterations', '20'));
 
 async function time(label: string, fn: (i: number) => Promise<unknown>, rows?: (r: unknown) => number): Promise<void> {
+  try {
+    await timeOrThrow(label, fn, rows);
+  } catch (error) {
+    // A failed query is a result too (B5: some take kdb-service down); report it and go on.
+    console.log(`${label.padEnd(58)} FAILED: ${(error as Error).message.slice(0, 140)}`);
+  }
+}
+
+async function timeOrThrow(label: string, fn: (i: number) => Promise<unknown>, rows?: (r: unknown) => number): Promise<void> {
   let lastRows: number | undefined;
   for (let i = 0; i < 2; i++) await fn(i);
   const samples: number[] = [];
@@ -82,7 +91,13 @@ async function main(): Promise<void> {
   }
   await time('tasks findById (store)', (i) => collection('tasks').findById(pickTask(i)));
   await time('taskService.getTask (owner)', (i) => taskService.getTask(ownerOf.get(pickTask(i))!, pickTask(i)));
-  await time('tasks.countDocuments({}) (whole collection)', () => collection('tasks').countDocuments({}));
+  if (config.dataBackend === 'kdb' && tasks > 20_000) {
+    // Counting a collection reads every body in kdb-service v0.8.0; listing the ids of 100,000 tasks
+    // took it past a 4 GiB limit (docs/KDB_MIGRATION.md B5). Not asked here, so the rest can run.
+    console.log(`${'tasks.countDocuments({}) (whole collection)'.padEnd(58)} SKIPPED on KDB above 20,000 tasks (B5)`);
+  } else {
+    await time('tasks.countDocuments({}) (whole collection)', () => collection('tasks').countDocuments({}));
+  }
 
   await disconnectData();
   if (config.dataBackend === 'mongo') await mongoose.disconnect();

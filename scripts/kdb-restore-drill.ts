@@ -83,6 +83,12 @@ interface Service {
   backupDir: string;
 }
 
+/** Every service this drill started, so a failed run does not leave them holding their ports. */
+const runningServices: Service[] = [];
+process.on('exit', () => {
+  for (const service of runningServices) if (service.child.exitCode === null) service.child.kill('SIGKILL');
+});
+
 /** A kdb-service with deploy/qtask-kdb.service's flags (ports, paths and expiry interval aside). */
 async function startService(bin: string, dataDir: string, backupDir: string, port: number): Promise<{ service: Service; readyMs: number }> {
   mkdirSync(backupDir, { recursive: true });
@@ -99,6 +105,7 @@ async function startService(bin: string, dataDir: string, backupDir: string, por
     '--durability', 'sync', '--memory-budget-mb', '1536', '--scrub-interval', '24h',
     '--log-format', 'json', '--log-level', 'warn',
   ], { stdio: ['ignore', 'ignore', 'inherit'] });
+  runningServices.push(service);
   const deadline = Date.now() + 600_000;
   for (;;) {
     if (service.child.exitCode !== null) throw new Error(`kdb-service exited with ${service.child.exitCode}`);

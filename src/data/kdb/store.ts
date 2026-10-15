@@ -359,9 +359,10 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     // predicate alone: kdb-service v0.8.0 answers `kdb_id IN (...)` by key, but stops doing so once
     // another conjunct comes first (`_c = ? AND kdb_id IN (...)` read the whole namespace: 2.7 s
     // instead of 6 ms for 100 ids at 27,000 documents). The collection is checked here instead.
-    // At most KEYED_BATCH ids per statement: on 100,000 tasks with embeddings, 500 large documents
-    // per statement drove kdb-service v0.8.0 past a 4 GiB container limit (OOM-killed); 100 held at
-    // about 1 GiB.
+    // At most KEYED_BATCH ids per statement, so no statement carries an unbounded number of large
+    // documents. (Measured on 100,000 tasks with embeddings: reading all of them in statements of
+    // 100 or 500 ids took 41-43 s at under 1.1 GiB RSS; the size of one statement is not what
+    // exhausted the server's memory in the rehearsal - see docs/KDB_MIGRATION.md B5.)
     const ids = isPlainObject(filter._id) && Array.isArray((filter._id as Doc).$in) ? ((filter._id as Doc).$in as unknown[]) : null;
     const keyedBatches = ids && buildWhere({ _id: filter._id })
       ? Array.from({ length: Math.ceil(ids.length / KEYED_BATCH) }, (_, i) => buildWhere({ _id: { $in: ids.slice(i * KEYED_BATCH, (i + 1) * KEYED_BATCH) } })!)

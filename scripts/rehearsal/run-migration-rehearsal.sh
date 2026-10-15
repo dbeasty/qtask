@@ -25,11 +25,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TASKS=100000
 GENERATE=true
 KEEP=false
+REUSE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tasks) TASKS="$2"; shift 2 ;;
     --skip-generate) GENERATE=false; shift ;;
     --keep) KEEP=true; shift ;;
+    # Restart kdb-service on the data a previous --keep run loaded, skip the load, verify and bench.
+    --reuse-kdb) REUSE=true; GENERATE=false; KEEP=true; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -38,6 +41,8 @@ MONGO_PORT="${MONGO_PORT:-8240}"
 KDB_PORT="${KDB_PORT:-8250}"
 KDB_CPUS="${KDB_CPUS:-4}"
 KDB_MEMORY="${KDB_MEMORY:-4g}"
+# What the production unit sets. 0 = kdb-service's own default (the container's whole limit).
+KDB_MEMORY_BUDGET_MB="${KDB_MEMORY_BUDGET_MB:-1536}"
 MONGO_CPUS="${MONGO_CPUS:-2}"
 # before: declare indexes on the empty namespace, then backfill (default); after: the reverse.
 INDEX_ORDER="${INDEX_ORDER:-before}"
@@ -90,8 +95,11 @@ fi
 
 # --- kdb-service ----------------------------------------------------------------------------
 docker rm -f "${KDB_NAME}" >/dev/null 2>&1 || true
-docker volume rm "${KDB_VOLUME}" >/dev/null 2>&1 || true
-docker volume create "${KDB_VOLUME}" >/dev/null
+if [[ "${REUSE}" != true ]]; then
+  docker volume rm "${KDB_VOLUME}" >/dev/null 2>&1 || true
+  docker volume create "${KDB_VOLUME}" >/dev/null
+fi
+open_started=$(date +%s)
 docker run -d --name "${KDB_NAME}" --cpus "${KDB_CPUS}" --memory "${KDB_MEMORY}" \
   -p "127.0.0.1:${KDB_PORT}:7700" -v "${KDB_VOLUME}:/var/lib/kdb" -v "${BIN_DIR}:/opt/kdb:ro" \
   alpine:3.20 /opt/kdb/kdb-service \
@@ -99,9 +107,10 @@ docker run -d --name "${KDB_NAME}" --cpus "${KDB_CPUS}" --memory "${KDB_MEMORY}"
     --sql-addr "tcp://0.0.0.0:7700?bind=true" --admin-addr 127.0.0.1:7701 \
     --peer-addr "" --stream-addr "" \
     --expire-field _expireAt --expire-interval 1m --durability sync \
+    --memory-budget-mb "${KDB_MEMORY_BUDGET_MB}" \
     --log-format json --log-level warn >/dev/null
 until docker exec "${KDB_NAME}" wget -q -O /dev/null http://127.0.0.1:7701/readyz 2>/dev/null; do sleep 0.5; done
-log "kdb-service: $(docker exec "${KDB_NAME}" /opt/kdb/kdb-service --version)"
+log "kdb-service: $(docker exec "${KDB_NAME}" /opt/kdb/kdb-service --version); memory budget ${KDB_MEMORY_BUDGET_MB} MiB; ready in $(( $(date +%s) - open_started ))s"
 
 PHASE_FILE="${OUT}/.phase"
 echo idle > "${PHASE_FILE}"
@@ -131,18 +140,25 @@ step() {
 
 # A slow statement is a measurement here, not a failure: the client's 30 s default would cut it off.
 export KDB_REQUEST_TIMEOUT_MS="${KDB_REQUEST_TIMEOUT_MS:-3600000}"
-step counts npm run -s migrate:kdb -- counts
-if [[ "${INDEX_ORDER}" == after ]]; then
+if [[ "${REUSE}" == true ]]; then
+  log "reusing the data a previous run loaded: no counts, declare or backfill"
+elif [[ "${INDEX_ORDER}" == after ]]; then
+  step counts npm run -s migrate:kdb -- counts
   # The order docs/KDB_MIGRATION.md used to recommend: load without indexes, then build them.
   step backfill env DATA_KDB_DECLARE_INDEXES=false npm run -s migrate:kdb -- backfill
   step declare npm run -s migrate:kdb -- declare
 else
+  step counts npm run -s migrate:kdb -- counts
   # Indexes declared on the empty namespace and maintained through the load.
   step declare npm run -s migrate:kdb -- declare
   step backfill npm run -s migrate:kdb -- backfill
 fi
 step verify npm run -s migrate:kdb -- verify
-grep -E 'TOTAL|DIFFERS|verified in|declared' "${OUT}/counts.log" "${OUT}/backfill.log" "${OUT}/declare.log" "${OUT}/verify.log" | sed 's/^/  /' | tee -a "${SUMMARY}"
+grep -hE 'TOTAL|DIFFERS|verified in|declared' "${OUT}"/{counts,backfill,declare,verify}.log 2>/dev/null | sed 's/^/  /' | tee -a "${SUMMARY}" || true
+if ! docker exec "${KDB_NAME}" true 2>/dev/null; then
+  log "kdb-service is NOT running: $(docker inspect "${KDB_NAME}" --format 'exit={{.State.ExitCode}} oomKilled={{.State.OOMKilled}}')"
+  exit 1
+fi
 
 # --- sizes ----------------------------------------------------------------------------------
 sleep 3
@@ -151,9 +167,11 @@ docker exec "${KDB_NAME}" sh -c 'du -sh /var/lib/kdb/ns/qtask/docs/* 2>/dev/null
 log "mongo: $(docker exec "${MONGO_NAME}" mongosh --quiet "${DB}" --eval 'const s=db.stats(); print(`dataSize=${(s.dataSize/1048576).toFixed(1)}MiB storageSize=${(s.storageSize/1048576).toFixed(1)}MiB indexSize=${(s.indexSize/1048576).toFixed(1)}MiB objects=${s.objects}`)')"
 
 # --- read latencies ---------------------------------------------------------------------------
-step bench-kdb env DATA_KDB=true DATA_KDB_PUSHDOWN=true npx tsx scripts/rehearsal/bench-reads.ts --tasks="${TASKS}"
-step bench-kdb-nopushdown env DATA_KDB=true DATA_KDB_PUSHDOWN=false npx tsx scripts/rehearsal/bench-reads.ts --tasks="${TASKS}" --iterations=5
 step bench-mongo npx tsx scripts/rehearsal/bench-reads.ts --tasks="${TASKS}"
+step bench-kdb env DATA_KDB=true DATA_KDB_PUSHDOWN=true npx tsx scripts/rehearsal/bench-reads.ts --tasks="${TASKS}"
+# Last: without pushdown every read scans its whole collection, which at scale may take the service down (B5).
+step bench-kdb-nopushdown env DATA_KDB=true DATA_KDB_PUSHDOWN=false npx tsx scripts/rehearsal/bench-reads.ts --tasks="${TASKS}" --iterations=5
+log "kdb-service after the benches: $(docker inspect "${KDB_NAME}" --format 'running={{.State.Running}} exit={{.State.ExitCode}} oomKilled={{.State.OOMKilled}}')"
 
 # --- memory -------------------------------------------------------------------------------
 kill "${SAMPLER}" 2>/dev/null || true
