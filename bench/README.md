@@ -277,9 +277,15 @@ window closes before abandoning them; they are reported as "unfinished".
 
 Per backend: 3 workload profiles + claim, 4 concurrency levels each, (connect + 15 + 120) s per cell
 = 16 cells x ~2.4 min ≈ 37 min, plus restores and cold starts ≈ 40 min. Four backends ≈ **2 h 40
-min**, plus building the prod dataset once (MongoDB load, KDB backfill, cross-check: tens of
-minutes, see below). A slow backend adds up to `BENCH_DRAIN_TIMEOUT_MS` per cell. To shorten:
-`--backends mongo-j,kdb` (the durable pair) halves it; `--duration 60` roughly halves it again.
+min**, plus building the prod dataset once. That part has not been run at prod scale yet (only
+smoke was validated): the MongoDB load ran at ~6,000 docs/s on smoke, so ~600k documents should
+take a few minutes; the KDB backfill took 11 s for 8,465 documents with `--durability async`,
+which extrapolates to ~15 min if it scales linearly; the cross-check asks 3 users ~12 questions
+each, and on KDB each access-filter query is a full scan (see below), so budget tens of minutes.
+The dataset is cached, so later runs skip all of it. A slow backend also adds up to
+`BENCH_DRAIN_TIMEOUT_MS` per cell. To shorten: `--backends mongo-j,kdb` (the durable pair)
+halves it; `--duration 60` roughly halves it again. Building the dataset alone first is
+`--profiles mixed --concurrency 1 --duration 5 --backends mongo --cold-runs 0`.
 
 ## Open issues and threats to validity
 

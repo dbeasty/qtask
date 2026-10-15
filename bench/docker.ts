@@ -192,7 +192,11 @@ function runProcess(args: string[], env: NodeJS.ProcessEnv, onLine?: (line: stri
 }
 
 async function runWorker<T>(backend: string, task: WorkerTask, outFile: string, onLine?: (line: string) => void, onSpawn?: (child: ChildProcess) => void): Promise<T> {
-  const env = { ...appEnv(backend), BENCH_TASK: JSON.stringify(task), BENCH_OUT: outFile };
+  const env: NodeJS.ProcessEnv = { ...appEnv(backend), BENCH_TASK: JSON.stringify(task), BENCH_OUT: outFile };
+  // Measured cells keep the app's request deadline (the KDB client's 30 s default), so a request
+  // that would time out in production times out here and is counted. Setup, cross-check, integrity
+  // and cold-start workers are there to get an answer, however long it takes.
+  if (task.mode !== 'run' && task.mode !== 'claim') env.KDB_REQUEST_TIMEOUT_MS = '900000';
   const code = await runProcess([join(ROOT, 'bench/worker.ts')], env, onLine, onSpawn);
   const result = existsSync(outFile) ? (JSON.parse(readFileSync(outFile, 'utf8')) as T & { error?: string }) : undefined;
   if (code !== 0 || !result || result.error) throw new Error(`worker ${task.mode} (${backend}) failed: ${result?.error ?? `exit ${code}`}`);
@@ -568,7 +572,23 @@ async function main(): Promise<void> {
           await startBackend(o, images, backend);
         }
         console.log(`\n== ${backend} / ${profile} / ${concurrency} concurrent (${o.warmup}s warmup + ${o.duration}s) ==`);
-        const cell = await runCell(o, backend, profile, concurrency, info, o.out, salt++);
+        let cell: CellResult;
+        try {
+          cell = await runCell(o, backend, profile, concurrency, info, o.out, salt++);
+        } catch (error) {
+          // One failed cell (a crashed client, a database that fell over) is a result, not a
+          // reason to lose the rest of a multi-hour run. Recorded, reported, and the profile is
+          // restarted from pristine data.
+          console.error(`   CELL FAILED: ${(error as Error).message.slice(0, 500)}`);
+          cells.push({ backend, profile, concurrency, failed: (error as Error).message.slice(0, 2000), containerLogs: await containerLogs(containerOf(backend), 30) });
+          save();
+          await removeContainer(containerOf(backend));
+          if (i < o.concurrency.length - 1 && o.reset !== 'cell') {
+            await restore(o, db);
+            await startBackend(o, images, backend);
+          }
+          continue;
+        }
         cells.push(cell);
         const c = cell as unknown as { actionsPerSec: number; opsPerSec: number; errorCount: number; allActions: { p50Ms: number; p99Ms: number }; container: { cpuPctAvg: number; memBytesMax: number }; clientCpuPct: number };
         console.log(`   ${c.actionsPerSec.toFixed(1)} actions/s, ${c.opsPerSec.toFixed(1)} ops/s, p50 ${c.allActions.p50Ms.toFixed(2)} ms, p99 ${c.allActions.p99Ms.toFixed(2)} ms, errors ${c.errorCount}, db cpu ${c.container.cpuPctAvg.toFixed(0)}%, db mem ${(c.container.memBytesMax / 2 ** 20).toFixed(0)} MiB, client cpu ${c.clientCpuPct.toFixed(0)}%`);
@@ -582,7 +602,13 @@ async function main(): Promise<void> {
     }
     if (o.coldRuns > 0) {
       console.log(`\n== ${backend} / cold start x${o.coldRuns} ==`);
-      cold[backend] = await coldStart(o, images, backend, info, o.out);
+      try {
+        cold[backend] = await coldStart(o, images, backend, info, o.out);
+      } catch (error) {
+        console.error(`   COLD START FAILED: ${(error as Error).message.slice(0, 500)}`);
+        cold[backend] = [{ failed: (error as Error).message.slice(0, 2000) }];
+        await removeContainer(containerOf(backend));
+      }
       console.log(`   ${JSON.stringify(cold[backend])}`);
       save();
     }

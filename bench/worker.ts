@@ -391,20 +391,30 @@ async function crosscheck(): Promise<unknown> {
   const users = index.users.filter((_, i) => i % Math.max(1, Math.floor(index.users.length / (task.users ?? 25))) === 0).slice(0, task.users ?? 25);
   const results: Array<{ query: string; ok: boolean; detail?: string; rows: number }> = [];
 
-  const compareFind = async (label: string, name: Parameters<typeof mongo.collection>[0], filter: Doc, options: Doc = {}, ordered = true) => {
+  // A query that fails on one side (a timeout, a reply too large) is a disagreement to report,
+  // not a reason to abandon the whole check.
+  const guarded = async (label: string, fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (error) {
+      results.push({ query: label, ok: false, detail: `error: ${(error as Error).message.slice(0, 200)}`, rows: 0 });
+    }
+  };
+  const compareFind = (label: string, name: Parameters<typeof mongo.collection>[0], filter: Doc, options: Doc = {}, ordered = true) => guarded(label, async () => {
     const [a, b] = await Promise.all([mongo.collection(name).find(filter, options), kdb.collection(name).find(filter, options)]);
     const divergence = compareDocLists(name, label, filter, a, b, ordered);
     results.push({ query: label, ok: !divergence, detail: divergence?.summary, rows: a.length });
-  };
-  const compareCount = async (label: string, name: Parameters<typeof mongo.collection>[0], filter: Doc) => {
+  });
+  const compareCount = (label: string, name: Parameters<typeof mongo.collection>[0], filter: Doc) => guarded(label, async () => {
     const [a, b] = await Promise.all([mongo.collection(name).countDocuments(filter), kdb.collection(name).countDocuments(filter)]);
     const divergence = compareCounts(name, label, filter, a, b);
     results.push({ query: label, ok: !divergence, detail: divergence?.summary, rows: a });
-  };
+  });
 
   for (const user of users) {
     const accessFilter = { ...notStaged, $or: [{ userId: user.id }, { 'collaborators.userId': user.id }] };
     const pids = (await mongo.collection('projects').find(accessFilter, { select: '_id' })).map((p) => String(p._id));
+    log(`cross-check user ${user.i}`);
     const taskQuery = { $or: [{ userId: user.id }, { projectIds: { $in: pids } }, { projectId: { $in: pids } }], ...notStaged };
     await compareFind('projects: accessible, sorted', 'projects', accessFilter, { sort: { sortOrder: 1, createdAt: 1 } });
     await compareFind('tasks: list page 1 (sort+limit)', 'tasks', taskQuery, { sort: { sortOrder: 1, createdAt: -1, _id: 1 }, limit: 200 });
@@ -417,9 +427,11 @@ async function crosscheck(): Promise<unknown> {
     await compareFind('users: by email', 'users', { email: user.email });
     if (user.taskIds.length) {
       const taskId = user.taskIds[Math.floor(random() * user.taskIds.length)]!;
-      const [a, b] = await Promise.all([mongo.collection('tasks').findById(taskId), kdb.collection('tasks').findById(taskId)]);
-      const divergence = compareDocLists('tasks', 'findById', { _id: taskId }, a ? [a] : [], b ? [b] : []);
-      results.push({ query: 'tasks: findById (full document with steps/subtasks/embedding)', ok: !divergence, detail: divergence?.summary, rows: a ? 1 : 0 });
+      await guarded('tasks: findById (full document with steps/subtasks/embedding)', async () => {
+        const [a, b] = await Promise.all([mongo.collection('tasks').findById(taskId), kdb.collection('tasks').findById(taskId)]);
+        const divergence = compareDocLists('tasks', 'findById', { _id: taskId }, a ? [a] : [], b ? [b] : []);
+        results.push({ query: 'tasks: findById (full document with steps/subtasks/embedding)', ok: !divergence, detail: divergence?.summary, rows: a ? 1 : 0 });
+      });
       await compareFind('comments: by task, sorted', 'comments', { taskId, $or: [{ subtaskPath: { $exists: false } }, { subtaskPath: { $size: 0 } }] }, { sort: { createdAt: 1 } });
       await compareFind('activities: by task, latest 50', 'activities', { taskId }, { sort: { createdAt: -1 }, limit: 50 });
     }

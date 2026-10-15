@@ -22,7 +22,8 @@ function table(head: string[], rows: string[][]): string {
   return [`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`, ...rows.map((r) => `| ${r.join(' | ')} |`)].join('\n');
 }
 
-export function renderMarkdown(r: Any): string {
+export function renderMarkdown(results: Any): string {
+  let r = results;
   const out: string[] = [];
   const o = r.meta.options;
   const smoke = o.scale === 'smoke' || o.duration < 60;
@@ -57,6 +58,15 @@ export function renderMarkdown(r: Any): string {
     out.push(table(['query', 'checks', 'rows (Mongo)', 'disagree', 'example'], Object.entries(d.crosscheck.byQuery).map(([q, v]: [string, Any]) => [q, String(v.checks), String(v.rows), String(v.failed), v.example ?? ''])));
   }
   out.push('');
+
+  const failed = r.cells.filter((c: Any) => c.failed);
+  if (failed.length) {
+    out.push('## Failed cells');
+    out.push('');
+    for (const c of failed) out.push(`- **${c.backend} / ${c.profile} / ${c.concurrency}**: \`${String(c.failed).split('\n')[0]!.slice(0, 300)}\``);
+    out.push('');
+  }
+  r = { ...r, cells: r.cells.filter((c: Any) => !c.failed) };
 
   // limits
   const limits = new Map<string, Any>();
@@ -124,7 +134,7 @@ export function renderMarkdown(r: Any): string {
     out.push('');
     out.push(table(
       ['backend', 'run', 'page cache dropped', 'client process ready ms', 'connect ms (attempts)', 'first read ms', 'first task list ms', 'container start -> first list ms'],
-      Object.entries(r.cold).flatMap(([b, runs]: [string, Any]) => runs.map((x: Any, i: number) => [b, String(i + 1), String(x.cachesDropped), f(x.clientProcessStartupMs, 0), `${f(x.connectMs, 0)} (${x.connectAttempts})`, f(x.firstReadMs, 1), f(x.firstListMs, 1), f(x.startToFirstListMs, 0)]))
+      Object.entries(r.cold).flatMap(([b, runs]: [string, Any]) => runs.filter((x: Any) => !x.failed).map((x: Any, i: number) => [b, String(i + 1), String(x.cachesDropped), f(x.clientProcessStartupMs, 0), `${f(x.connectMs, 0)} (${x.connectAttempts})`, f(x.firstReadMs, 1), f(x.firstListMs, 1), f(x.startToFirstListMs, 0)]))
     ));
     out.push('');
     out.push('Timed from `docker start`. The client process starts in parallel with the database and retries until it answers, so "connect" includes waiting for the database to open its data; KDB connect also declares its constraints and indexes (idempotent), as the app does on every start.');
@@ -179,7 +189,8 @@ function lineChart(title: string, series: Array<{ name: string; points: Array<[n
   return parts.join('');
 }
 
-function charts(r: Any): string {
+function charts(results: Any): string {
+  const r = { ...results, cells: results.cells.filter((c: Any) => !c.failed) };
   const out: string[] = [];
   const profiles = [...new Set(r.cells.map((c: Any) => c.profile))] as string[];
   for (const profile of profiles) {
