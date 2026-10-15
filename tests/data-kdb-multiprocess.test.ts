@@ -169,6 +169,8 @@ function runWorker(docId: string, rounds: number, extra: Record<string, string> 
     const child = spawn(process.execPath, ['--import', 'tsx', 'tests/helpers/kdbClaimWorker.ts'], {
       cwd: resolve(import.meta.dirname, '..'),
       env: { ...process.env, WORKER_DOC_ID: docId, WORKER_ROUNDS: String(rounds), ...extra },
+      // A stuck worker must not outlive the test and keep this file's process up.
+      timeout: 100_000, killSignal: 'SIGKILL',
     });
     let out = '';
     let err = '';

@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The KDB tests spawn kdb-service and helper processes; if one ever wedges, fail in
+    # minutes rather than at GitHub's 6-hour default.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
