@@ -46,10 +46,16 @@ export const ALL_COLLECTIONS = Object.keys(MODEL_BY_COLLECTION) as CollectionNam
 
 const PAGE = 500;
 const CONCURRENCY = 16;
-/** One import commit carries at most this many documents and this many bytes of JSON (a commit
- *  travels as one wire frame, capped at 16 MiB). */
-const COMMIT_DOCS = 250;
-const COMMIT_BYTES = 4 * 1024 * 1024;
+/**
+ * One import commit carries at most this many documents and this many bytes of JSON. The byte bound
+ * is about reads, not the 16 MiB wire frame: kdb-service v0.8.0 stores a commit as one compressed
+ * frame and a cold read of any document in it decompresses the whole frame, so a backfill written
+ * in 4 MiB commits made later reads slow for good (measured on 27,600 documents: a random keyed
+ * read 14 ms, COUNT of a collection 20 s; with 64 KiB commits 1.2 ms and 1.1 s; a commit per
+ * document 0.5 ms and 1.3 s, but the backfill three times slower). Overridable for experiments.
+ */
+const COMMIT_DOCS = Number(process.env.KDB_IMPORT_COMMIT_DOCS ?? 250);
+const COMMIT_BYTES = Number(process.env.KDB_IMPORT_COMMIT_BYTES ?? 64 * 1024);
 
 interface Args {
   command: 'backfill' | 'verify' | 'counts' | 'declare';
