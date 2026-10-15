@@ -156,11 +156,6 @@ function appEnv(backend: string): NodeJS.ProcessEnv {
     DATA_KDB_PUSHDOWN: 'true',
     DATA_KDB_DECLARE_CONSTRAINTS: 'true',
     DATA_KDB_DECLARE_INDEXES: 'true',
-    // The scan-cap guard exists for kdb-service <= 0.6.2, which truncated scans at 10,000 rows.
-    // v0.8.0 does not (docs/KDB_MIGRATION.md, B1), and the guard is documented to be switched off
-    // with 0 on a fixed server; left on, it issues COUNT(*) every 5 s per process and would
-    // refuse every read whenever the namespace happened to hold exactly 10,000 documents.
-    KDB_SERVER_ROW_CAP: '0',
   };
   if (dbOf(backend) === 'kdb') return { ...base, DATA_KDB: 'true', DATA_MONGO: undefined, MONGODB_URI: mongoUri, ...kdb };
   return { ...base, DATA_MONGO: 'true', DATA_KDB: undefined, MONGODB_URI: mongoUri, ...kdb };

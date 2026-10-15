@@ -60,10 +60,7 @@ KDB runs as `deploy/qtask-kdb.service` runs it: `--namespace qtask/docs --peer-a
 --stream-addr "" --expire-field _expireAt --expire-interval 1m`, data in a container volume. The
 app side uses what docs/KDB_MIGRATION.md tells a deployment to use: `DATA_KDB_PUSHDOWN=true`,
 constraints and lookup indexes declared (`DATA_KDB_DECLARE_CONSTRAINTS`, `DATA_KDB_DECLARE_INDEXES`,
-both default on). One deviation: `KDB_SERVER_ROW_CAP=0` - the scan-cap guard exists for
-kdb-service <= 0.6.2 and the migration doc says to switch it off on a fixed server (left on it
-runs `COUNT(*)` every 5 s per process, and would refuse every read whenever the namespace held
-exactly 10,000 documents).
+both default on).
 
 **The KDB image.** `ghcr.io/dbeasty/kdb/kdb-service:v0.8.0` is published for linux/amd64 only.
 On an arm64 Docker engine (Apple silicon) it would run under emulation and measure the emulator,
