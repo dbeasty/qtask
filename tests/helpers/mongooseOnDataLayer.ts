@@ -115,9 +115,16 @@ const ROUTED = [
  * mode MongoDB is the primary and the Mongo adapter *itself* calls `Model.find` and friends, so
  * routing every call to the data layer would send the adapter back into itself. The first stack
  * frame that is not this file, a dependency or Node decides.
+ *
+ * Except when the Mongo adapter is anywhere on the stack. A test that spies on a model method
+ * (`UserModel.find = (...args) => { calls++; return originalFind(...args); }`) puts its own frame
+ * between the adapter and this file, and taken at its word that call is the test's: it goes to
+ * the data layer, whose Mongo primary calls the spy again, and so on for ever - one microtask
+ * at a time, so the process spins without ever reaching a timer or exiting.
  */
 function callerIsTest(): boolean {
   const frames = (new Error().stack ?? '').split('\n').slice(2);
+  if (frames.some((frame) => frame.includes('/src/data/mongo/'))) return false;
   for (const frame of frames) {
     if (frame.includes('mongooseOnDataLayer') || frame.includes('node_modules') || frame.includes('node:internal')) continue;
     return frame.includes('/tests/');

@@ -390,6 +390,37 @@ describe('shadow queue saturation', () => {
   });
 });
 
+describe('shadow shutdown', () => {
+  it('does not wait for ever on a shadow that has stopped answering', async () => {
+    const stalledPrimary = new RecordingStore();
+    const stalled = new RecordingStore();
+    const standalone = new ShadowDataStore(stalledPrimary, stalled, { drainTimeoutMs: 200 });
+    await standalone.connect();
+    // Never released: every mirrored write waits on a backend that will not reply.
+    stalled.tasks().gate = new Promise<void>(() => {});
+
+    for (let i = 0; i < 3; i++) await standalone.collection('tasks').create({ _id: `t${i}`, title: `stuck ${i}` });
+
+    const started = Date.now();
+    await standalone.disconnect();
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed < 2000, `disconnect waited ${elapsed}ms on a stalled shadow`);
+    // One write is in flight on the stalled backend; the two queued behind it are abandoned.
+    assert.equal(standalone.stats().dropped, 2);
+    assert.equal(standalone.stats().pending, 0);
+    assert.equal(stalled.connected, false, 'the shadow was not closed');
+    assert.equal(stalledPrimary.connected, false, 'the primary was not closed');
+  });
+
+  it('still drains a queue that empties in time', async () => {
+    const queue = new ShadowQueue(10);
+    queue.push('slow', () => new Promise((resolve) => setTimeout(resolve, 50)));
+    assert.equal(await queue.drainWithin(5000), true);
+    assert.equal(queue.stats().applied, 1);
+  });
+});
+
 describe('shadow availability', () => {
   it('starts on the primary alone when the shadow will not connect', async () => {
     const brokenShadow = new RecordingStore();
