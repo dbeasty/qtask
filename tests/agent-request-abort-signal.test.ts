@@ -1,10 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createRequestAbortSignal } from '../src/routes/agent.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-secret';
+
+// Imported after the env is set: src/config reads it at load time, and a static import would
+// be hoisted above these assignments.
+const { createRequestAbortSignal } = await import('../src/routes/agent.ts');
 
 /**
  * A minimal fake of express.Response sufficient for createRequestAbortSignal:

@@ -1,9 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { streamEvents } from '../src/routes/agent.ts';
 
 process.env.NODE_ENV = 'test';
+process.env.JWT_SECRET ??= 'test-secret';
+
+// Imported after the env is set: src/config reads it at load time, and a static import would
+// be hoisted above these assignments.
+const { streamEvents } = await import('../src/routes/agent.ts');
 
 function fakeSseResponse() {
   const chunks: string[] = [];
