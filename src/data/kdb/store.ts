@@ -74,6 +74,8 @@ interface KdbClient {
   replaceIf(ns: string, docId: string, body: unknown, expectedContentHash: string): Promise<string>;
   /** Keyed delete: a commit, not a scan, so it is not bounded by anything about the namespace. */
   delete(ns: string, docId: string): Promise<string>;
+  /** Several writes in one commit. `baseVersion` must be a commit hash; a stale one is rebased. */
+  commit(tx: { namespace: string; baseVersion: string; writes: Array<{ docId: string; body: unknown; replace?: boolean }> }): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -127,6 +129,9 @@ class SerializedDmlClient implements KdbClient {
   }
   delete(ns: string, docId: string) {
     return this.inner.delete(ns, docId);
+  }
+  commit(tx: Parameters<KdbClient['commit']>[0]) {
+    return this.inner.commit(tx);
   }
   close(): Promise<void> {
     return this.inner.close();
@@ -217,6 +222,10 @@ export class KdbScanCapError extends Error {
 
 /** Shared by every collection: the cap is a property of the one namespace, not of a collection. */
 const capCheck: { at?: number; count: number } = { count: 0 };
+
+/** The latest commit this process has seen per namespace: the base a multi-document import
+ *  commit is built on (see importMany). Any real commit will do; the server rebases a stale one. */
+const lastCommit = new Map<string, string>();
 
 const DEFAULT_SERVER_ROW_CAP = 10_000;
 const CAP_RECHECK_MS = 5_000;
@@ -408,6 +417,13 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async countDocuments(filter: Filter = {}): Promise<number> {
+    // The whole collection is a question the server can answer itself. Anything with a filter
+    // still goes through the engine, which is what decides a match (pushdown may only narrow).
+    if (Object.keys(filter).length === 0) {
+      await this.assertWithinScanCap();
+      const { rows } = await this.client().queryRaw(this.namespace, `SELECT COUNT(*) FROM ${this.table} WHERE _c = ?`, [this.name]);
+      return Number(rows[0]?.[0] ?? 0);
+    }
     return (await this.matching(filter)).length;
   }
 
@@ -575,6 +591,49 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     await this.writeDocument(doc, null);
   }
 
+  /**
+   * `importDocument` for many documents, in one commit: the same bodies, written wholesale.
+   *
+   * Why: a single-document `replace` is one durable commit, and kdb-service does not share an
+   * fsync between concurrent transaction commits (it does for `upsert`), so a backfill made of
+   * them runs at the disk's fsync rate - measured at about 45 documents/s on macOS with
+   * `--durability sync`, whatever the concurrency. One commit of a few hundred documents costs one
+   * fsync. Same guarantees as before: idempotent, stale keys dropped, a unique-constraint violation
+   * rejects the commit (as DuplicateKeyError), and either every document in it lands or none does.
+   *
+   * A commit names the version it was built on; a stale one is rebased by the server, applying only
+   * the fields this commit changes, so a concurrent mirrored write to another field survives. The
+   * base is the last commit this process saw for the namespace, or (the first time) the commit of
+   * the first document, written on its own.
+   */
+  async importMany(docs: Doc[]): Promise<void> {
+    if (docs.length === 0) return;
+    for (const doc of docs) {
+      if (typeof doc._id !== 'string') throw new Error(`${this.name}: cannot import a document without a string _id`);
+    }
+    let rest = docs;
+    let base = lastCommit.get(this.namespace);
+    if (!base) {
+      await this.writeDocument(docs[0]!, null);
+      base = lastCommit.get(this.namespace);
+      rest = docs.slice(1);
+      if (rest.length === 0) return;
+    }
+    try {
+      const hash = await this.client().commit({
+        namespace: this.namespace,
+        baseVersion: base!,
+        writes: rest.map((doc) => ({ docId: toDocumentUuid(doc._id as string), body: this.storedBody(doc), replace: true })),
+      });
+      if (hash) lastCommit.set(this.namespace, hash);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'UNIQUE_VIOLATION') {
+        throw new DuplicateKeyError(`${this.name}: duplicate value for a unique field (${(error as Error).message})`);
+      }
+      throw error;
+    }
+  }
+
   // --- write helpers -------------------------------------------------------------
 
   /** Runs `fn` while holding the collection's unique-constraint lock, if it has constraints.
@@ -678,14 +737,12 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   private async writeDocument(doc: Doc, _previous: Doc | null, guard?: { hash: string }): Promise<void> {
     const key = toDocumentUuid(doc._id as string);
-    const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
-    for (const { field, paths, arrayPrefix } of this.serverKeys) {
-      const value = arrayPrefix ? serverKeyValues(doc, paths, arrayPrefix) : serverKeyValue(doc, paths);
-      if (value !== undefined) body[field] = value;
-    }
+    const body = this.storedBody(doc);
     try {
-      if (guard) await this.client().replaceIf(this.namespace, key, body, guard.hash);
-      else await this.client().replace(this.namespace, key, body);
+      const hash = guard
+        ? await this.client().replaceIf(this.namespace, key, body, guard.hash)
+        : await this.client().replace(this.namespace, key, body);
+      if (hash) lastCommit.set(this.namespace, hash);
     } catch (error) {
       // The server's unique constraint, which no in-process check can pre-empt, reports the same
       // thing the in-process check does: a duplicate key, code 11000, which authService turns
@@ -695,6 +752,17 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       }
       throw error;
     }
+  }
+
+  /** A document as stored: the collection discriminator, the expiry deadline and the synthetic
+   *  fields that carry server-held unique constraints, added to the application's fields. */
+  private storedBody(doc: Doc): Doc {
+    const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
+    for (const { field, paths, arrayPrefix } of this.serverKeys) {
+      const value = arrayPrefix ? serverKeyValues(doc, paths, arrayPrefix) : serverKeyValue(doc, paths);
+      if (value !== undefined) body[field] = value;
+    }
+    return body;
   }
 
   /** The deadline the server's expiry sweeper reads, for collections whose Mongo
@@ -883,6 +951,11 @@ export class KdbDataStore implements DataStore {
   /** Verbatim import for the migration tool; see KdbBackedCollection.importDocument. */
   async importDocument(name: CollectionName, doc: Doc): Promise<void> {
     await (this.collection(name) as unknown as KdbBackedCollection<Doc>).importDocument(doc);
+  }
+
+  /** Verbatim import of many documents in one commit; see KdbBackedCollection.importMany. */
+  async importMany(name: CollectionName, docs: Doc[]): Promise<void> {
+    await (this.collection(name) as unknown as KdbBackedCollection<Doc>).importMany(docs);
   }
 
   async clear(): Promise<void> {
