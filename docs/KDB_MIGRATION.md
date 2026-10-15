@@ -17,7 +17,7 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 |---|---|
 | Backend abstraction, Mongo + KDB stores | Done |
 | Shadow writes (`DATA_SHADOW_WRITES`), shadow reads (`DATA_SHADOW_READS`) | Done |
-| **KDB upgraded to v0.6.2** (the latest tag) | Done. Conformance, shadow and query suites pass against it |
+| **Pinned to the KDB v0.8.0 release** | Done. `@kdb/client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 336/336 (3 retired-guard skips); whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
 | Filter pushdown to KDB SQL (`DATA_KDB_PUSHDOWN`) | Done, flagged off. Differential test against the in-process engine |
 | Server-side expiry replacing Mongo TTL indexes | Done (`_expireAt` + `--expire-field`) |
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done, tested on 1,200 documents against a real mongod |
@@ -149,12 +149,12 @@ Mongo index becomes an index on its leading field; text indexes stay in-app, TTL
 server expiry, unique ones are constraints). Declaring is idempotent and they survive `kill -9`
 (`data-kdb-durability`). Reads: `find({userId})` on 2,000 tasks 6.2 ms to 0.4 ms.
 
-**Disk write cost: fixed in KDB #157 (after 0.7.1).** On v0.7.1, with `--durability sync`, every
-64th commit rewrote every index snapshot under the write gate, and each `CREATE INDEX` rewrote all
-of them twice: bulk load halved (226 to 102 docs/s at 2,000 docs here) and a first `connect()` on an
-empty namespace took about 17 s. #157 writes snapshots in the background, only for indexes that
-changed: per-commit p99 584-662 ms to 16-18 ms, `CREATE INDEX` x27 15-21 s to 0.3 s. Until it is
-released, backfill with `DATA_KDB_DECLARE_INDEXES=false` and declare the indexes afterwards.
+**Disk write cost: fixed in v0.8.0.** On v0.7.1 every 64th commit rewrote every index snapshot
+under the write gate, and each `CREATE INDEX` rewrote all of them twice: bulk load halved (226 to
+102 docs/s at 2,000 docs) and a first `connect()` on an empty namespace took about 17 s. v0.8.0
+writes snapshots in the background, only for indexes that changed. Measured through the store on
+disk with the release binary: bulk load 246 docs/s without indexes, 234 with all 27 (about 5%);
+`find({ userId })` 3.9 ms to 0.5 ms with them; a first `connect()` declaring all 27 in 0.5 s.
 
 ### B3. Unique constraints across processes — resolved by KDB #147 (not yet released)
 
@@ -170,10 +170,15 @@ email: exactly one wins and the rest get a duplicate key, which `authService` tu
 The constraint over array elements (a user's linked identity providers: one Google or Microsoft
 login may belong to one account) is now held by the server too. The store carries it as an array
 of per-element keys, one per linked login, and KDB treats an array under a unique constraint as
-multikey, as MongoDB does (KDB #157, for the release after 0.7.1). Proven with
+multikey, as MongoDB does (KDB v0.8.0). Proven with
 five processes racing to link one login to five accounts: exactly one wins. On a server without
 multikey support the in-process check still stands, and only the cross-process guarantee for this
 one rule is lost.
+
+The store also reads collection scans a page at a time (2,000 documents a page): a single SQL
+reply is refused past 10,000 rows on v0.7.1 and past 15 MiB on v0.8.0, so an unfiltered read of a
+large collection used to fail with `RESOURCE_EXHAUSTED`. And `KDB_TOKEN` is now actually sent: it
+was passed to `connect()` as a bare string, which the client ignores.
 
 A server older than #147 accepts the declarations and enforces nothing; the in-process check
 still stands, so it loses the extra guarantee and nothing else. The pinned KDB must include #147,
@@ -197,6 +202,11 @@ production.
 acknowledged write is fsynced); data under `/var/lib/qtask/kdb/data`; `--namespace` equal to
 `KDB_NAMESPACE_PREFIX` (use `qtask/docs`, the form the tests exercise). Health: `curl
 127.0.0.1:7701/healthz` and `/readyz`.
+
+**Auth and transport (gap as of v0.8.0).** A standalone `kdb-service` cannot be given qtask's
+credentials: without `--rbac` it checks none, and with it users exist only if created through the
+Go API (no flag, file or `CREATE USER`). Until KDB adds that, `kdb-service` must only be reachable
+from the application host (loopback or a private network), which is what the plan assumes.
 
 **Auth and transport.** v0.6.2 has TLS and token auth, but the plan assumes loopback and a host
 firewall like MongoDB today. If KDB ever leaves loopback, enable TLS and set `KDB_TOKEN` first.
