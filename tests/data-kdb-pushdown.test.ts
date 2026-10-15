@@ -253,6 +253,37 @@ describe('pushdown against a real kdb-service', { skip }, () => {
     });
   });
 
+  it('stores an embedding packed, and returns exactly the numbers it was given', async () => {
+    // Packed because kdb-service parses every document a query examines, and 768 floats per task
+    // were ~40% of its CPU (packNumbers). Exact because similarity search compares them.
+    const embedding = [0, -0, 1, -1, 0.1, 1 / 3, Math.PI, -2.5e-300, 1.7976931348623157e308, Number.MIN_VALUE, ...Array.from({ length: 758 }, (_, i) => Math.sin(i) * 1e-3)];
+    const created = await tasks.create({ userId: 'emb-user', title: 'with embedding', embedding });
+    const read = (await tasks.findById(String(created._id)))!;
+    assert.equal((read.embedding as number[]).length, 768);
+    (read.embedding as number[]).forEach((value, i) => assert.ok(Object.is(value, embedding[i]), `element ${i}: ${value} vs ${embedding[i]}`));
+    // On the server it is one string, not 768 numbers.
+    const raw = (await import(CLIENT_MODULE)) as { connect(a: string, o: object): Promise<{ get(ns: string, id: string): Promise<{ body: Doc }>; close(): Promise<void> }> };
+    const client = await raw.connect(process.env.KDB_ADDR!, {});
+    try {
+      const { toDocumentUuid } = await import('../src/data/kdb/ids.ts');
+      const stored = (await client.get('qtaskpd/docs', toDocumentUuid(String(created._id)))).body;
+      assert.match(String(stored.embedding), /^f64:/);
+      // A document written before packing (a plain array) still reads back as it is.
+      const old = { ...stored, _id: '6b0000000000000000000001', embedding: [0.5, 0.25] };
+      await (client as unknown as { upsert(ns: string, id: string, body: unknown): Promise<unknown> }).upsert('qtaskpd/docs', toDocumentUuid(old._id), old);
+      assert.deepEqual((await tasks.findById(old._id))!.embedding, [0.5, 0.25]);
+      await tasks.deleteOne({ _id: old._id });
+    } finally {
+      await client.close();
+    }
+    // Lean pages, counts and projections are unaffected.
+    assert.equal(await tasks.countDocuments({ userId: 'emb-user' }), 1);
+    const [page] = await tasks.find({ userId: 'emb-user' }, { sort: { title: 1 }, limit: 1, select: '-embedding' });
+    assert.equal(page!.embedding, undefined);
+    assert.equal(((await tasks.find({ userId: 'emb-user' }, { limit: 1 }))[0]!.embedding as number[]).length, 768);
+    await tasks.deleteOne({ _id: created._id });
+  });
+
   it('finds by a set of ids', async () => {
     const ids = [every[0]._id as string, every[3]._id as string];
     assert.deepEqual((await tasks.find({ _id: { $in: ids } })).map((d) => d._id).sort(), [...ids].sort());

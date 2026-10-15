@@ -78,7 +78,13 @@ interface KdbClient {
   /** Keyed delete: a commit, not a scan, so it is not bounded by anything about the namespace. */
   delete(ns: string, docId: string): Promise<string>;
   /** Several writes in one commit. `baseVersion` must be a commit hash; a stale one is rebased. */
-  commit(tx: { namespace: string; baseVersion: string; writes: Array<{ docId: string; body: unknown; replace?: boolean }> }): Promise<string>;
+  commit(tx: {
+    namespace: string;
+    baseVersion: string;
+    writes: Array<{ docId: string; body: unknown; replace?: boolean }>;
+    deletes?: string[];
+    preconditions?: Array<{ opIndex: number; kind: 'EXPECT_CONTENT_HASH'; contentHashHex: string }>;
+  }): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -295,6 +301,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   /** Unique constraints the server enforces, each carried on a synthetic field only this
    *  collection's documents have (see declareConstraints). */
   private readonly serverKeys: Array<{ field: string; paths: string[]; arrayPrefix?: string }>;
+  /** Top-level number arrays stored packed (see packNumbers): the embeddings. */
+  private readonly packed: Set<string>;
 
   constructor(
     readonly name: CollectionName,
@@ -304,6 +312,11 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     private readonly client: () => KdbClient
   ) {
     this.unique = uniqueConstraints(schema);
+    this.packed = new Set(
+      Object.entries((schema as unknown as { paths: Record<string, { instance?: string; caster?: { instance?: string }; embeddedSchemaType?: { instance?: string } }> }).paths)
+        .filter(([path, type]) => !path.includes('.') && type.instance === 'Array' && (type.embeddedSchemaType ?? type.caster)?.instance === 'Number')
+        .map(([path]) => path)
+    );
     this.ttl = ttlSpec(schema);
     this.serverKeys = this.unique.flatMap((constraint) => {
       const field = serverKeyField(name, constraint.fields);
@@ -337,14 +350,15 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const keyed = keyedBatches !== null;
     // Otherwise a disjunction KDB cannot serve from an index is asked one branch at a time (see
     // unionBranches); a document matching several branches comes back once.
-    const alternatives = config.kdb.pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
+    const pushdown = this.canPush(filter);
+    const alternatives = pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
     const seen = !keyed && alternatives.length > 1 ? new Set<string>() : null;
     const docs: T[] = [];
     const client = this.client();
     const queries = keyedBatches
       ? keyedBatches.map((where) => () => client.queryRawPages(this.namespace, `SELECT kdb_id, _doc FROM ${this.table} WHERE ${where.sql}`, where.args, SCAN_PAGE_ROWS))
       : alternatives.map((alternative) => () => {
-          const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
+          const pushed = pushdown ? buildWhere(alternative) : null;
           return client.queryRawPages(
             this.namespace,
             `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
@@ -393,7 +407,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   private async leanMatches(filter: Filter, sort: FindOptions['sort']): Promise<Doc[] | null> {
     const fields = topLevelFields(filter);
-    if (fields === null) return null;
+    if (fields === null || !this.canPush(filter)) return null;
     for (const key of Object.keys(sort ?? {})) fields.add(key.split('.')[0]!);
     fields.delete('_id');
     if (![...fields].every((field) => /^[A-Za-z][A-Za-z0-9_]*$/.test(field))) return null;
@@ -424,6 +438,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
               partial[field] = this.isBooleanField(field) && typeof value === 'number' ? value !== 0 : value;
             }
           });
+          for (const field of this.packed) if (typeof partial[field] === 'string') partial[field] = unpackNumbers(partial[field] as string);
           const doc = reviveDates(this.schema, partial) as Doc;
           if (matchesFilter(doc, filter)) out.push(doc);
         }
@@ -455,6 +470,18 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     return docs;
   }
 
+  /**
+   * Whether a filter may be pushed to the server. Not when it names a packed field: SQL sees the
+   * packed string, so a pushed condition on it could wrongly exclude a match. No query in qtask
+   * filters on an embedding; this keeps one from going wrong if it ever does.
+   */
+  private canPush(filter: Filter): boolean {
+    if (!config.kdb.pushdown) return false;
+    if (this.packed.size === 0) return true;
+    const fields = topLevelFields(filter);
+    return fields !== null && ![...fields].some((field) => this.packed.has(field));
+  }
+
   private isBooleanField(field: string): boolean {
     return (this.schema.path(field) as unknown as { instance?: string } | undefined)?.instance === 'Boolean';
   }
@@ -464,6 +491,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, [NULLS_FIELD]: _nulls, ...withKeys } = stored;
     // The synthetic fields that carry unique constraints are the store's, not the document's.
     const body = Object.fromEntries(Object.entries(withKeys).filter(([key]) => !key.startsWith('_u_')));
+    for (const field of this.packed) if (typeof body[field] === 'string') body[field] = unpackNumbers(body[field] as string);
     return reviveDates(this.schema, body) as T;
   }
 
@@ -530,7 +558,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     // matching document (each task carries a 768-number embedding) to count them here. A list
     // page's total is such a count, with the same access filter as the page; the whole collection
     // (an empty filter) is one too.
-    if (config.kdb.pushdown && typeof filter._id !== 'string') {
+    if (this.canPush(filter) && typeof filter._id !== 'string') {
       const counted = await this.countOnServer(filter);
       if (counted !== null) return counted;
     }
@@ -886,9 +914,16 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const key = toDocumentUuid(doc._id as string);
     const body = this.storedBody(doc);
     try {
-      const hash = guard
-        ? await this.client().replaceIf(this.namespace, key, body, guard.hash)
-        : await this.client().replace(this.namespace, key, body);
+      const hash = await this.rebasingOnConflict(
+        () => (guard ? this.client().replaceIf(this.namespace, key, body, guard.hash) : this.client().replace(this.namespace, key, body)),
+        (baseVersion) =>
+          this.client().commit({
+            namespace: this.namespace,
+            baseVersion,
+            writes: [{ docId: key, body, replace: true }],
+            ...(guard ? { preconditions: [{ opIndex: 0, kind: 'EXPECT_CONTENT_HASH' as const, contentHashHex: guard.hash }] } : {}),
+          })
+      );
       if (hash) lastCommit.set(this.namespace, hash);
     } catch (error) {
       // The server's unique constraint, which no in-process check can pre-empt, reports the same
@@ -905,6 +940,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    *  fields that carry server-held unique constraints, added to the application's fields. */
   private storedBody(doc: Doc): Doc {
     const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
+    for (const field of this.packed) if (Array.isArray(doc[field])) body[field] = packNumbers(doc[field] as unknown[]);
     // Which top-level fields hold an explicit null. A SQL read of a field returns NULL for null and
     // for absent alike, and Mongo tells them apart (`$exists`), so the lean read (leanMatches)
     // needs this to rebuild a field exactly.
@@ -927,7 +963,41 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   private async removeById(id: string): Promise<void> {
-    await this.client().delete(this.namespace, toDocumentUuid(id));
+    const docId = toDocumentUuid(id);
+    await this.rebasingOnConflict(
+      () => this.client().delete(this.namespace, docId),
+      (baseVersion) => this.client().commit({ namespace: this.namespace, baseVersion, writes: [], deletes: [docId] })
+    );
+  }
+
+  /**
+   * Runs a single-document commit, and if the server reports a version conflict, commits the same
+   * operation again on the head the conflict names.
+   *
+   * The client bases each commit on the last head its own session saw. When another process
+   * (a second app instance, the migration tool) has since changed the same document, a delete is
+   * refused as a conflict - and the client does not move its head on a conflict, so retrying the
+   * same call conflicts for ever. The store's operations are already decided against the current
+   * document (a keyed read, or a hash precondition that the server checks), so re-basing them on
+   * the server's head is what was meant; a commit at that base also moves the client's head on.
+   * Bounded, because the head can keep moving under heavy contention.
+   */
+  private async rebasingOnConflict(first: () => Promise<string>, rebased: (baseVersion: string) => Promise<string>): Promise<string> {
+    try {
+      return await first();
+    } catch (error) {
+      let current = error;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const target = (current as { targetHash?: string }).targetHash;
+        if ((current as Error).constructor.name !== 'KdbConflictError' || !target) throw current;
+        try {
+          return await rebased(target);
+        } catch (next) {
+          current = next;
+        }
+      }
+      throw current;
+    }
   }
 
   /**
@@ -1212,6 +1282,26 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
     }
   }
   return wanted;
+}
+
+/**
+ * A number array as the server stores it: one string, `f64:` and the base64 of its IEEE 754
+ * doubles, so it round-trips exactly. An embedding is 768 numbers, and the server parses every
+ * document it examines - each candidate of a query, even one that selects three other fields:
+ * profiled at 517k documents, parsing those numbers (strconv.ParseFloat and the array around it)
+ * was about 40% of kdb-service's CPU under qtask's workload. A string is one token to skip.
+ * An array holding anything but finite numbers is left as it is.
+ */
+function packNumbers(values: unknown[]): unknown {
+  if (!values.every((value) => typeof value === 'number' && Number.isFinite(value))) return values;
+  return `f64:${Buffer.from(Float64Array.from(values as number[]).buffer).toString('base64')}`;
+}
+
+function unpackNumbers(packed: string): unknown {
+  if (!packed.startsWith('f64:')) return packed;
+  // Copied: a decoded Buffer may sit at an offset a Float64Array cannot start at.
+  const bytes = Uint8Array.from(Buffer.from(packed.slice(4), 'base64'));
+  return Array.from(new Float64Array(bytes.buffer, 0, bytes.byteLength >> 3));
 }
 
 /**

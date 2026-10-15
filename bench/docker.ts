@@ -128,7 +128,11 @@ function kdbArgs(durability: 'sync' | 'async'): string[] {
     '--peer-addr', '',
     '--stream-addr', '',
     '--expire-field', '_expireAt',
-    '--expire-interval', '1m',
+    // How often kdb-service sweeps for expired documents. v0.8.0's sweep reads every document in
+    // the namespace (profiled: 85% of an idle server's CPU at 517k documents), so this setting
+    // alone decides how much of the CPU limit is left for queries. BENCH_KDB_EXPIRE_INTERVAL
+    // measures that; the default is what deploy/qtask-kdb.service uses.
+    '--expire-interval', process.env.BENCH_KDB_EXPIRE_INTERVAL ?? '1m',
     '--durability', durability,
     '--log-format', 'json',
     '--log-level', 'warn',
