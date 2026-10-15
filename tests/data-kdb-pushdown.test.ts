@@ -20,7 +20,7 @@ process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 const PORT = Number(process.env.KDB_TEST_PORT_PUSHDOWN ?? 7812);
 const skip = kdbUnavailable;
 
-import { buildWhere } from '../src/data/kdb/pushdown.ts';
+import { buildWhere, exactWhere, unionBranches, type PathKind } from '../src/data/kdb/pushdown.ts';
 import { matchesFilter } from '../src/data/query/filter.ts';
 import type { Collection, DataStore, Doc, Filter } from '../src/data/types.ts';
 
@@ -52,6 +52,67 @@ describe('buildWhere', () => {
     assert.deepEqual(buildWhere({ userId: 'u1', title: { $regex: 'x' } }), { sql: 'userId = ?', args: ['u1'] });
     assert.equal(buildWhere({ $or: [{ a: 1 }, { b: { $ne: 2 } }] }), null);
     assert.deepEqual(buildWhere({ $or: [{ a: 1 }, { b: 2 }] }), { sql: '(a = ?) OR (b = ?)', args: [1, 2] });
+  });
+});
+
+describe('unionBranches', () => {
+  const indexed = (path: string) => ['userId', 'projectIds', 'status', 'collaborators.userId'].includes(path);
+
+  it('splits an access $or whose branches are all indexed, keeping the rest on each', () => {
+    const out = unionBranches({ title: 'x', $or: [{ userId: 'u' }, { 'collaborators.userId': 'u' }] }, indexed);
+    assert.deepEqual(out, [
+      { title: 'x', $and: [{ userId: 'u' }] },
+      { title: 'x', $and: [{ 'collaborators.userId': 'u' }] },
+    ]);
+  });
+
+  it('finds the $or inside a top-level $and', () => {
+    const out = unionBranches({ $and: [{ $or: [{ userId: 'u' }, { projectIds: { $in: ['p'] } }] }, { title: 'x' }] }, indexed);
+    assert.equal(out?.length, 2);
+    assert.deepEqual(out?.[1], { $and: [{ title: 'x' }, { projectIds: { $in: ['p'] } }] });
+  });
+
+  it('does not split when it would not help', () => {
+    // Something outside the $or is indexed: that index serves the whole query.
+    assert.equal(unionBranches({ status: 'todo', $or: [{ userId: 'u' }, { projectIds: 'p' }] }, indexed), null);
+    // A branch with nothing indexed would scan anyway.
+    assert.equal(unionBranches({ $or: [{ userId: 'u' }, { title: 'x' }] }, indexed), null);
+    // A branch that cannot be pushed (null matches absent) at all.
+    assert.equal(unionBranches({ $or: [{ userId: 'u' }, { userId: null }] }, indexed), null);
+    // No $or, a single branch, or too many to be worth separate queries.
+    assert.equal(unionBranches({ userId: 'u' }, indexed), null);
+    assert.equal(unionBranches({ $or: [{ userId: 'u' }] }, indexed), null);
+    assert.equal(unionBranches({ $or: Array.from({ length: 9 }, (_, i) => ({ userId: `u${i}` })) }, indexed), null);
+  });
+});
+
+describe('exactWhere', () => {
+  const kinds: Record<string, PathKind> = { userId: 'text', read: 'text', tags: 'textList', 'collaborators.userId': 'textList', percentComplete: 'other', dueDate: 'other' };
+  const kindOf = (path: string) => kinds[path] ?? 'other';
+
+  it('translates equality, $in, booleans, ids and $and/$or of them', () => {
+    assert.deepEqual(exactWhere({ userId: 'u', read: false }, kindOf), { sql: '(userId = ?) AND (read = ?)', args: ['u', false] });
+    assert.deepEqual(exactWhere({ tags: { $in: ['a', 'b'] } }, kindOf), { sql: 'tags IN (?, ?)', args: ['a', 'b'] });
+    assert.equal(exactWhere({ $or: [{ userId: 'u' }, { 'collaborators.userId': 'u' }] }, kindOf)?.sql, '(userId = ?) OR (collaborators.userId = ?)');
+    assert.equal(exactWhere({ _id: 'abc' }, kindOf)?.sql, 'kdb_id = ?');
+    assert.deepEqual(exactWhere({}, kindOf), { sql: '', args: [] });
+  });
+
+  it('refuses anything it cannot promise exactly', () => {
+    for (const filter of [
+      { percentComplete: 40 }, // numbers
+      { dueDate: new Date() }, // dates
+      { userId: null }, // null matches absent
+      { userId: { $exists: false } },
+      { userId: { $ne: 'u' } },
+      { userId: { $regex: 'u' } },
+      { userId: { $in: ['u', null] } },
+      { $nor: [{ userId: 'u' }] },
+      { unknownPath: 'x' },
+      { $or: [{ userId: 'u' }, { percentComplete: 1 }] }, // one inexact branch spoils it
+    ] as Filter[]) {
+      assert.equal(exactWhere(filter, kindOf), null, JSON.stringify(filter));
+    }
   });
 });
 
@@ -112,6 +173,17 @@ describe('pushdown against a real kdb-service', { skip }, () => {
     ['$or with an unpushable branch', { $or: [{ userId: 'u1' }, { dueDate: null }] }],
     ['$and mixed', { $and: [{ userId: 'u2' }, { title: { $regex: 'plan', $options: 'i' } }] }],
     ['$nor', { $nor: [{ userId: 'u1' }] }],
+    // Access filters, asked one branch at a time (unionBranches): overlapping branches must come
+    // back once, and the rest of the filter must still apply to every branch.
+    ['access: owner or project member', { $or: [{ userId: 'u2' }, { projectIds: { $in: ['p1'] } }] }],
+    ['access: three branches, overlapping', { $or: [{ userId: 'u1' }, { status: 'todo' }, { projectIds: 'p1' }] }],
+    ['access inside $and, with a residual', { $and: [{ $or: [{ userId: 'u1' }, { projectIds: 'p2' }] }, { status: 'todo' }] }],
+    ['access with a range branch', { $or: [{ userId: 'u3' }, { percentComplete: { $gte: 50 } }] }],
+    ['everything', {}],
+    ['exact: array element and $in', { tags: 'ops', status: { $in: ['todo', 'in_progress'] } }],
+    ['exact: no array element matches', { tags: 'nope' }],
+    ['exact: nested array path', { 'steps.text': 'deploy' }],
+    ['exact: $or of exact parts, one unindexed', { $or: [{ userId: 'u3' }, { title: 'Review notes' }] }],
     ['type mismatch', { percentComplete: '40' }],
     ['_id', { _id: undefined as unknown as string }],
   ];
@@ -122,12 +194,29 @@ describe('pushdown against a real kdb-service', { skip }, () => {
       const expected = every.filter((doc) => matchesFilter(doc, filter)).map((d) => d._id).sort();
       const actual = (await tasks.find(filter)).map((d) => d._id).sort();
       assert.deepEqual(actual, expected);
+      // A count may be answered by the server (exactWhere), with nobody re-checking it after.
+      assert.equal(await tasks.countDocuments(filter), expected.length, 'countDocuments');
     });
   }
 
   it('finds by a set of ids', async () => {
     const ids = [every[0]._id as string, every[3]._id as string];
     assert.deepEqual((await tasks.find({ _id: { $in: ids } })).map((d) => d._id).sort(), [...ids].sort());
+  });
+
+  it('refuses a duplicate with the server alone holding the constraint', async () => {
+    // Every users constraint is server-held, so the in-process check is skipped (serverHoldsUnique):
+    // the duplicate is the server's to refuse, and it must still read as Mongo's 11000.
+    const users = store.collection('users');
+    await users.create({ email: 'server-held@example.com', displayName: 'A', passwordHash: 'x' });
+    await assert.rejects(
+      users.create({ email: 'server-held@example.com', displayName: 'B', passwordHash: 'x' }),
+      (error: { code?: number }) => error.code === 11000
+    );
+    // ...and updating a user without touching the unique field is not a conflict with itself.
+    const [only] = await users.find({ email: 'server-held@example.com' });
+    await users.updateOne({ _id: only!._id }, { $set: { displayName: 'A2' } });
+    assert.equal((await users.findById(only!._id as string))?.displayName, 'A2');
   });
 
   it('still enforces unique constraints through the narrowed scan', async () => {

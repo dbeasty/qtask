@@ -36,7 +36,7 @@ import { applyProjection, applySort } from '../query/shape.js';
 import { valuesEqual } from '../query/compare.js';
 import { getPath, setPath } from '../query/paths.js';
 import { generateObjectId, toDocumentUuid } from './ids.js';
-import { buildWhere } from './pushdown.js';
+import { buildWhere, exactWhere, unionBranches, type PathKind, type Where } from './pushdown.js';
 import { DuplicateKeyError, EXPIRE_FIELD, mixedUndefinedToNull, normalizeDocument, touchUpdatedAt, ttlSpec, uniqueConstraints } from './schema.js';
 import type {
   BulkOperation,
@@ -306,24 +306,34 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     await this.assertWithinScanCap();
     // Pushdown only ever narrows: the caller re-checks every row with the shared
     // engine, so a clause the server cannot express is just left to that check.
-    const pushed = config.kdb.pushdown ? buildWhere(filter) : null;
+    // A disjunction KDB cannot serve from an index is asked one branch at a time instead (see
+    // unionBranches); a document matching several branches comes back once.
+    const alternatives = config.kdb.pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
     const docs: T[] = [];
-    const pages = this.client().queryRawPages(
-      this.namespace,
-      `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
-      [this.name, ...(pushed?.args ?? [])],
-      SCAN_PAGE_ROWS
-    );
-    for await (const { rows } of pages) {
-      for (const row of rows) {
-        const json = row[1];
-        if (!json) continue;
-        try {
-          docs.push(this.decode(JSON.parse(json) as Doc));
-        } catch {
-          // A document that will not parse is corruption, not a query result. Skipping
-          // it would hide that; failing the whole read makes it visible immediately.
-          throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
+    const seen = alternatives.length > 1 ? new Set<string>() : null;
+    for (const alternative of alternatives) {
+      const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
+      const pages = this.client().queryRawPages(
+        this.namespace,
+        `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
+        [this.name, ...(pushed?.args ?? [])],
+        SCAN_PAGE_ROWS
+      );
+      for await (const { rows } of pages) {
+        for (const row of rows) {
+          const json = row[1];
+          if (!json) continue;
+          if (seen) {
+            if (seen.has(row[0]!)) continue;
+            seen.add(row[0]!);
+          }
+          try {
+            docs.push(this.decode(JSON.parse(json) as Doc));
+          } catch {
+            // A document that will not parse is corruption, not a query result. Skipping
+            // it would hide that; failing the whole read makes it visible immediately.
+            throw new Error(`${this.name}: stored document is not valid JSON (kdb_id ${row[0]})`);
+          }
         }
       }
     }
@@ -408,7 +418,35 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async countDocuments(filter: Filter = {}): Promise<number> {
+    // A count the server can answer exactly is asked of the server, rather than fetching every
+    // matching document (each task carries a 768-number embedding) to count them here. A list
+    // page's total is such a count, with the same access filter as the page.
+    if (config.kdb.pushdown && typeof filter._id !== 'string') {
+      const counted = await this.countOnServer(filter);
+      if (counted !== null) return counted;
+    }
     return (await this.matching(filter)).length;
+  }
+
+  /** The count from the server, or null when the filter has no exact SQL form (exactWhere). */
+  private async countOnServer(filter: Filter): Promise<number | null> {
+    const kindOf = (path: string) => pathKind(this.schema, path);
+    const where = (sql: Where) => `SELECT %s FROM ${this.table} WHERE _c = ?${sql.sql ? ` AND (${sql.sql})` : ''}`;
+    // A disjunction is counted branch by branch, by id, for the reason scan asks it that way.
+    const branches = unionBranches(filter, isIndexedPath);
+    const exactBranches = branches?.map((branch) => exactWhere(branch, kindOf));
+    if (exactBranches && exactBranches.every((branch): branch is Where => branch !== null)) {
+      const ids = new Set<string>();
+      for (const branch of exactBranches) {
+        const pages = this.client().queryRawPages(this.namespace, where(branch).replace('%s', 'kdb_id'), [this.name, ...branch.args], SCAN_PAGE_ROWS);
+        for await (const { rows } of pages) for (const row of rows) ids.add(row[0]!);
+      }
+      return ids.size;
+    }
+    const exact = exactWhere(filter, kindOf);
+    if (!exact) return null;
+    const { rows } = await this.client().queryRaw(this.namespace, where(exact).replace('%s', 'COUNT(*)'), [this.name, ...exact.args]);
+    return Number(rows[0]?.[0] ?? 0);
   }
 
   async distinct(field: string, filter: Filter = {}): Promise<unknown[]> {
@@ -580,7 +618,19 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   /** Runs `fn` while holding the collection's unique-constraint lock, if it has constraints.
    *  Always taken before a document lock, never after, so two writers cannot deadlock. */
   private guardUnique<R>(fn: () => Promise<R>): Promise<R> {
-    return this.unique.length > 0 ? withLock(`${this.namespace}/${this.name}#unique`, fn) : fn();
+    return this.unique.length > 0 && !this.serverHoldsUnique() ? withLock(`${this.namespace}/${this.name}#unique`, fn) : fn();
+  }
+
+  /**
+   * Whether the server enforces every unique constraint of this collection (declareConstraints,
+   * each carried on its synthetic key). Then the in-process check is only a slower, weaker copy
+   * of it - a query per constraint under a collection-wide lock on every write, with no reach
+   * across processes - and is skipped: the server's UNIQUE_VIOLATION becomes the same
+   * DuplicateKeyError (writeDocument). Measured on the benchmark, that lock and those queries
+   * were most of a users write.
+   */
+  private serverHoldsUnique(): boolean {
+    return config.kdb.declareConstraints && this.serverKeys.length === this.unique.length;
   }
 
   /**
@@ -720,7 +770,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    * the ordinary case and the race is documented rather than hidden.
    */
   private async assertUnique(doc: Doc, excludeId: string | null): Promise<void> {
-    if (this.unique.length === 0) return;
+    if (this.unique.length === 0 || this.serverHoldsUnique()) return;
     for (const constraint of this.unique) {
       const values = constraint.fields.map((field) => getPath(doc, field));
       // A constraint with any part absent or null claims nothing — sparse semantics,
@@ -960,14 +1010,19 @@ function sharedArrayPrefix(schema: Schema, fields: string[]): string | undefined
  * MongoDB index maps onto KDB's). Exported for the tests that check what the store asks for.
  */
 export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
-  const wanted = new Map<string, 'HASH' | 'BTREE'>();
+  // Every query the store sends is `_c = ? AND ...`. Indexing the collection tag bounds a query
+  // nothing else serves to its own collection, rather than every document in the namespace.
+  const wanted = new Map<string, 'HASH' | 'BTREE'>([['_c', 'HASH']]);
   for (const name of Object.keys(MODEL_BY_COLLECTION) as CollectionName[]) {
     const model = mongoose.models[MODEL_BY_COLLECTION[name]];
     if (!model) continue;
     const schema = model.schema as unknown as Schema;
     const declared = (schema as unknown as { indexes(): Array<[Record<string, unknown>, Record<string, unknown>?]> }).indexes();
     for (const [fields, options] of declared) {
-      if (options?.unique || options?.expireAfterSeconds !== undefined) continue;
+      // A unique index is also how Mongo finds a user by email or a session by token. The
+      // constraint itself is held on a synthetic `_u_` field (declareConstraints), which no query
+      // names, so the field the queries do name needs a lookup index of its own.
+      if (options?.expireAfterSeconds !== undefined) continue;
       const keys = Object.keys(fields);
       if (keys.length === 0 || keys.some((key) => fields[key] === 'text')) continue;
       const lead = keys[0]!;
@@ -979,6 +1034,42 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
     }
   }
   return wanted;
+}
+
+/** Whether the store declares a lookup index on `path` (cached: the schemas do not change). */
+let indexedPaths: Set<string> | undefined;
+function isIndexedPath(path: string): boolean {
+  if (!config.kdb.declareIndexes) return false;
+  indexedPaths ??= new Set(declaredIndexes().keys());
+  return indexedPaths.has(path);
+}
+
+/**
+ * How a schema stores `path` (see PathKind): a string, id or boolean held directly is `text`, one
+ * reached through an array - an array of them, or a field of an array of sub-documents - is
+ * `textList`, and anything else is `other`.
+ */
+function pathKind(schema: Schema, path: string, throughArray = false): PathKind {
+  const type = schema.path(path) as unknown as
+    | { instance?: string; schema?: Schema; caster?: { instance?: string }; embeddedSchemaType?: { instance?: string } }
+    | undefined;
+  const scalar = (instance?: string) => instance === 'String' || instance === 'ObjectId' || instance === 'Boolean';
+  if (type) {
+    if (scalar(type.instance)) return throughArray ? 'textList' : 'text';
+    if (type.instance === 'Array' && !type.schema) {
+      return scalar(type.embeddedSchemaType?.instance ?? type.caster?.instance) ? 'textList' : 'other';
+    }
+    return 'other';
+  }
+  // A field of a sub-document schema: resolve the rest of the path in it.
+  const segments = path.split('.');
+  for (let i = segments.length - 1; i >= 1; i--) {
+    const parent = schema.path(segments.slice(0, i).join('.')) as unknown as { instance?: string; schema?: Schema } | undefined;
+    if (parent?.schema) {
+      return pathKind(parent.schema, segments.slice(i).join('.'), throughArray || parent.instance === 'Array');
+    }
+  }
+  return 'other';
 }
 
 /** Whether a dotted path passes through an array, which a field tuple cannot express. */

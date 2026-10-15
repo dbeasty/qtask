@@ -47,12 +47,15 @@ describe('which indexes the store asks KDB for', () => {
     // Dates and numbers are ordered, so ranges can use them.
     assert.equal(wanted.get('startedAt'), 'BTREE');
     assert.equal(wanted.get('expiresAt'), 'BTREE', 'an invite\'s plain expiresAt index (the TTL ones are expiry, not lookups)');
-    // Not lookups: text search is the application's, uniqueness and expiry are declared elsewhere.
+    // Not lookups: text search is the application's, expiry is declared elsewhere.
     for (const path of ['title', 'description', 'body', 'name', 'notes']) {
       assert.equal(wanted.has(path), false, `${path} is a text index in Mongo`);
     }
-    assert.equal(wanted.has('email'), false, 'a unique index is a constraint, not a lookup index');
-    assert.equal(wanted.has('codeHash'), false);
+    // A unique field is looked up too (login by email, a code by its hash): the constraint sits on
+    // a synthetic field no query names, so the named field needs its own lookup index.
+    assert.equal(wanted.get('email'), 'HASH');
+    assert.equal(wanted.get('codeHash'), 'HASH');
+    assert.equal(wanted.get('_c'), 'HASH', 'every query names its collection');
   });
 
   it('never asks for the same path twice', async () => {

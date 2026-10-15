@@ -137,3 +137,130 @@ export function buildWhere(filter: Filter): Where | null {
 
   return conjunction(parts);
 }
+
+/** Most branches a disjunction is split into; past this, one query with an OR is cheaper. */
+const MAX_UNION_BRANCHES = 8;
+
+/**
+ * The filter as alternatives to query separately and union, or null to query it whole.
+ *
+ * KDB (to v0.8.0) serves a query from an index only through a top-level AND condition, so a
+ * `$or` - which is how qtask states access ("mine, or shared with me, or in my projects") -
+ * makes it scan the whole namespace however well each branch is indexed: 338 ms where either
+ * branch alone took under 9 ms on 8.5k documents. Asked one branch at a time, each is a lookup.
+ *
+ * Split only where it helps: one `$or` (top level, or inside a top-level `$and`) of 2 to
+ * MAX_UNION_BRANCHES branches, every branch pushable with an indexed condition (`indexed`), and
+ * nothing outside the `$or` indexed already (then that index serves the whole query and one
+ * round trip beats several). Each alternative is the rest of the filter plus one branch, so the
+ * union is exactly the `$or`; the caller still re-checks every document, and dedupes by id.
+ */
+export function unionBranches(filter: Filter, indexed: (path: string) => boolean): Filter[] | null {
+  let disjunction: Filter[] | null = null;
+  let rest: Filter = {};
+  let restAnd: Filter[] = [];
+  for (const [key, condition] of Object.entries(filter)) {
+    if (key === '$or' && Array.isArray(condition) && disjunction === null) {
+      disjunction = condition as Filter[];
+    } else if (key === '$and' && Array.isArray(condition)) {
+      for (const sub of condition as Filter[]) {
+        const keys = Object.keys(sub);
+        if (disjunction === null && keys.length === 1 && keys[0] === '$or' && Array.isArray(sub.$or)) {
+          disjunction = sub.$or as Filter[];
+        } else {
+          restAnd.push(sub);
+        }
+      }
+    } else {
+      rest = { ...rest, [key]: condition };
+    }
+  }
+  if (!disjunction || disjunction.length < 2 || disjunction.length > MAX_UNION_BRANCHES) return null;
+  const restFilter: Filter = restAnd.length > 0 ? { ...rest, $and: restAnd } : rest;
+  if (hasIndexedCondition(restFilter, indexed)) return null;
+  if (!disjunction.every((branch) => hasIndexedCondition(branch, indexed))) return null;
+  return disjunction.map((branch) => ({ ...rest, $and: [...restAnd, branch] }));
+}
+
+/** Whether pushing `filter` down yields a condition an index can serve on its own: an equality,
+ *  IN or range on an indexed path (or on the document id), at the top level of the filter. */
+function hasIndexedCondition(filter: Filter, indexed: (path: string) => boolean): boolean {
+  for (const [key, condition] of Object.entries(filter)) {
+    if (key === '$and' && Array.isArray(condition)) {
+      if ((condition as Filter[]).some((sub) => hasIndexedCondition(sub, indexed))) return true;
+    } else if (!key.startsWith('$') && (key === '_id' || indexed(key)) && fieldClauses(key, condition).length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * How the schema stores a path, as far as exact translation cares: `text` for a string, an id or
+ * a boolean held directly; `textList` for such values reached through an array (an array of
+ * strings, or a field of an array of sub-documents), which SQL and Mongo both match per element.
+ * Anything else - numbers, dates, mixed or nested values - is `other`, and never exact.
+ */
+export type PathKind = 'text' | 'textList' | 'other';
+
+/**
+ * The filter as SQL that matches exactly the documents the filter matches, or null when that
+ * cannot be promised. buildWhere only promises a superset, which is all a scan needs because the
+ * engine re-checks each document; a count asked of the server has nobody to re-check it.
+ *
+ * Exact here means: equality or `$in` of strings or booleans on a `text`/`textList` path (Mongo
+ * matches an array if any element matches, as KDB's multikey comparison does; a missing field
+ * matches neither), the document id, and `$and`/`$or` of exact parts. Everything else - ranges,
+ * numbers (formatting), dates, `null`, `$exists`, `$ne`, `$regex`... - is refused, not guessed.
+ */
+export function exactWhere(filter: Filter, kindOf: (path: string) => PathKind): Where | null {
+  const parts: Where[] = [];
+  for (const [key, condition] of Object.entries(filter)) {
+    if ((key === '$and' || key === '$or') && Array.isArray(condition) && condition.length > 0) {
+      const subs = (condition as Filter[]).map((sub) => exactWhere(sub, kindOf));
+      if (!subs.every((sub): sub is Where => sub !== null)) return null;
+      parts.push({
+        sql: subs.map((sub) => `(${sub.sql})`).join(key === '$and' ? ' AND ' : ' OR '),
+        args: subs.flatMap((sub) => sub.args),
+      });
+    } else if (key === '_id') {
+      const exactId =
+        typeof condition === 'string' ||
+        (isOperatorObject(condition) &&
+          Object.keys(condition).every((op) => op === '$eq' || op === '$in') &&
+          (condition.$eq === undefined || typeof condition.$eq === 'string') &&
+          (condition.$in === undefined || (Array.isArray(condition.$in) && condition.$in.length > 0 && condition.$in.every((m) => typeof m === 'string'))));
+      if (!exactId) return null;
+      const where = conjunction(idClauses(condition));
+      if (!where) return null;
+      parts.push(where);
+    } else if (key.startsWith('$')) {
+      return null;
+    } else {
+      const where = exactField(key, condition, kindOf(key));
+      if (!where) return null;
+      parts.push(where);
+    }
+  }
+  // An empty filter matches every document: no clause, the caller's `_c = ?` alone.
+  return parts.length === 0 ? { sql: '', args: [] } : conjunction(parts);
+}
+
+function exactField(path: string, condition: unknown, kind: PathKind): Where | null {
+  const col = column(path);
+  if (!col || kind === 'other') return null;
+  const isText = (v: unknown) => typeof v === 'string' || typeof v === 'boolean';
+  if (isText(condition)) return { sql: `${col} = ?`, args: [condition] };
+  if (!isOperatorObject(condition)) return null;
+  const clauses: Where[] = [];
+  for (const [operator, operand] of Object.entries(condition)) {
+    if (operator === '$eq' && isText(operand)) {
+      clauses.push({ sql: `${col} = ?`, args: [operand] });
+    } else if (operator === '$in' && Array.isArray(operand) && operand.length > 0 && operand.every(isText)) {
+      clauses.push({ sql: `${col} IN (${operand.map(() => '?').join(', ')})`, args: operand });
+    } else {
+      return null;
+    }
+  }
+  return conjunction(clauses);
+}
