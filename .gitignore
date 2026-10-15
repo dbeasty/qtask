@@ -12,3 +12,4 @@ client-macos/.build/
 
 # Released kdb-service binaries (npm run kdb:fetch)
 .kdb/
+.rehearsal/
