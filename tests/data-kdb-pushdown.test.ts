@@ -22,6 +22,7 @@ const skip = kdbUnavailable;
 
 import { buildWhere, exactWhere, unionBranches, type PathKind } from '../src/data/kdb/pushdown.ts';
 import { matchesFilter } from '../src/data/query/filter.ts';
+import { applySort } from '../src/data/query/shape.ts';
 import type { Collection, DataStore, Doc, Filter } from '../src/data/types.ts';
 
 describe('buildWhere', () => {
@@ -198,6 +199,59 @@ describe('pushdown against a real kdb-service', { skip }, () => {
       assert.equal(await tasks.countDocuments(filter), expected.length, 'countDocuments');
     });
   }
+
+  // Pages and counts decided on lean documents (leanMatches): only the fields the filter and sort
+  // name are read, so each must come back exactly as stored - booleans, explicit nulls against
+  // absent fields, dates - or the page and the count would differ from the engine's.
+  describe('lean pages and counts', () => {
+    let jobs: Collection;
+    let all: Doc[];
+    before(async () => {
+      jobs = store.collection('embeddingJobs');
+      for (let i = 0; i < 40; i++) {
+        const created = await jobs.create({
+          entityType: 'task', entityId: `t${i}`, taskId: `t${i}`,
+          status: ['pending', 'processing', 'completed', 'failed'][i % 4], attempts: i % 5, dirty: i % 3 === 0,
+          ...(i % 7 === 0 ? { lastError: 'boom' } : {}),
+        });
+        // An explicit null, which a lean read must tell from an absent field.
+        if (i % 6 === 0) await jobs.updateOne({ _id: created._id }, { $set: { lastError: null } });
+      }
+      all = await jobs.find({});
+    });
+
+    const CASES: Array<[string, Filter, Record<string, 1 | -1> | undefined]> = [
+      ['the queue claim', { status: 'pending', attempts: { $lt: 3 } }, { createdAt: 1 }],
+      ['a boolean, true', { dirty: true }, { attempts: -1 }],
+      ['a boolean, false', { dirty: false }, undefined],
+      ['$exists false (absent, not null)', { lastError: { $exists: false } }, { createdAt: -1 }],
+      ['$exists true (null counts as present)', { lastError: { $exists: true } }, undefined],
+      ['null matches null and absent', { lastError: null }, { attempts: 1 }],
+      ['$ne null', { lastError: { $ne: null } }, undefined],
+      ['$or with a range', { $or: [{ status: 'failed' }, { attempts: { $gte: 4 } }] }, { attempts: 1, createdAt: -1 }],
+      ['everything', {}, { attempts: -1 }],
+    ];
+    for (const [name, filter, sort] of CASES) {
+      it(`agrees with the engine: ${name}`, async () => {
+        const expected = applySort(all.filter((doc) => matchesFilter(doc, filter)), sort).map((d) => d._id);
+        assert.equal(await jobs.countDocuments(filter), expected.length, 'count');
+        for (const [skip, limit] of [[0, 1], [0, 5], [3, 4], [0, 1000]] as const) {
+          const page = (await jobs.find(filter, { sort, skip, limit })).map((d) => d._id);
+          assert.deepEqual(page, expected.slice(skip, skip + limit), `skip ${skip} limit ${limit}`);
+        }
+        // The claim path: findOneAndUpdate takes the first match in sort order.
+        const first = await jobs.findOne(filter, sort ? { sort } : {});
+        assert.equal(first?._id, expected[0]);
+      });
+    }
+
+    it('returns whole documents for a lean page, projected when asked', async () => {
+      const [page] = await jobs.find({ status: 'pending' }, { sort: { createdAt: 1 }, limit: 1 });
+      assert.equal(typeof page!.entityId, 'string', 'a lean page is fetched whole, not returned as the partial document');
+      const [projected] = await jobs.find({ status: 'pending' }, { sort: { createdAt: 1 }, limit: 1, select: 'status' });
+      assert.deepEqual(Object.keys(projected!).sort(), ['_id', 'status']);
+    });
+  });
 
   it('finds by a set of ids', async () => {
     const ids = [every[0]._id as string, every[3]._id as string];

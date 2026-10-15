@@ -12,6 +12,7 @@ export async function connect(addr: string, options: unknown) {
   const empty = { columns: [], rows: [] };
   return {
     upsert: async () => '',
+    queryValues: async (_ns: string, sql: string) => { statements.push(sql); return empty; },
     queryRaw: async (_ns: string, sql: string) => {
       statements.push(sql);
       return empty;

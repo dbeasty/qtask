@@ -62,6 +62,9 @@ interface KdbClient {
    *  unpaged reply is capped (15 MiB encoded since KDB 0.8.0), so anything that can grow with the
    *  data - a collection scan - is read this way. */
   queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number): AsyncIterable<{ columns: string[]; rows: string[][] }>;
+  /** A SELECT with typed cells: null for NULL, numbers, parsed JSON for objects and arrays. Unpaged
+   *  (the client has no paged form), so callers bound the rows themselves (see leanMatches). */
+  queryValues(ns: string, sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: unknown[][] }>;
   exec(ns: string, sql: string, args?: unknown[]): Promise<void>;
   /** Keyed read. Rejects with an error named KdbNotFoundError when there is no such document. */
   get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
@@ -89,6 +92,12 @@ type ConnectFn = (addr: string, options: { token?: string; requestTimeoutMs?: nu
  */
 const SCAN_PAGE_ROWS = 2_000;
 
+/** Rows per page of a lean read (leanMatches): small rows, so more of them than a scan page. */
+const LEAN_PAGE_ROWS = 5_000;
+
+/** The stored list of a document's explicitly-null top-level fields (see storedBody). */
+const NULLS_FIELD = '_nulls';
+
 /** Ids per keyed `kdb_id IN (...)` statement (see scan). */
 const KEYED_BATCH = 100;
 
@@ -114,6 +123,9 @@ class SerializedDmlClient implements KdbClient {
   }
   queryRaw(ns: string, sql: string, args?: unknown[]) {
     return retryWhenBusy(() => this.inner.queryRaw(ns, sql, args));
+  }
+  queryValues(ns: string, sql: string, args?: unknown[]) {
+    return retryWhenBusy(() => this.inner.queryValues(ns, sql, args));
   }
   async *queryRawPages(ns: string, sql: string, args?: unknown[], pageSize?: number) {
     // Only the first page is retried: a later one would need the continuation the failed call
@@ -368,9 +380,88 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     return docs;
   }
 
+  /**
+   * The documents matching `filter`, in `sort` order (ties in id order, as scan returns them),
+   * each as a partial document holding only its id and the top-level fields the filter and sort
+   * name - or null when that cannot be done exactly (an operator naming no field, such as
+   * `$where`, or a field name SQL cannot carry), and the caller reads whole documents instead.
+   *
+   * Exact because the shared engine decides on the partial document what it would decide on the
+   * whole one: it only looks at those fields, each rebuilt as stored - booleans from the 0/1 SQL
+   * returns, an explicit null told from an absent field by the stored null list (storedBody),
+   * dates revived by the schema. Paged by id, since the typed query has no paged form.
+   */
+  private async leanMatches(filter: Filter, sort: FindOptions['sort']): Promise<Doc[] | null> {
+    const fields = topLevelFields(filter);
+    if (fields === null) return null;
+    for (const key of Object.keys(sort ?? {})) fields.add(key.split('.')[0]!);
+    fields.delete('_id');
+    if (![...fields].every((field) => /^[A-Za-z][A-Za-z0-9_]*$/.test(field))) return null;
+    const columns = ['_id', NULLS_FIELD, ...fields];
+    const alternatives = config.kdb.pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
+    const seen = new Set<string>();
+    const out: Doc[] = [];
+    for (const alternative of alternatives) {
+      const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
+      let after = '';
+      for (;;) {
+        const { rows } = await this.client().queryValues(
+          this.namespace,
+          `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
+          [this.name, ...(pushed?.args ?? []), after]
+        );
+        for (const row of rows) {
+          const key = String(row[0]);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const nulls = new Set(Array.isArray(row[2]) ? (row[2] as string[]) : []);
+          const partial: Doc = { _id: row[1] };
+          [...fields].forEach((field, i) => {
+            const value = row[i + 3];
+            if (value === null || value === undefined) {
+              if (nulls.has(field)) partial[field] = null;
+            } else {
+              partial[field] = this.isBooleanField(field) && typeof value === 'number' ? value !== 0 : value;
+            }
+          });
+          const doc = reviveDates(this.schema, partial) as Doc;
+          if (matchesFilter(doc, filter)) out.push(doc);
+        }
+        if (rows.length < LEAN_PAGE_ROWS) break;
+        after = String(rows[rows.length - 1]![0]);
+      }
+    }
+    out.sort((a, b) => (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0));
+    return applySort(out, sort);
+  }
+
+  /** One page of `find`, chosen on lean documents and then fetched whole by key. */
+  private async leanPage(filter: Filter, options: FindOptions): Promise<T[] | null> {
+    let lean: Doc[] | null;
+    try {
+      lean = await this.leanMatches(filter, options.sort);
+    } catch (error) {
+      // A field SQL could not select (a reserved word, say) is not worth failing the read over.
+      if ((error as { code?: string }).code === 'INVALID_ARGUMENT' || /parse|syntax/i.test((error as Error).message)) return null;
+      throw error;
+    }
+    if (lean === null) return null;
+    const ids = lean.slice(options.skip ?? 0, (options.skip ?? 0) + options.limit!).map((doc) => String(doc._id));
+    if (ids.length === 0) return [];
+    const byId = new Map((await this.scan({ _id: { $in: ids } })).map((doc) => [String(doc._id), doc]));
+    // A document changed between the two reads is judged as it is now.
+    let docs = ids.map((id) => byId.get(id)).filter((doc): doc is T => doc !== undefined && matchesFilter(doc, filter));
+    if (options.select) docs = docs.map((doc) => applyProjection(doc, options.select) as T);
+    return docs;
+  }
+
+  private isBooleanField(field: string): boolean {
+    return (this.schema.path(field) as unknown as { instance?: string } | undefined)?.instance === 'Boolean';
+  }
+
   /** A stored body back to the application's document: bookkeeping fields off, dates revived. */
   private decode(stored: Doc): T {
-    const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, ...withKeys } = stored;
+    const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, [NULLS_FIELD]: _nulls, ...withKeys } = stored;
     // The synthetic fields that carry unique constraints are the store's, not the document's.
     const body = Object.fromEntries(Object.entries(withKeys).filter(([key]) => !key.startsWith('_u_')));
     return reviveDates(this.schema, body) as T;
@@ -409,6 +500,14 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async find(filter: Filter = {}, options: FindOptions = {}): Promise<T[]> {
+    // A page (or the first match) of a larger set: decide which documents on their filter and
+    // sort fields alone, then fetch only those whole. Fetching every match whole to keep a few
+    // is what made a heavy user's task list, or a queue claim, take seconds (each task carries a
+    // 768-number embedding).
+    if (options.limit !== undefined && typeof filter._id !== 'string') {
+      const page = await this.leanPage(filter, options);
+      if (page !== null) return page;
+    }
     let docs = await this.matching(filter);
     docs = applySort(docs, options.sort);
     if (options.skip !== undefined) docs = docs.slice(options.skip);
@@ -434,6 +533,10 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (config.kdb.pushdown && typeof filter._id !== 'string') {
       const counted = await this.countOnServer(filter);
       if (counted !== null) return counted;
+    }
+    if (typeof filter._id !== 'string') {
+      const lean = await this.leanMatches(filter, undefined);
+      if (lean !== null) return lean.length;
     }
     return (await this.matching(filter)).length;
   }
@@ -494,7 +597,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
   async updateOne(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<UpdateResult> {
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
-      const [candidate] = await this.find(filter, options.sort ? { sort: options.sort } : {});
+      const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
       if (!candidate) {
         if (options.upsert) {
           const created = await this.upsertFrom(filter, update);
@@ -523,7 +626,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
   async findOneAndUpdate(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<T | null> {
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
-      const [candidate] = await this.find(filter, options.sort ? { sort: options.sort } : {});
+      const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
       if (!candidate) {
         if (!options.upsert) return null;
         const created = await this.upsertFrom(filter, update);
@@ -545,7 +648,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
   async replaceOne(filter: Filter, doc: Doc): Promise<UpdateResult> {
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
-      const [candidate] = await this.find(filter);
+      const [candidate] = await this.find(filter, { limit: 1 });
       if (!candidate) return { matched: 0, modified: 0 };
       const claimed = await this.claim(candidate._id as string, filter, async (target, guard) => {
         const { _id: _ignored, ...body } = doc;
@@ -564,7 +667,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
   async deleteOne(filter: Filter): Promise<DeleteResult> {
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
-      const [candidate] = await this.find(filter);
+      const [candidate] = await this.find(filter, { limit: 1 });
       if (!candidate) return { deleted: 0 };
       const claimed = await this.claim(candidate._id as string, filter, (fresh) => this.removeById(fresh._id as string));
       if (claimed.hit) return { deleted: 1 };
@@ -584,7 +687,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
 
   async findOneAndDelete(filter: Filter): Promise<T | null> {
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
-      const [candidate] = await this.find(filter);
+      const [candidate] = await this.find(filter, { limit: 1 });
       if (!candidate) return null;
       const claimed = await this.claim(candidate._id as string, filter, async (fresh) => {
         await this.removeById(fresh._id as string);
@@ -802,6 +905,11 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    *  fields that carry server-held unique constraints, added to the application's fields. */
   private storedBody(doc: Doc): Doc {
     const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
+    // Which top-level fields hold an explicit null. A SQL read of a field returns NULL for null and
+    // for absent alike, and Mongo tells them apart (`$exists`), so the lean read (leanMatches)
+    // needs this to rebuild a field exactly.
+    const nulls = Object.keys(doc).filter((key) => doc[key] === null);
+    if (nulls.length > 0) body[NULLS_FIELD] = nulls;
     for (const { field, paths, arrayPrefix } of this.serverKeys) {
       const value = arrayPrefix ? serverKeyValues(doc, paths, arrayPrefix) : serverKeyValue(doc, paths);
       if (value !== undefined) body[field] = value;
@@ -1104,6 +1212,29 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
     }
   }
   return wanted;
+}
+
+/**
+ * The top-level fields a filter looks at, or null when it has an operator that names no field
+ * (`$where`, `$expr`, `$text`, ...) and so cannot be decided on chosen fields.
+ */
+function topLevelFields(filter: Filter): Set<string> | null {
+  const out = new Set<string>();
+  for (const [key, condition] of Object.entries(filter)) {
+    if (key === '$and' || key === '$or' || key === '$nor') {
+      if (!Array.isArray(condition)) return null;
+      for (const sub of condition as Filter[]) {
+        const inner = topLevelFields(sub);
+        if (inner === null) return null;
+        for (const field of inner) out.add(field);
+      }
+    } else if (key.startsWith('$')) {
+      return null;
+    } else {
+      out.add(key.split('.')[0]!);
+    }
+  }
+  return out;
 }
 
 /** Whether the store declares a lookup index on `path` (cached: the schemas do not change). */
