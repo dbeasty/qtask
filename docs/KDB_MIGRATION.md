@@ -74,7 +74,8 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
   to 0.5 / 2.1 / 2.4 with no errors; with the store changes below, 6.2 / 25.4 / 20.3.
 - **Atomic queue claim** (`UPDATE … ORDER BY … LIMIT 1 RETURNING`): the store claims embedding and
   vision jobs in one statement (`DATA_KDB_ATOMIC_CLAIM`, default on, needs pushdown), 10–17 ms where
-  the read-then-write claim took 125–230 ms at 15k pending jobs.
+  the read-then-write claim took 125–230 ms at 15k pending jobs, and no claim loses a race: the
+  benchmark's 32-worker claim profile went from 11 to 76 claims/s.
 - **A restart is an outage of about 77 s** at 517k documents on 2 CPUs: opening rebuilds the
   unique-key registry by parsing every document whole, on one thread, and the node accepts no
   connections meanwhile. The compose health check allows 5 minutes. To be fixed in KDB.
@@ -120,8 +121,9 @@ sub-millisecond.
 
 **Indexes now created (`DATA_KDB_DECLARE_INDEXES`, default on).** On connect the store declares the
 lookup indexes the Mongoose schemas declare: 27 paths (HASH, or BTREE for dates/numbers; a compound
-Mongo index becomes an index on its leading field, plus a BTREE on its second when that is a date
-or number, which KDB 0.9 walks for `ORDER BY … LIMIT`; text indexes stay in-app, TTL indexes became
+Mongo index becomes an index on its leading field, plus a `createdAt` BTREE that KDB 0.9 walks for
+the embedding queue's `ORDER BY createdAt LIMIT 1` (`ORDER_INDEXES` in the store: a walk only helps
+when matches come early in namespace-wide order, so each is measured); text indexes stay in-app, TTL indexes became
 server expiry, unique ones are constraints). Declaring is idempotent and they survive `kill -9`
 (`data-kdb-durability`). Reads: `find({userId})` on 2,000 tasks 6.2 ms to 0.4 ms.
 

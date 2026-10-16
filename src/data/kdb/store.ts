@@ -1462,20 +1462,22 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
       const kind = instance === 'Date' || instance === 'Number' ? 'BTREE' : 'HASH';
       // A path wanted ordered by any collection is ordered for all of them.
       if (kind === 'BTREE' || !wanted.has(lead)) wanted.set(lead, kind);
-      // A compound index's second key, when it is a date or a number, is what the index orders by
-      // (`{status: 1, createdAt: 1}`: the oldest pending job). KDB indexes single fields, and since
-      // 0.9 walks a BTREE for `ORDER BY <field> LIMIT k` when the WHERE has an index of its own,
-      // stopping at the first rows instead of sorting every match: an atomic queue claim at 15k
-      // pending jobs went from 44 ms to 10-17 ms. Declared namespace-wide, like every index here.
-      const second = keys[1];
-      if (second && /^[A-Za-z_][A-Za-z0-9_]*$/.test(second)) {
-        const secondInstance = (schema.path(second) as unknown as { instance?: string } | undefined)?.instance;
-        if (secondInstance === 'Date' || secondInstance === 'Number') wanted.set(second, 'BTREE');
-      }
     }
   }
+  for (const path of ORDER_INDEXES) wanted.set(path, 'BTREE');
   return wanted;
 }
+
+/**
+ * Single-field BTREEs declared for the `ORDER BY <field> LIMIT k` KDB 0.9 serves by walking one
+ * (when the WHERE has an index of its own), stopping at the first rows that match instead of
+ * sorting every match. Only where measured to help: the walk is in namespace-wide order, so it is
+ * quick when matches come early in it and slow when it passes many documents first. Measured on
+ * the benchmark's 517k documents (one-job pick): the embedding queue's oldest pending job by
+ * `createdAt`, 33 ms without and 4.8 ms with; the vision queue's oldest by `updatedAt`, 4.7 ms
+ * without and 24.6 ms with - so `updatedAt` is not declared.
+ */
+const ORDER_INDEXES = ['createdAt'];
 
 /**
  * A number array as the server stores it: one string, `f64:` and the base64 of its IEEE 754
