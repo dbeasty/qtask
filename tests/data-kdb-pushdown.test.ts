@@ -309,14 +309,41 @@ describe('pushdown against a real kdb-service', { skip }, () => {
         assert.equal(new Set(ids).size, 12);
       });
 
+      it('claims the vision queue (no attempts guard) exactly once each, concurrently', async () => {
+        // feedbackVisionQueue.ts's claim: nothing in the filter pins `attempts`, so the statement
+        // requires it (its schema default makes it present) rather than falling back.
+        const vision = store.collection('feedbackVisionJobs');
+        await vision.deleteMany({});
+        for (let i = 0; i < 10; i++) {
+          await vision.create({ feedbackId: `fb${i}`, status: 'pending' });
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+        const claimed = await Promise.all(Array.from({ length: 25 }, () => vision.findOneAndUpdate(
+          { status: 'pending' }, { $set: { status: 'processing' }, $inc: { attempts: 1 } }, { sort: { updatedAt: 1 }, returnDocument: 'after' }
+        )));
+        const got = claimed.filter((job): job is Doc => job !== null);
+        assert.equal(got.length, 10);
+        assert.equal(new Set(got.map((job) => String(job._id))).size, 10);
+        assert.ok(got.every((job) => job.attempts === 1 && job.status === 'processing'));
+        await vision.deleteMany({});
+      });
+
       it('falls back where SQL would differ from Mongo, with the same answer', async () => {
         await clear();
-        // A counter the filter does not pin may be missing: Mongo's $inc makes it 1, SQL would store null.
+        // A counter the filter does not pin may be missing (a document written before it had a
+        // default): Mongo's $inc makes it 1, where SQL would store null. The statement requires the
+        // field, so such a document is found by the read-then-write path once the rest are claimed.
         const raw = await seed(1);
         await (jobs as unknown as { importDocument(doc: Doc): Promise<void> }).importDocument({ ...raw[0]!, attempts: undefined, _id: '6c0000000000000000000001', entityId: 'no-attempts', createdAt: new Date(0) });
-        const job = await jobs.findOneAndUpdate({ entityType: 'project', status: 'pending' }, { $inc: { attempts: 1 } }, { sort: { createdAt: 1 } });
-        assert.equal(job?._id, '6c0000000000000000000001');
-        assert.equal(job?.attempts, 1);
+        const claimNext = () => jobs.findOneAndUpdate({ entityType: 'project', status: 'pending' }, { $set: { status: 'processing' }, $inc: { attempts: 1 } }, { sort: { createdAt: 1 } });
+        const first = await claimNext();
+        assert.equal(first?._id, raw[0]!._id);
+        assert.equal(first?.attempts, (raw[0]!.attempts as number) + 1);
+        const legacy = await claimNext();
+        assert.equal(legacy?._id, '6c0000000000000000000001');
+        assert.equal(legacy?.attempts, 1);
+        assert.equal(await claimNext(), null);
+        await jobs.updateMany({ entityType: 'project' }, { $set: { status: 'pending' } });
         // A value the schema refuses is refused, not written.
         await assert.rejects(jobs.findOneAndUpdate({ entityType: 'project' }, { $set: { status: 'bogus' } }, { sort: { createdAt: 1 } }), /status/);
         // The document before the update.

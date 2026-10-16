@@ -716,8 +716,9 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (atomic) {
       const { rows } = await this.client().execReturning(this.namespace, atomic.sql, atomic.args);
       const body = rows[0]?.[1];
-      if (body === undefined || body === null) return null;
-      return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
+      if (body !== undefined && body !== null) return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
+      // Nothing matched. Unless the statement narrowed the filter, that is the answer.
+      if (!atomic.narrowed) return null;
     }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
@@ -751,12 +752,16 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    *  - the sort: one top-level Date or Number field (missing and null sort first ascending, last
    *    descending, in both);
    *  - the update: `$set` of strings, booleans, finite numbers or dates on top-level paths whose
-   *    schema type has no casting or validation beyond its enum, and `$inc` of a field the filter
-   *    already requires to be a number (SQL's `x + 1` on a missing field stores null where Mongo
-   *    stores 1). No unique, packed or expiry field, which the store derives other fields from;
+   *    schema type has no casting or validation beyond its enum, and `$inc` of a number field.
+   *    SQL's `x + 1` on a missing or null field stores null where Mongo stores 1, and KDB has
+   *    neither COALESCE nor CASE, so the field must be a number: either the filter requires it, or
+   *    the schema gives it a numeric default (every write the store or Mongoose makes includes it)
+   *    and the statement requires it too - `narrowed`, and an empty answer then falls back to the
+   *    read-then-write path, so a document missing the field is still found. No unique, packed or
+   *    expiry field, which the store derives other fields from;
    *  - no upsert, and the document after the update.
    */
-  private atomicClaimSql(filter: Filter, update: Update, options: UpdateOptions): Where | null {
+  private atomicClaimSql(filter: Filter, update: Update, options: UpdateOptions): (Where & { narrowed: boolean }) | null {
     if (!config.kdb.atomicClaim || !config.kdb.pushdown || options.upsert || options.returnDocument === 'before') return null;
     const sortKeys = Object.entries(options.sort ?? {});
     if (sortKeys.length !== 1) return null;
@@ -783,6 +788,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       }
     }
 
+    let narrowed = false;
     const derived = new Set<string>([...this.packed, ...this.unique.flatMap((constraint) => constraint.fields.map((field) => field.split('.')[0]!))]);
     if (this.ttl) derived.add(this.ttl.path.split('.')[0]!);
     const settable = (field: string) => /^[A-Za-z][A-Za-z0-9]*$/.test(field) && field !== '_id' && !derived.has(field);
@@ -796,7 +802,13 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
           if (stored === undefined) return null;
           sets.push({ sql: `${field} = ?`, args: [stored] });
         } else if (operator === '$inc') {
-          if (!numericFields.has(field) || typeof value !== 'number' || !Number.isFinite(value)) return null;
+          if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+          if (!numericFields.has(field)) {
+            const type = this.schema.path(field) as unknown as { instance?: string; options?: { default?: unknown } } | undefined;
+            if (type?.instance !== 'Number' || typeof type.options?.default !== 'number') return null;
+            where.push({ sql: `${field} IS NOT MISSING AND ${field} IS NOT NULL`, args: [] });
+            narrowed = true;
+          }
           sets.push({ sql: `${field} = ${field} + ?`, args: [value] });
         } else {
           return null;
@@ -815,6 +827,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         ` WHERE _c = ?${where.map((part) => ` AND (${part.sql})`).join('')}` +
         ` ORDER BY ${sortField}${direction === -1 ? ' DESC' : ''} LIMIT 1 RETURNING kdb_id, _doc`,
       args: [...sets.flatMap((set) => set.args), this.name, ...where.flatMap((part) => part.args)],
+      narrowed,
     };
   }
 
