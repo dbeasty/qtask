@@ -3,7 +3,7 @@
  *
  *   npm run kdb:fetch
  *
- * The version is the one `@kdb/client` is installed at (package.json), because the client's
+ * The version is the one `@limidus/kdb-client` is installed at (package.json), because the client's
  * handshake refuses a server from another release: one pin, not two that can drift. The binary
  * comes from that release's GitHub assets and is checked against its SHA256SUMS before it is
  * made executable. It lands in `.kdb/<version>/kdb-service` (git-ignored), where
@@ -19,12 +19,12 @@ import { dirname, join, resolve } from 'node:path';
 const ROOT = resolve(import.meta.dirname, '..');
 const REPO = 'dbeasty/kdb';
 
-/** The @kdb/client version package-lock.json installs, or undefined when it installs none. */
+/** The @limidus/kdb-client version package-lock.json installs, or undefined when it installs none. */
 export function pinnedKdbVersion(): string | undefined {
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8')) as {
     packages: Record<string, { version?: string }>;
   };
-  return lock.packages['node_modules/@kdb/client']?.version;
+  return lock.packages['node_modules/@limidus/kdb-client']?.version;
 }
 
 /** The release's tools this repository uses: the server, and kdb-inspect for backups and restores. */
@@ -49,7 +49,7 @@ export async function fetchKdbService(version = pinnedKdbVersion()): Promise<str
 
 /** Downloads one of the release's tools into `.kdb/<version>/<tool>`, checksum-verified. */
 export async function fetchKdbTool(tool: KdbTool, version = pinnedKdbVersion()): Promise<string> {
-  if (!version) throw new Error('@kdb/client is not in package-lock.json - run npm install');
+  if (!version) throw new Error('@limidus/kdb-client is not in package-lock.json - run npm install');
   const target = join(ROOT, '.kdb', version, tool);
   if (existsSync(target)) return target;
 

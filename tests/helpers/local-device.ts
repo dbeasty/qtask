@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './kdbRelease.ts';
 
 export const ROOT = path.resolve(import.meta.dirname, '../..');
-// The released kdb-service and @kdb/client this checkout pins (see kdbRelease.ts); the
+// The released kdb-service and @limidus/kdb-client this checkout pins (see kdbRelease.ts); the
 // KDB_SERVICE_BIN / KDB_CLIENT_MODULE overrides still apply there.
 export const KDB_SERVICE_BIN = SERVICE_BIN;
 export const KDB_CLIENT_MODULE = CLIENT_MODULE;

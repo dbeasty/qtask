@@ -3,7 +3,7 @@
  * kdb-service holding qtask's own documents, written through qtask's KDB data store.
  *
  * Not part of the app or the test suite. @kdb/replica is not published; point KDB_REPLICA_SRC at
- * its source (packages/kdb-replica/src/index.ts from the v0.8.0 tag, with @kdb/client resolvable
+ * its source (packages/kdb-replica/src/index.ts from the v0.8.0 tag, with @limidus/kdb-client resolvable
  * from there) and run:
  *
  *   KDB_REPLICA_SRC=/path/to/kdb-replica/src/index.ts npx tsx scripts/spikes/kdb-replica-spike.ts

@@ -18,7 +18,7 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 |---|---|
 | Backend abstraction, Mongo + KDB stores | Done |
 | Shadow writes (`DATA_SHADOW_WRITES`), shadow reads (`DATA_SHADOW_READS`) | Done |
-| **Pinned to the KDB v0.8.0 release** | Done. `@kdb/client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
+| **Pinned to the KDB v0.8.0 release** | Done. `@limidus/kdb-client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
 | Filter pushdown to KDB SQL (`DATA_KDB_PUSHDOWN`) | Done, flagged off. Differential test against the in-process engine |
 | Server-side expiry replacing Mongo TTL indexes | Done (`_expireAt` + `--expire-field`) |
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done. Rehearsed at 552,552 documents (100,000 tasks) of **synthetic** data against an on-disk `kdb-service` (section 8). The rehearsal found and fixed: `appMeta` was never copied; a commit per document capped the backfill at the fsync rate; verify's count of a 100,000-document collection got `kdb-service` OOM-killed (B5) |
@@ -506,7 +506,7 @@ Not tests but rehearsals, run by hand (section 8): `scripts/rehearsal/run-migrat
   cutover reconciled them. Documents keep their Mongo ids through the backfill as before.
 - **Load flakes in the test suite itself** (`socket hang up` from supertest) occur at about the same
   rate on MongoDB and on KDB (1 in 16 runs of `collaboration` under 8-way load on each).
-- **KDB comes from a release, never a source tree.** `@kdb/client` is a dependency at the
+- **KDB comes from a release, never a source tree.** `@limidus/kdb-client` is a dependency at the
   release's version (installed from the release tarball; it is not on npm), and the tests'
   `kdb-service` is the same release's binary, fetched by `npm run kdb:fetch` and checked against
   its `SHA256SUMS`. Production runs that release's image

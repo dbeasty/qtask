@@ -53,7 +53,7 @@ import type {
 } from '../types.js';
 import { MODEL_BY_COLLECTION } from '../modelNames.js';
 
-/** The minimum of `@kdb/client` this store depends on. Declared here so the adapter
+/** The minimum of `@limidus/kdb-client` this store depends on. Declared here so the adapter
  *  boundary is explicit and the module can be loaded dynamically. */
 interface KdbClient {
   upsert(ns: string, docId: string, body: unknown): Promise<string>;
@@ -1385,7 +1385,7 @@ function schemaFor(modelName: string): Schema {
 }
 
 async function loadClient(): Promise<{ connect: ConnectFn }> {
-  const specifier = process.env.KDB_CLIENT_MODULE ?? '@kdb/client';
+  const specifier = process.env.KDB_CLIENT_MODULE ?? '@limidus/kdb-client';
   try {
     const module = (await import(specifier)) as { connect: ConnectFn };
     if (typeof module.connect !== 'function') {
@@ -1395,7 +1395,7 @@ async function loadClient(): Promise<{ connect: ConnectFn }> {
   } catch (error) {
     throw new Error(
       `DATA_KDB=true requires the KDB client. Could not load "${specifier}": ${(error as Error).message}. ` +
-        'Set KDB_CLIENT_MODULE to its location, or install @kdb/client.'
+        'Set KDB_CLIENT_MODULE to its location, or install @limidus/kdb-client.'
     );
   }
 }

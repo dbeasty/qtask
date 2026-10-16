@@ -1,6 +1,6 @@
 /**
  * Diagnostic: times the SQL the KDB store's pushdown generates for qtask's hot filters, straight
- * through @kdb/client, to separate server time from the store's in-process work.
+ * through @limidus/kdb-client, to separate server time from the store's in-process work.
  *
  *   KDB_ADDR=tcp://127.0.0.1:8412 KDB_NAMESPACE_PREFIX=qtask/docs BENCH_INDEX=... tsx bench/probe-sql.ts
  */
@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import type { DatasetIndex } from './lib/dataset.ts';
 
-const { connect } = (await import(process.env.KDB_CLIENT_MODULE ?? '@kdb/client')) as {
+const { connect } = (await import(process.env.KDB_CLIENT_MODULE ?? '@limidus/kdb-client')) as {
   connect: (addr: string, o: object) => Promise<{ queryRaw(ns: string, sql: string, args?: unknown[]): Promise<{ rows: string[][] }>; close(): Promise<void> }>;
 };
 const ns = process.env.KDB_NAMESPACE_PREFIX ?? 'qtask/docs';

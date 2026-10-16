@@ -44,7 +44,7 @@ decoder; plan in `docs/kdb-client-replica-plan.md`, marked "Status: design")
   secondary indexes (the plan promised them; they are not in the source).
 - **Storage.** `MemoryStore`, `IndexedDbStore` or a custom `KvStore`. There is no on-disk Node
   store.
-- **Runtime.** Node ≥ 22 or browsers. Licensed AGPL-3.0-or-later, like `@kdb/client`.
+- **Runtime.** Node ≥ 22 or browsers. Licensed AGPL-3.0-or-later, like `@limidus/kdb-client`.
 
 ## 2. Spike: a replica of qtask's own data
 
@@ -120,7 +120,7 @@ What it showed:
   Production is still MongoDB (migration Stage 0-1).
 - **Platform coverage.** Nothing for the Swift app beyond what Node already does, and nothing for
   React Native.
-- **License.** AGPL-3.0, like `@kdb/client`, which is already a dependency. Shipping it in a
+- **License.** AGPL-3.0, like `@limidus/kdb-client`, which is already a dependency. Shipping it in a
   distributed client (the browser bundle) is a bigger licensing step than a server dependency.
 
 ## 5. Recommendation

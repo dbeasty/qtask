@@ -165,7 +165,7 @@ interface RawClient {
   close(): Promise<void>;
 }
 async function rawClient(service: Service): Promise<RawClient> {
-  const { connect } = (await import(process.env.KDB_CLIENT_MODULE ?? '@kdb/client')) as { connect(a: string, o: object): Promise<RawClient> };
+  const { connect } = (await import(process.env.KDB_CLIENT_MODULE ?? '@limidus/kdb-client')) as { connect(a: string, o: object): Promise<RawClient> };
   return connect(`tcp://127.0.0.1:${service.sql}`, { requestTimeoutMs: 120_000 });
 }
 

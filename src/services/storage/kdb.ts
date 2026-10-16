@@ -74,7 +74,7 @@ interface AttachmentPutOp {
 
 type AttachmentSource = Uint8Array | AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
 
-/** The part of `@kdb/client` this backend uses, so the module can be loaded (or faked) at runtime. */
+/** The part of `@limidus/kdb-client` this backend uses, so the module can be loaded (or faked) at runtime. */
 export interface KdbAttachmentClient {
   get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
   replace(ns: string, docId: string, body: unknown): Promise<string>;
@@ -321,14 +321,14 @@ export function fileIds(key: string): { docId: string; attachmentId: string } {
 }
 
 async function connectClient(options: KdbStorageConfig): Promise<KdbAttachmentClient> {
-  const specifier = process.env.KDB_CLIENT_MODULE ?? '@kdb/client';
+  const specifier = process.env.KDB_CLIENT_MODULE ?? '@limidus/kdb-client';
   let module: { connect?: (addr: string, options: object) => Promise<KdbAttachmentClient> };
   try {
     module = (await import(specifier)) as typeof module;
   } catch (error) {
     throw new Error(
       `STORAGE_BACKEND=kdb requires the KDB client. Could not load "${specifier}": ${(error as Error).message}. ` +
-        'Set KDB_CLIENT_MODULE to its location, or install @kdb/client.'
+        'Set KDB_CLIENT_MODULE to its location, or install @limidus/kdb-client.'
     );
   }
   if (typeof module.connect !== 'function') throw new Error(`${specifier} does not export connect()`);

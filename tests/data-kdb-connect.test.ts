@@ -1,5 +1,5 @@
 /**
- * How the KDB store opens its connection. @kdb/client takes `connect(addr, options)`; the store
+ * How the KDB store opens its connection. @limidus/kdb-client takes `connect(addr, options)`; the store
  * used to pass KDB_TOKEN as the second argument itself, a bare string, which the client reads as
  * an options object with no `token` - so the token was never sent and every connection was
  * anonymous. Invisible against a server without access control, which is every test server.

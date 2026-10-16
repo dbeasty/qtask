@@ -1,7 +1,7 @@
 /**
  * Local mode against a real kdb-service: the session handshake and a task round trip
  * through the whole HTTP stack. Skips (rather than fails) when no kdb-service binary or
- * @kdb/client is available, as the KDB conformance suite does.
+ * @limidus/kdb-client is available, as the KDB conformance suite does.
  */
 
 import { describe, it, before, after } from 'node:test';
