@@ -164,7 +164,9 @@ let primary: DataStore;
 let shadow: RecordingStore;
 let store: ShadowDataStore;
 
+// Root-level hooks run even when every suite below is skipped.
 before(async () => {
+  if (OWN_BACKENDS) return;
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
   process.env.DATA_MONGO = 'true';
@@ -179,11 +181,13 @@ before(async () => {
 });
 
 after(async () => {
+  if (OWN_BACKENDS) return;
   await store.disconnect();
   await mongo.stop();
 });
 
 beforeEach(async () => {
+  if (OWN_BACKENDS) return;
   await store.clear();
 });
 
