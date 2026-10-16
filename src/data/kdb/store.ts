@@ -66,6 +66,9 @@ interface KdbClient {
    *  (the client has no paged form), so callers bound the rows themselves (see leanMatches). */
   queryValues(ns: string, sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: unknown[][] }>;
   exec(ns: string, sql: string, args?: unknown[]): Promise<void>;
+  /** A DML statement with RETURNING (KDB 0.9): the rows as they are after it, typed as queryValues
+   *  types them. An `UPDATE … ORDER BY … LIMIT 1 RETURNING` decides and commits in one step. */
+  execReturning(ns: string, sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: unknown[][]; rowsAffected: number }>;
   /** Keyed read. Rejects with an error named KdbNotFoundError when there is no such document. */
   get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
   /** Keyed read plus the content hash a conditional write compares against. */
@@ -103,6 +106,9 @@ const LEAN_PAGE_ROWS = 5_000;
 
 /** The stored list of a document's explicitly-null top-level fields (see storedBody). */
 const NULLS_FIELD = '_nulls';
+
+/** Mongo's range operators as SQL, for the numeric conditions of an atomic claim. */
+const RANGE_SQL: Record<string, string> = { $gt: '>', $gte: '>=', $lt: '<', $lte: '<=' };
 
 /** Ids per keyed `kdb_id IN (...)` statement (see scan). */
 const KEYED_BATCH = 100;
@@ -172,6 +178,16 @@ class SerializedDmlClient implements KdbClient {
     const run = this.tail.then(
       () => this.inner.exec(ns, sql, args),
       () => this.inner.exec(ns, sql, args)
+    );
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+  execReturning(ns: string, sql: string, args?: unknown[]) {
+    // Through the same queue: the server refuses it while the session holds another statement's
+    // uncommitted writes.
+    const run = this.tail.then(
+      () => this.inner.execReturning(ns, sql, args),
+      () => this.inner.execReturning(ns, sql, args)
     );
     this.tail = run.catch(() => undefined);
     return run;
@@ -666,6 +682,13 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async findOneAndUpdate(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<T | null> {
+    const atomic = this.atomicClaimSql(filter, update, options);
+    if (atomic) {
+      const { rows } = await this.client().execReturning(this.namespace, atomic.sql, atomic.args);
+      const body = rows[0]?.[1];
+      if (body === undefined || body === null) return null;
+      return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
+    }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
       if (!candidate) {
@@ -681,6 +704,110 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       if (claimed.hit) return claimed.value;
     }
     return null;
+  }
+
+  /**
+   * A queue claim as one server statement, `UPDATE … WHERE … ORDER BY <field> LIMIT 1 RETURNING`,
+   * or null when it cannot be promised to do exactly what the read-then-write path does. The
+   * server picks, updates and returns the document at the front of its write gate, so two claims
+   * never take the same one and none fails for another having committed first. The read-then-write
+   * path read every pending job's lean row to find the oldest (125-230 ms at 15k pending jobs on
+   * KDB 0.9.1), and its conditional writes collided more the more workers claimed.
+   *
+   * Nothing re-checks the server's choice, so only what SQL evaluates exactly as Mongo does is
+   * accepted, and anything else falls back:
+   *  - the filter: exactWhere's equalities on text paths, plus equalities and ranges of finite
+   *    numbers on top-level Number paths (a missing or null field matches neither, in both);
+   *  - the sort: one top-level Date or Number field (missing and null sort first ascending, last
+   *    descending, in both);
+   *  - the update: `$set` of strings, booleans, finite numbers or dates on top-level paths whose
+   *    schema type has no casting or validation beyond its enum, and `$inc` of a field the filter
+   *    already requires to be a number (SQL's `x + 1` on a missing field stores null where Mongo
+   *    stores 1). No unique, packed or expiry field, which the store derives other fields from;
+   *  - no upsert, and the document after the update.
+   */
+  private atomicClaimSql(filter: Filter, update: Update, options: UpdateOptions): Where | null {
+    if (!config.kdb.atomicClaim || !config.kdb.pushdown || options.upsert || options.returnDocument === 'before') return null;
+    const sortKeys = Object.entries(options.sort ?? {});
+    if (sortKeys.length !== 1) return null;
+    const [sortField, direction] = sortKeys[0]! as [string, unknown];
+    if ((direction !== 1 && direction !== -1) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(sortField)) return null;
+    const instanceOf = (path: string) => (this.schema.path(path) as unknown as { instance?: string } | undefined)?.instance;
+    if (instanceOf(sortField) !== 'Date' && instanceOf(sortField) !== 'Number') return null;
+
+    const where: Where[] = [];
+    const numericFields = new Set<string>();
+    for (const [key, condition] of Object.entries(filter)) {
+      if (/^[A-Za-z][A-Za-z0-9_]*$/.test(key) && instanceOf(key) === 'Number') {
+        const conditions = isPlainObject(condition) ? Object.entries(condition as Doc) : [['$eq', condition] as [string, unknown]];
+        for (const [operator, operand] of conditions) {
+          const sqlOperator = operator === '$eq' ? '=' : RANGE_SQL[operator];
+          if (!sqlOperator || typeof operand !== 'number' || !Number.isFinite(operand)) return null;
+          where.push({ sql: `${key} ${sqlOperator} ?`, args: [operand] });
+        }
+        numericFields.add(key);
+      } else {
+        const exact = exactWhere({ [key]: condition }, (path) => pathKind(this.schema, path));
+        if (!exact || !exact.sql) return null;
+        where.push(exact);
+      }
+    }
+
+    const derived = new Set<string>([...this.packed, ...this.unique.flatMap((constraint) => constraint.fields.map((field) => field.split('.')[0]!))]);
+    if (this.ttl) derived.add(this.ttl.path.split('.')[0]!);
+    const settable = (field: string) => /^[A-Za-z][A-Za-z0-9]*$/.test(field) && field !== '_id' && !derived.has(field);
+    const sets: Where[] = [];
+    for (const [operator, fields] of Object.entries(update)) {
+      if (!isPlainObject(fields)) return null;
+      for (const [field, value] of Object.entries(fields as Doc)) {
+        if (!settable(field) || sets.some((set) => set.sql.startsWith(`${field} =`))) return null;
+        if (operator === '$set') {
+          const stored = this.claimSetValue(field, value);
+          if (stored === undefined) return null;
+          sets.push({ sql: `${field} = ?`, args: [stored] });
+        } else if (operator === '$inc') {
+          if (!numericFields.has(field) || typeof value !== 'number' || !Number.isFinite(value)) return null;
+          sets.push({ sql: `${field} = ${field} + ?`, args: [value] });
+        } else {
+          return null;
+        }
+      }
+    }
+    if (sets.length === 0) return null;
+    const stamped = touchUpdatedAt(this.schema, {});
+    if (stamped.updatedAt instanceof Date && !sets.some((set) => set.sql.startsWith('updatedAt ='))) {
+      sets.push({ sql: 'updatedAt = ?', args: [stamped.updatedAt.toISOString()] });
+    }
+
+    return {
+      sql:
+        `UPDATE ${this.table} SET ${sets.map((set) => set.sql).join(', ')}` +
+        ` WHERE _c = ?${where.map((part) => ` AND (${part.sql})`).join('')}` +
+        ` ORDER BY ${sortField}${direction === -1 ? ' DESC' : ''} LIMIT 1 RETURNING kdb_id, _doc`,
+      args: [...sets.flatMap((set) => set.args), this.name, ...where.flatMap((part) => part.args)],
+    };
+  }
+
+  /** A `$set` value as the store would write it, or undefined when only the schema walk can say:
+   *  a path with casting or validation beyond its type and enum, or a value of another type. */
+  private claimSetValue(field: string, value: unknown): unknown {
+    const type = this.schema.path(field) as unknown as
+      | { instance?: string; options?: Record<string, unknown>; enumValues?: unknown[] }
+      | undefined;
+    if (!type || !Object.keys(type.options ?? {}).every((option) => ['type', 'enum', 'default', 'required', 'index'].includes(option))) return undefined;
+    switch (type.instance) {
+      case 'String':
+        if (typeof value !== 'string') return undefined;
+        return type.enumValues && type.enumValues.length > 0 && !type.enumValues.includes(value) ? undefined : value;
+      case 'Number':
+        return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+      case 'Boolean':
+        return typeof value === 'boolean' ? value : undefined;
+      case 'Date':
+        return value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : undefined;
+      default:
+        return undefined;
+    }
   }
 
   async findByIdAndUpdate(id: string, update: Update, options: UpdateOptions = {}): Promise<T | null> {
@@ -1292,6 +1419,16 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
       const kind = instance === 'Date' || instance === 'Number' ? 'BTREE' : 'HASH';
       // A path wanted ordered by any collection is ordered for all of them.
       if (kind === 'BTREE' || !wanted.has(lead)) wanted.set(lead, kind);
+      // A compound index's second key, when it is a date or a number, is what the index orders by
+      // (`{status: 1, createdAt: 1}`: the oldest pending job). KDB indexes single fields, and since
+      // 0.9 walks a BTREE for `ORDER BY <field> LIMIT k` when the WHERE has an index of its own,
+      // stopping at the first rows instead of sorting every match: an atomic queue claim at 15k
+      // pending jobs went from 44 ms to 10-17 ms. Declared namespace-wide, like every index here.
+      const second = keys[1];
+      if (second && /^[A-Za-z_][A-Za-z0-9_]*$/.test(second)) {
+        const secondInstance = (schema.path(second) as unknown as { instance?: string } | undefined)?.instance;
+        if (secondInstance === 'Date' || secondInstance === 'Number') wanted.set(second, 'BTREE');
+      }
     }
   }
   return wanted;

@@ -282,6 +282,8 @@ const embeddingJobSchema = new Schema(
 );
 
 embeddingJobSchema.index({ entityType: 1, entityId: 1 }, { unique: true });
+// The queue claim: the oldest pending job (embeddingQueue.ts processNextJob).
+embeddingJobSchema.index({ status: 1, createdAt: 1 });
 
 export const EmbeddingJobModel = model('EmbeddingJob', embeddingJobSchema);
 
@@ -572,6 +574,8 @@ const feedbackVisionJobSchema = new Schema(
 );
 
 feedbackVisionJobSchema.index({ feedbackId: 1 }, { unique: true });
+// The queue claim: the least recently touched pending job (feedbackVisionQueue.ts).
+feedbackVisionJobSchema.index({ status: 1, updatedAt: 1 });
 
 export const FeedbackVisionJobModel = model('FeedbackVisionJob', feedbackVisionJobSchema);
 

@@ -245,6 +245,87 @@ describe('pushdown against a real kdb-service', { skip }, () => {
       });
     }
 
+    // The queue claim as one server statement (atomicClaimSql). Project jobs keep it away from the
+    // task jobs above.
+    describe('atomic queue claim', () => {
+      const claimFilter = { entityType: 'project', status: 'pending', attempts: { $lt: 3 } };
+      const claimUpdate = { $set: { status: 'processing' }, $inc: { attempts: 1 } };
+      const seed = async (count: number) => {
+        const made: Doc[] = [];
+        for (let i = 0; i < count; i++) {
+          made.push(await jobs.create({ entityType: 'project', entityId: `claim${i}-${Date.now()}`, status: 'pending', attempts: i % 4 }));
+          await new Promise((resolve) => setTimeout(resolve, 2)); // distinct createdAt
+        }
+        return made;
+      };
+      const clear = () => jobs.deleteMany({ entityType: 'project' });
+
+      it('takes the oldest match, applies the update and returns the document after it', async () => {
+        await clear();
+        const made = await seed(6);
+        const eligible = made.filter((doc) => (doc.attempts as number) < 3);
+        const before = Date.now();
+        const job = await jobs.findOneAndUpdate(claimFilter, claimUpdate, { sort: { createdAt: 1 }, returnDocument: 'after' });
+        assert.equal(job?._id, eligible[0]!._id);
+        assert.equal(job?.status, 'processing');
+        assert.equal(job?.attempts, (eligible[0]!.attempts as number) + 1);
+        assert.ok(job?.updatedAt instanceof Date && job.updatedAt.getTime() >= before - 1000, 'updatedAt is stamped and revived');
+        assert.ok(job?.createdAt instanceof Date);
+        assert.deepEqual(await jobs.findById(String(job!._id)), job, 'what it returns is what it stored');
+        // Newest first, too.
+        const newest = await jobs.findOneAndUpdate(claimFilter, claimUpdate, { sort: { createdAt: -1 } });
+        assert.equal(newest?._id, eligible[eligible.length - 1]!._id);
+      });
+
+      it('claims the same sequence as the read-then-write path', async () => {
+        const { config } = await import('../src/config/index.ts');
+        const run = async (atomic: boolean) => {
+          await clear();
+          const made = await seed(8);
+          (config.kdb as { atomicClaim: boolean }).atomicClaim = atomic;
+          try {
+            const order: number[] = [];
+            for (;;) {
+              const job = await jobs.findOneAndUpdate(claimFilter, claimUpdate, { sort: { createdAt: 1 } });
+              if (!job) break;
+              order.push(made.findIndex((doc) => doc._id === job._id));
+            }
+            return order;
+          } finally {
+            (config.kdb as { atomicClaim: boolean }).atomicClaim = true;
+          }
+        };
+        assert.deepEqual(await run(true), await run(false));
+      });
+
+      it('never gives one job to two concurrent claims', async () => {
+        await clear();
+        await seed(12);
+        const claimed = await Promise.all(Array.from({ length: 30 }, () => jobs.findOneAndUpdate(
+          { entityType: 'project', status: 'pending' }, { $set: { status: 'processing' } }, { sort: { createdAt: 1 } }
+        )));
+        const ids = claimed.filter((job): job is Doc => job !== null).map((job) => String(job._id));
+        assert.equal(ids.length, 12);
+        assert.equal(new Set(ids).size, 12);
+      });
+
+      it('falls back where SQL would differ from Mongo, with the same answer', async () => {
+        await clear();
+        // A counter the filter does not pin may be missing: Mongo's $inc makes it 1, SQL would store null.
+        const raw = await seed(1);
+        await (jobs as unknown as { importDocument(doc: Doc): Promise<void> }).importDocument({ ...raw[0]!, attempts: undefined, _id: '6c0000000000000000000001', entityId: 'no-attempts', createdAt: new Date(0) });
+        const job = await jobs.findOneAndUpdate({ entityType: 'project', status: 'pending' }, { $inc: { attempts: 1 } }, { sort: { createdAt: 1 } });
+        assert.equal(job?._id, '6c0000000000000000000001');
+        assert.equal(job?.attempts, 1);
+        // A value the schema refuses is refused, not written.
+        await assert.rejects(jobs.findOneAndUpdate({ entityType: 'project' }, { $set: { status: 'bogus' } }, { sort: { createdAt: 1 } }), /status/);
+        // The document before the update.
+        const before = await jobs.findOneAndUpdate({ entityType: 'project', status: 'pending' }, { $set: { status: 'processing' } }, { sort: { createdAt: 1 }, returnDocument: 'before' });
+        assert.equal(before?.status, 'pending');
+        await clear();
+      });
+    });
+
     it('returns whole documents for a lean page, projected when asked', async () => {
       const [page] = await jobs.find({ status: 'pending' }, { sort: { createdAt: 1 }, limit: 1 });
       assert.equal(typeof page!.entityId, 'string', 'a lean page is fetched whole, not returned as the partial document');

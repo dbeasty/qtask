@@ -87,6 +87,9 @@ export const config = {
     declareConstraints: process.env.DATA_KDB_DECLARE_CONSTRAINTS !== 'false',
     /** Create on KDB the lookup indexes the schemas declare for MongoDB. On by default. */
     declareIndexes: process.env.DATA_KDB_DECLARE_INDEXES !== 'false',
+    /** Let the server pick, update and return a queue claim in one statement (needs pushdown).
+     *  On by default; `false` goes back to read-then-conditional-write. */
+    atomicClaim: process.env.DATA_KDB_ATOMIC_CLAIM !== 'false',
   },
   jwtSecret: requireSecret('JWT_SECRET', process.env.JWT_SECRET, 'dev-jwt-secret-change-me'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
