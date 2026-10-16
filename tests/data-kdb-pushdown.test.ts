@@ -284,6 +284,24 @@ describe('pushdown against a real kdb-service', { skip }, () => {
     await tasks.deleteOne({ _id: created._id });
   });
 
+  it('narrows by the rest of a filter that also names the packed embedding', async () => {
+    // Search's semantic candidates: an access filter plus "has an embedding". The embedding
+    // condition stays in process; the rest must still be answered right, paged or not.
+    const made = await Promise.all([
+      tasks.create({ userId: 'emb-a', title: 'a1', embedding: [0.5, 0.25] }),
+      tasks.create({ userId: 'emb-a', title: 'a2', embedding: [] }),
+      tasks.create({ userId: 'emb-a', title: 'a3' }),
+      tasks.create({ userId: 'emb-b', title: 'b1', embedding: [0.75] }),
+    ]);
+    const filter = { $or: [{ userId: 'emb-a' }, { projectIds: { $in: ['emb-p'] } }], embedding: { $exists: true, $ne: [] } };
+    const titles = (docs: Doc[]) => docs.map((d) => d.title).sort();
+    assert.deepEqual(titles(await tasks.find(filter)), ['a1']);
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, limit: 10 })), ['a1']);
+    assert.deepEqual(((await tasks.find(filter, { limit: 1 }))[0]!.embedding), [0.5, 0.25]);
+    assert.equal(await tasks.countDocuments(filter), 1);
+    await Promise.all(made.map((doc) => tasks.deleteOne({ _id: doc._id })));
+  });
+
   it('finds by a set of ids', async () => {
     const ids = [every[0]._id as string, every[3]._id as string];
     assert.deepEqual((await tasks.find({ _id: { $in: ids } })).map((d) => d._id).sort(), [...ids].sort());

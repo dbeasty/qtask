@@ -350,15 +350,15 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const keyed = keyedBatches !== null;
     // Otherwise a disjunction KDB cannot serve from an index is asked one branch at a time (see
     // unionBranches); a document matching several branches comes back once.
-    const pushdown = this.canPush(filter);
-    const alternatives = pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
+    const pushable = this.pushable(filter);
+    const alternatives = pushable ? (unionBranches(pushable, isIndexedPath) ?? [pushable]) : [filter];
     const seen = !keyed && alternatives.length > 1 ? new Set<string>() : null;
     const docs: T[] = [];
     const client = this.client();
     const queries = keyedBatches
       ? keyedBatches.map((where) => () => client.queryRawPages(this.namespace, `SELECT kdb_id, _doc FROM ${this.table} WHERE ${where.sql}`, where.args, SCAN_PAGE_ROWS))
       : alternatives.map((alternative) => () => {
-          const pushed = pushdown ? buildWhere(alternative) : null;
+          const pushed = pushable ? buildWhere(alternative) : null;
           return client.queryRawPages(
             this.namespace,
             `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
@@ -407,16 +407,17 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    */
   private async leanMatches(filter: Filter, sort: FindOptions['sort']): Promise<Doc[] | null> {
     const fields = topLevelFields(filter);
-    if (fields === null || !this.canPush(filter)) return null;
+    const pushable = this.pushable(filter);
+    if (fields === null || !pushable) return null;
     for (const key of Object.keys(sort ?? {})) fields.add(key.split('.')[0]!);
     fields.delete('_id');
     if (![...fields].every((field) => /^[A-Za-z][A-Za-z0-9_]*$/.test(field))) return null;
     const columns = ['_id', NULLS_FIELD, ...fields];
-    const alternatives = config.kdb.pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
+    const alternatives = unionBranches(pushable, isIndexedPath) ?? [pushable];
     const seen = new Set<string>();
     const out: Doc[] = [];
     for (const alternative of alternatives) {
-      const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
+      const pushed = buildWhere(alternative);
       let after = '';
       for (;;) {
         const { rows } = await this.client().queryValues(
@@ -480,6 +481,18 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (this.packed.size === 0) return true;
     const fields = topLevelFields(filter);
     return fields !== null && ![...fields].some((field) => this.packed.has(field));
+  }
+
+  /**
+   * The part of a filter a scan may push, or null when pushdown is off: the filter without its
+   * conditions on packed fields. Leaving a condition out only widens what the SQL matches, and the
+   * engine re-checks every row, so the rest still narrows the read. Refusing the whole filter
+   * instead turned search's "tasks with an embedding" into a read of every task (27 s at 100k).
+   * Exact counts still go through canPush: a count has nobody to re-check it.
+   */
+  private pushable(filter: Filter): Filter | null {
+    if (!config.kdb.pushdown) return null;
+    return this.packed.size === 0 ? filter : withoutFields(filter, this.packed);
   }
 
   private isBooleanField(field: string): boolean {
@@ -1322,6 +1335,25 @@ function topLevelFields(filter: Filter): Set<string> | null {
       return null;
     } else {
       out.add(key.split('.')[0]!);
+    }
+  }
+  return out;
+}
+
+/**
+ * The filter with every condition on the given top-level fields left out, at any depth of
+ * `$and`/`$or`, so it matches a superset of what the filter matches. A `$nor` is left out whole:
+ * dropping a condition inside one would narrow it instead.
+ */
+function withoutFields(filter: Filter, fields: Set<string>): Filter {
+  const out: Filter = {};
+  for (const [key, condition] of Object.entries(filter)) {
+    if ((key === '$and' || key === '$or') && Array.isArray(condition)) {
+      out[key] = (condition as Filter[]).map((sub) => withoutFields(sub, fields));
+    } else if (key === '$nor' || fields.has(key.split('.')[0]!)) {
+      continue;
+    } else {
+      out[key] = condition;
     }
   }
   return out;
