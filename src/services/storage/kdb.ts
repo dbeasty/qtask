@@ -46,8 +46,9 @@ export const FILES_COLLECTION = 'files';
 export const CONTENT_ATTACHMENT = 'content';
 
 const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
-/** Puts retried after losing a race on the same key. The bytes are uploaded once. */
-const MAX_COMMIT_ATTEMPTS = 5;
+/** Puts retried after losing a race on the same key to another process (puts in this one take
+ *  turns, see `write`). The bytes are uploaded once. */
+const MAX_COMMIT_ATTEMPTS = 8;
 
 interface AttachmentInfo {
   id: string;
@@ -133,6 +134,8 @@ export interface StoredObjectStream {
 
 export class KdbObjectStorage implements ObjectStorage {
   private connecting?: Promise<KdbAttachmentClient>;
+  /** The last commit of each key's put still in flight in this process (see `write`). */
+  private readonly turns = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: KdbStorageConfig) {
     if (options.client) this.connecting = Promise.resolve(options.client);
@@ -255,35 +258,61 @@ export class KdbObjectStorage implements ObjectStorage {
         name: CONTENT_ATTACHMENT,
         mime: contentType,
       });
-      const record = { _c: FILES_COLLECTION, key, updatedAt: new Date().toISOString() };
-      let lastConflict: unknown;
-      for (let attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt++) {
-        let base: string;
-        try {
-          base = (await client.get(ns, ids.docId)).commit;
-        } catch (error) {
-          if (!isNotFound(error)) throw error;
-          base = await client.replace(ns, ids.docId, record);
-        }
-        try {
-          await client.commit({
-            namespace: ns,
-            baseVersion: base,
-            writes: [{ docId: ids.docId, body: record, replace: true }],
-            attachments: [op],
-          });
-          return;
-        } catch (error) {
-          // Another put (or a delete) of the same key committed since `base`: the later writer
-          // wins, as on a file system or S3, so read the new base and commit again.
-          if (!isConflict(error)) throw error;
-          lastConflict = error;
-        }
-      }
-      throw lastConflict;
+      await this.inTurn(ids.docId, () => this.commitRecord(client, key, ids, op));
     } catch (error) {
       throw this.mapError(key, error);
     }
+  }
+
+  /**
+   * Runs puts of one key one after another in this process. Racing, they all read the same base,
+   * one commit wins and the rest conflict and go round again in lockstep - one more loser each
+   * round - so with enough of them the last ran out of attempts (seen as a flaky test under load).
+   * Taking turns, each commits on its predecessor's head. Only the commit takes a turn; uploads
+   * still overlap. Other processes are what the conflict retry is left for.
+   */
+  private async inTurn<T>(docId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.turns.get(docId) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    const settled = run.catch(() => undefined);
+    this.turns.set(docId, settled);
+    try {
+      return await run;
+    } finally {
+      if (this.turns.get(docId) === settled) this.turns.delete(docId);
+    }
+  }
+
+  private async commitRecord(client: KdbAttachmentClient, key: string, ids: ReturnType<typeof fileIds>, op: Awaited<ReturnType<KdbAttachmentClient['prepareAttachment']>>): Promise<void> {
+    const ns = this.namespace;
+    const record = { _c: FILES_COLLECTION, key, updatedAt: new Date().toISOString() };
+    let lastConflict: unknown;
+    for (let attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt++) {
+      // Spread the retries out: writers that collided and retry at once collide again.
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, Math.random() * Math.min(200, 10 * 2 ** attempt)));
+      let base: string;
+      try {
+        base = (await client.get(ns, ids.docId)).commit;
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+        base = await client.replace(ns, ids.docId, record);
+      }
+      try {
+        await client.commit({
+          namespace: ns,
+          baseVersion: base,
+          writes: [{ docId: ids.docId, body: record, replace: true }],
+          attachments: [op],
+        });
+        return;
+      } catch (error) {
+        // Another put (or a delete) of the same key committed since `base`: the later writer
+        // wins, as on a file system or S3, so read the new base and commit again.
+        if (!isConflict(error)) throw error;
+        lastConflict = error;
+      }
+    }
+    throw lastConflict;
   }
 
   private client(): Promise<KdbAttachmentClient> {
