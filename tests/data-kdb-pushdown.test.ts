@@ -380,6 +380,26 @@ describe('pushdown against a real kdb-service', { skip }, () => {
     assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, limit: 10 })), ['a1']);
     assert.deepEqual(((await tasks.find(filter, { limit: 1 }))[0]!.embedding), [0.5, 0.25]);
     assert.equal(await tasks.countDocuments(filter), 1);
+
+    // A page decides "present and not empty" on the server (presenceOnly). Every stored form must
+    // come out as Mongo has it: null passes, an empty array does not - packed, or a legacy unpacked
+    // one, which the server's check lets through and the whole-document re-check must catch even
+    // when it sorts first and the page is one document long.
+    const importer = tasks as unknown as { importDocument(doc: Doc): Promise<void> };
+    const legacy = { _id: '6c0000000000000000000002', userId: 'emb-a', title: 'a0 legacy empty', embedding: [], createdAt: new Date(), updatedAt: new Date() };
+    const raw = (await import(CLIENT_MODULE)) as { connect(a: string, o: object): Promise<{ upsert(ns: string, id: string, body: unknown): Promise<unknown>; close(): Promise<void> }> };
+    const client = await raw.connect(process.env.KDB_ADDR!, {});
+    const { toDocumentUuid } = await import('../src/data/kdb/ids.ts');
+    await client.upsert('qtaskpd/docs', toDocumentUuid(legacy._id), { ...legacy, _c: 'tasks', createdAt: legacy.createdAt.toISOString(), updatedAt: legacy.updatedAt.toISOString() });
+    await client.close();
+    await importer.importDocument({ _id: '6c0000000000000000000003', userId: 'emb-a', title: 'a4 null', embedding: null, createdAt: new Date(), updatedAt: new Date() });
+    const expected = ['a1', 'a4 null'];
+    assert.deepEqual(titles(await tasks.find(filter)), expected, 'whole-document path');
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, limit: 10 })), expected, 'lean page');
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, limit: 1 })), ['a1'], 'a one-document page behind the legacy empty array');
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, skip: 1, limit: 1 })), ['a4 null'], 'a skipped page');
+    await tasks.deleteOne({ _id: legacy._id });
+    await tasks.deleteOne({ _id: '6c0000000000000000000003' });
     await Promise.all(made.map((doc) => tasks.deleteOne({ _id: doc._id })));
   });
 

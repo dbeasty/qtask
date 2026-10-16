@@ -107,6 +107,9 @@ const LEAN_PAGE_ROWS = 5_000;
 /** The stored list of a document's explicitly-null top-level fields (see storedBody). */
 const NULLS_FIELD = '_nulls';
 
+/** An empty number array as packNumbers stores it. */
+const PACKED_EMPTY = 'f64:';
+
 /** Mongo's range operators as SQL, for the numeric conditions of an atomic claim. */
 const RANGE_SQL: Record<string, string> = { $gt: '>', $gte: '>=', $lt: '<', $lte: '<=' };
 
@@ -420,11 +423,22 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    * whole one: it only looks at those fields, each rebuilt as stored - booleans from the 0/1 SQL
    * returns, an explicit null told from an absent field by the stored null list (storedBody),
    * dates revived by the schema. Paged by id, since the typed query has no paged form.
+   *
+   * With `presence`, a packed field the filter names only as present and not empty (search's
+   * `embedding: {$exists: true, $ne: []}`) is checked on the server instead of read: selecting it
+   * shipped every candidate's 768 numbers to decide a yes/no. The server's check is a superset (a
+   * legacy unpacked `[]` passes it), so the result is `approximate` and its caller must re-check
+   * whole documents - which is why a count never asks for it.
    */
-  private async leanMatches(filter: Filter, sort: FindOptions['sort']): Promise<Doc[] | null> {
-    const fields = topLevelFields(filter);
-    const pushable = this.pushable(filter);
+  private async leanMatches(filter: Filter, sort: FindOptions['sort'], presence = false): Promise<{ docs: Doc[]; approximate: boolean } | null> {
+    const present = presence ? this.presenceOnly(filter) : [];
+    const residual = present.length > 0 ? Object.fromEntries(Object.entries(filter).filter(([key]) => !present.includes(key))) : filter;
+    const fields = topLevelFields(residual);
+    const pushable = this.pushable(residual);
     if (fields === null || !pushable) return null;
+    // Packed: an empty array is stored as the bare prefix (packNumbers). Missing and that prefix
+    // are what Mongo's `$exists: true, $ne: []` excludes; null and every other value pass.
+    const presenceSql = present.map((field) => ({ sql: `${field} IS NOT MISSING AND NOT (${field} = ?)`, args: [PACKED_EMPTY] }));
     for (const key of Object.keys(sort ?? {})) fields.add(key.split('.')[0]!);
     fields.delete('_id');
     if (![...fields].every((field) => /^[A-Za-z][A-Za-z0-9_]*$/.test(field))) return null;
@@ -433,13 +447,13 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const seen = new Set<string>();
     const out: Doc[] = [];
     for (const alternative of alternatives) {
-      const pushed = buildWhere(alternative);
+      const pushed = [buildWhere(alternative), ...presenceSql].filter((part): part is Where => part !== null);
       let after = '';
       for (;;) {
         const { rows } = await this.client().queryValues(
           this.namespace,
-          `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
-          [this.name, ...(pushed?.args ?? []), after]
+          `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?${pushed.map((part) => ` AND (${part.sql})`).join('')} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
+          [this.name, ...pushed.flatMap((part) => part.args), after]
         );
         for (const row of rows) {
           const key = String(row[0]);
@@ -457,32 +471,48 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
           });
           for (const field of this.packed) if (typeof partial[field] === 'string') partial[field] = unpackNumbers(partial[field] as string);
           const doc = reviveDates(this.schema, partial) as Doc;
-          if (matchesFilter(doc, filter)) out.push(doc);
+          if (matchesFilter(doc, residual)) out.push(doc);
         }
         if (rows.length < LEAN_PAGE_ROWS) break;
         after = String(rows[rows.length - 1]![0]);
       }
     }
     out.sort((a, b) => (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0));
-    return applySort(out, sort);
+    return { docs: applySort(out, sort), approximate: present.length > 0 };
+  }
+
+  /** The packed fields `filter` names only at its top level, and only as `{$exists: true, $ne: []}`. */
+  private presenceOnly(filter: Filter): string[] {
+    return Object.entries(filter)
+      .filter(([key, condition]) => {
+        if (!this.packed.has(key) || !isPlainObject(condition)) return false;
+        const ops = Object.keys(condition).sort();
+        return ops.join() === '$exists,$ne' && condition.$exists === true && Array.isArray(condition.$ne) && condition.$ne.length === 0;
+      })
+      .map(([key]) => key);
   }
 
   /** One page of `find`, chosen on lean documents and then fetched whole by key. */
   private async leanPage(filter: Filter, options: FindOptions): Promise<T[] | null> {
-    let lean: Doc[] | null;
+    let lean: { docs: Doc[]; approximate: boolean } | null;
     try {
-      lean = await this.leanMatches(filter, options.sort);
+      // An approximate choice is only safe without a skip: a wrong document among the skipped ones
+      // would shift the page unseen, while one inside the page is caught below.
+      lean = await this.leanMatches(filter, options.sort, !options.skip);
     } catch (error) {
       // A field SQL could not select (a reserved word, say) is not worth failing the read over.
       if ((error as { code?: string }).code === 'INVALID_ARGUMENT' || /parse|syntax/i.test((error as Error).message)) return null;
       throw error;
     }
     if (lean === null) return null;
-    const ids = lean.slice(options.skip ?? 0, (options.skip ?? 0) + options.limit!).map((doc) => String(doc._id));
+    const ids = lean.docs.slice(options.skip ?? 0, (options.skip ?? 0) + options.limit!).map((doc) => String(doc._id));
     if (ids.length === 0) return [];
     const byId = new Map((await this.scan({ _id: { $in: ids } })).map((doc) => [String(doc._id), doc]));
     // A document changed between the two reads is judged as it is now.
     let docs = ids.map((id) => byId.get(id)).filter((doc): doc is T => doc !== undefined && matchesFilter(doc, filter));
+    // A page chosen approximately that lost a document may be short of one that belonged in it:
+    // decide it again on whole documents.
+    if (lean.approximate && docs.length < ids.length) return null;
     if (options.select) docs = docs.map((doc) => applyProjection(doc, options.select) as T);
     return docs;
   }
@@ -593,7 +623,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     }
     if (typeof filter._id !== 'string') {
       const lean = await this.leanMatches(filter, undefined);
-      if (lean !== null) return lean.length;
+      if (lean !== null) return lean.docs.length;
     }
     return (await this.matching(filter)).length;
   }
