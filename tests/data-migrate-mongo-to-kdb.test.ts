@@ -13,12 +13,13 @@ import assert from 'node:assert/strict';
 import { CLIENT_MODULE, SERVICE_BIN, kdbUnavailable } from './helpers/kdbRelease.ts';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { OWN_BACKENDS } from './helpers/backend.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 
 const PORT = Number(process.env.KDB_TEST_PORT_MIGRATE ?? 7814);
-const skip = kdbUnavailable;
+const skip = kdbUnavailable ?? OWN_BACKENDS;
 
 describe('migrate-mongo-to-kdb', { skip }, () => {
   let mongod: MongoMemoryServer;

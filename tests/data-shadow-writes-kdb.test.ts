@@ -22,14 +22,15 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 
 import type { DataStore, Doc } from '../src/data/types.ts';
 import type { ShadowDataStore } from '../src/data/shadow/store.ts';
+import { OWN_BACKENDS } from './helpers/backend.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
 
 const PORT = Number(process.env.KDB_SHADOW_TEST_PORT ?? 7813);
 
-function unavailable(): string | undefined {
-  return kdbUnavailable;
+function unavailable(): string | false | undefined {
+  return kdbUnavailable ?? OWN_BACKENDS;
 }
 
 let mongo: MongoMemoryServer;

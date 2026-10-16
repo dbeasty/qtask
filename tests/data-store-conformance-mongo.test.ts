@@ -2,6 +2,7 @@
 
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { runDataStoreConformance } from './helpers/dataStoreSpec.ts';
+import { OWN_BACKENDS } from './helpers/backend.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
@@ -10,6 +11,7 @@ let mongo: MongoMemoryServer | undefined;
 
 runDataStoreConformance({
   name: 'mongo',
+  skip: OWN_BACKENDS || undefined,
   async start() {
     mongo = await MongoMemoryServer.create();
     process.env.MONGODB_URI = mongo.getUri();

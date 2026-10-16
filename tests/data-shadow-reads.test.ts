@@ -25,6 +25,7 @@ import {
 } from '../src/data/shadow/compare.ts';
 import type { DataStore, Doc } from '../src/data/types.ts';
 import type { ShadowDataStore } from '../src/data/shadow/store.ts';
+import { OWN_BACKENDS } from './helpers/backend.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
@@ -269,7 +270,7 @@ let mongo: MongoMemoryServer;
 let shadow: DivergingStore;
 let store: ShadowDataStore;
 
-describe('shadow reads against a live primary', () => {
+describe('shadow reads against a live primary', { skip: OWN_BACKENDS }, () => {
   before(async () => {
     mongo = await MongoMemoryServer.create();
     process.env.MONGODB_URI = mongo.getUri();
