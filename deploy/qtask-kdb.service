@@ -74,6 +74,9 @@ ExecStart=/opt/qtask/bin/kdb-service \
   --scrub-interval 24h \
   --log-format json \
   --log-level info
+# Opening reads every document to rebuild the unique-key registry (KDB 0.9.1): about 77 s at
+# 517k documents on 2 CPUs, and no connections are accepted meanwhile, so a restart is that long
+# an outage. Nothing here times the start out (Type=simple); /readyz says when it is open.
 Restart=on-failure
 RestartSec=5
 # Exit 75 is the supervisor contract for an orderly stop under sustained memory pressure.
