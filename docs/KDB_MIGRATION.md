@@ -24,7 +24,7 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done. Rehearsed at 552,552 documents (100,000 tasks) of **synthetic** data against an on-disk `kdb-service` (section 8). The rehearsal found and fixed: `appMeta` was never copied; a commit per document capped the backfill at the fsync rate; verify's count of a 100,000-document collection got `kdb-service` OOM-killed (B5) |
 | Keyed reads for `_id`, verified deletes; the scan-cap guard | Keyed reads and verified deletes stay; the guard is retired (B1 is fixed since KDB 0.7) |
 | Deployment configuration for v0.8.0 | Done and started locally: `docker-compose.kdb.yml` (release image, private network), `deploy/qtask-kdb.service`, `deploy/install-kdb.sh` (checksum-verified install). Section 3 |
-| Backups | Done: online backup through the control plane, verified, with retention (`deploy/kdb-backup.sh`, `qtask-kdb-backup.timer`). Restore drill passed on synthetic data (section 8); restoring takes a long index rebuild (B6) |
+| Backups | Done: online backup through the control plane, verified, with retention (`deploy/kdb-backup.sh`, `qtask-kdb-backup.timer`). Restore drill passed on synthetic data (section 8.4); on v0.9.2 a restore is usable in 49 s, with no index rebuild (B6 resolved) |
 | **Read cost and memory at scale on disk** | **Narrowed (B5), still blocks Stage 4 for the heaviest accounts.** Re-run on KDB v0.9.2 (section 8.6): every query answers and nothing runs out of memory; a typical user is on par with MongoDB. The heaviest user (8,136 tasks) takes 3.7–9.8 s where MongoDB takes 25–740 ms - KDB issues dbeasty/kdb#325 and #326 - and needs a larger `--memory-budget-mb` than the 1536 the unit sets |
 | **KDB 0.7.0 candidate** (`main` at the time of writing) | The whole application passes on it: 133 of 133 test files on KDB, and the default Mongo suite is unchanged |
 | The application's own test suite on KDB (`npm run test:kdb`) | Done. A preload gives each test process a private `kdb-service`; the unchanged tests run against the real routes and services |
@@ -265,6 +265,14 @@ accounting that covers parsed documents and frame reads. Until enough of that la
 8.3's KDB column acceptable, the cutover must not happen.
 
 ### B6. A restore needs its indexes rebuilt, which takes long
+
+**Resolved in KDB v0.9.0, confirmed on v0.9.2 (section 8.4).** A backup now carries its namespace's
+schema, constraints and indexes, and `kdb-service` applies them when it first opens the restore.
+- A restored service is usable in 49 s, at 20,000 tasks. Before, it took 6.6 s to open and then
+  1,296 s re-declaring indexes.
+- The store's re-declaration takes 0.0 s, because there's nothing left to do.
+
+The text below is the original finding, as measured on v0.8.0.
 
 A namespace backup (online or `kdb-inspect backup --namespace`) carries the documents but not the
 unique constraints and index definitions, which live in KDB's internal `_kdb/meta` namespace. The
@@ -674,6 +682,19 @@ The remaining KDB rows were not reached. `kdb-service` RSS over the 18-minute KD
 read anything. The MongoDB column is the same dataset in `mongo:7` with 2 CPUs.
 
 ### 8.4 Backup and restore drill
+
+**Re-run on KDB v0.9.2** (`--tasks=20000`, same host): **DRILL PASSED.**
+
+| step | result |
+|---|---|
+| load through the store | 110,512 documents in 61 s (211 s on v0.8.0) |
+| online backup under writes | 112 MiB, 7,382 commits, 1.0 s; verified clean |
+| `kdb-inspect restore` | 4.5 s; the namespace's definitions (schema, constraints, indexes) restored with it |
+| restore usable | first open 49 s (it applies the definitions); the store's re-declaration then takes **0.0 s**, against 1,296 s on v0.8.0 |
+| checks | all passed: acknowledged writes (514) present and none stale; nothing created after the backup; 110,306 untouched documents identical; counts within bounds; duplicate email refused; all 39 indexes present; expiry |
+| `deploy/kdb-backup.sh` + quiesced restore | exit 0 in 1.2 s; quiesced restore identical to the source (22 collection counts, 111,361 documents) |
+
+The v0.8.0 run follows.
 
 `scripts/kdb-restore-drill.ts --tasks=20000`: native `kdb-service` on macOS with the unit's flags
 (`--durability sync`, control plane, `--memory-budget-mb 1536`), 110,512 documents loaded
