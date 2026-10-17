@@ -210,8 +210,9 @@ export type PathKind = 'text' | 'textList' | 'other';
  *
  * Exact here means: equality or `$in` of strings or booleans on a `text`/`textList` path (Mongo
  * matches an array if any element matches, as KDB's multikey comparison does; a missing field
- * matches neither), the document id, and `$and`/`$or` of exact parts. Everything else - ranges,
- * numbers (formatting), dates, `null`, `$exists`, `$ne`, `$regex`... - is refused, not guessed.
+ * matches neither), `$exists` alone on a top-level field (IS [NOT] MISSING), the document id, and
+ * `$and`/`$or` of exact parts. Everything else - ranges, numbers (formatting), dates, `null`,
+ * `$exists` on a nested path, `$ne`, `$regex`... - is refused, not guessed.
  */
 export function exactWhere(filter: Filter, kindOf: (path: string) => PathKind): Where | null {
   const parts: Where[] = [];
@@ -248,7 +249,13 @@ export function exactWhere(filter: Filter, kindOf: (path: string) => PathKind): 
 
 function exactField(path: string, condition: unknown, kind: PathKind): Where | null {
   const col = column(path);
-  if (!col || kind === 'other') return null;
+  if (!col) return null;
+  // Presence of a top-level field, whatever it holds: SQL's IS MISSING is false for an explicit
+  // null, as Mongo's `$exists: false` is, and true only for an absent field.
+  if (isOperatorObject(condition) && Object.keys(condition).length === 1 && typeof condition.$exists === 'boolean' && !path.includes('.')) {
+    return { sql: `${col} IS ${condition.$exists ? 'NOT ' : ''}MISSING`, args: [] };
+  }
+  if (kind === 'other') return null;
   const isText = (v: unknown) => typeof v === 'string' || typeof v === 'boolean';
   if (isText(condition)) return { sql: `${col} = ?`, args: [condition] };
   if (!isOperatorObject(condition)) return null;

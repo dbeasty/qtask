@@ -97,6 +97,9 @@ describe('exactWhere', () => {
     assert.equal(exactWhere({ $or: [{ userId: 'u' }, { 'collaborators.userId': 'u' }] }, kindOf)?.sql, '(userId = ?) OR (collaborators.userId = ?)');
     assert.equal(exactWhere({ _id: 'abc' }, kindOf)?.sql, 'kdb_id = ?');
     assert.deepEqual(exactWhere({}, kindOf), { sql: '', args: [] });
+    // Presence of a top-level field, whatever its kind: the task list's `staging` filter.
+    assert.deepEqual(exactWhere({ userId: 'u', staging: { $exists: false } }, kindOf), { sql: '(userId = ?) AND (staging IS MISSING)', args: ['u'] });
+    assert.equal(exactWhere({ dueDate: { $exists: true } }, kindOf)?.sql, 'dueDate IS NOT MISSING');
   });
 
   it('refuses anything it cannot promise exactly', () => {
@@ -104,7 +107,8 @@ describe('exactWhere', () => {
       { percentComplete: 40 }, // numbers
       { dueDate: new Date() }, // dates
       { userId: null }, // null matches absent
-      { userId: { $exists: false } },
+      { 'collaborators.userId': { $exists: false } }, // presence through an array
+      { userId: { $exists: false, $ne: 'u' } }, // $exists with company
       { userId: { $ne: 'u' } },
       { userId: { $regex: 'u' } },
       { userId: { $in: ['u', null] } },
@@ -431,6 +435,51 @@ describe('pushdown against a real kdb-service', { skip }, () => {
     await tasks.deleteOne({ _id: legacy._id });
     await tasks.deleteOne({ _id: '6c0000000000000000000003' });
     await Promise.all(made.map((doc) => tasks.deleteOne({ _id: doc._id })));
+  });
+
+  // A page of a sorted list decided by the server (`ORDER BY … LIMIT`, sqlOrder/exactBranches): it
+  // must be the engine's page exactly - ties, null against missing, descending keys, skips, and
+  // an access $or asked branch by branch whose branches overlap.
+  it('serves sorted pages from the server exactly as the engine orders them', async () => {
+    const owner = 'sorted-owner';
+    const made: Doc[] = [];
+    const sortOrders = [3, 1, 1, null, undefined, 2.5, 1, -4, 3, undefined, 0, 1];
+    for (let i = 0; i < 36; i++) {
+      const sortOrder = sortOrders[i % sortOrders.length];
+      made.push(await tasks.create({
+        userId: i % 3 === 0 ? 'someone-else' : owner,
+        title: `sorted ${i}`,
+        ...(sortOrder === undefined ? {} : { sortOrder }),
+        projectIds: i % 4 === 0 ? ['sorted-p1'] : i % 5 === 0 ? ['sorted-p2', 'sorted-p1'] : [],
+        status: ['todo', 'done', 'in_progress'][i % 3],
+        ...(i % 7 === 0 ? { staging: { conversationId: 'c1', proposalId: 'p1', stagedAt: new Date() } } : {}),
+        ...(i % 2 === 0 ? { dueDate: new Date(Date.UTC(2026, 0, 1 + (i % 5))) } : {}),
+      }));
+    }
+    // `create` stamps createdAt with the clock, so give several the same instant, to tie.
+    const importer = tasks as unknown as { importDocument(doc: Doc): Promise<void> };
+    for (const doc of made.slice(0, 12)) await importer.importDocument({ ...doc, createdAt: new Date('2026-02-01T00:00:00Z') });
+    const all = await tasks.find({});
+    const access = { $or: [{ userId: owner }, { projectIds: { $in: ['sorted-p1', 'sorted-p2'] } }, { projectId: { $in: ['sorted-p1'] } }] };
+    const cases: Array<[string, Filter, Record<string, 1 | -1>]> = [
+      ['the task list (LIST_SORT)', { ...access, staging: { $exists: false } }, { sortOrder: 1, createdAt: -1, _id: 1 }],
+      ['the task list with a status filter', { ...access, staging: { $exists: false }, status: { $in: ['todo', 'done'] } }, { sortOrder: 1, createdAt: -1, _id: 1 }],
+      ['descending number, ties by id', { userId: owner }, { sortOrder: -1 }],
+      ['a date with missing values', { userId: owner }, { dueDate: 1 }],
+      ['a date descending', { userId: owner, staging: { $exists: false } }, { dueDate: -1, sortOrder: 1 }],
+      ['staged only', { staging: { $exists: true }, userId: owner }, { createdAt: 1 }],
+      ['by id alone', { userId: owner }, { _id: -1 }],
+    ];
+    for (const [name, filter, sort] of cases) {
+      const expected = applySort(all.filter((doc) => matchesFilter(doc, filter)), sort).map((d) => d._id);
+      assert.ok(expected.length > 3, `${name}: the case needs data`);
+      for (const [skip, limit] of [[0, 1], [0, 5], [2, 3], [5, 25], [0, 1000], [expected.length - 1, 5]] as const) {
+        const page = (await tasks.find(filter, { sort, skip, limit })).map((d) => d._id);
+        assert.deepEqual(page, expected.slice(skip, skip + limit), `${name}: skip ${skip} limit ${limit}`);
+      }
+      assert.equal(await tasks.countDocuments(filter), expected.length, `${name}: count`);
+    }
+    await tasks.deleteMany({ title: { $regex: '^sorted ' } });
   });
 
   it('finds by a set of ids', async () => {

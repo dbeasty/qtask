@@ -430,7 +430,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    * legacy unpacked `[]` passes it), so the result is `approximate` and its caller must re-check
    * whole documents - which is why a count never asks for it.
    */
-  private async leanMatches(filter: Filter, sort: FindOptions['sort'], presence = false): Promise<{ docs: Doc[]; approximate: boolean } | null> {
+  private async leanMatches(filter: Filter, sort: FindOptions['sort'], presence = false, top?: number): Promise<{ docs: Doc[]; approximate: boolean } | null> {
     const present = presence ? this.presenceOnly(filter) : [];
     const residual = present.length > 0 ? Object.fromEntries(Object.entries(filter).filter(([key]) => !present.includes(key))) : filter;
     const fields = topLevelFields(residual);
@@ -443,42 +443,99 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     fields.delete('_id');
     if (![...fields].every((field) => /^[A-Za-z][A-Za-z0-9_]*$/.test(field))) return null;
     const columns = ['_id', NULLS_FIELD, ...fields];
-    const alternatives = unionBranches(pushable, isIndexedPath) ?? [pushable];
     const seen = new Set<string>();
     const out: Doc[] = [];
-    for (const alternative of alternatives) {
-      const pushed = [buildWhere(alternative), ...presenceSql].filter((part): part is Where => part !== null);
-      let after = '';
-      for (;;) {
+    const take = (rows: unknown[][]) => {
+      for (const row of rows) {
+        const key = String(row[0]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const nulls = new Set(Array.isArray(row[2]) ? (row[2] as string[]) : []);
+        const partial: Doc = { _id: row[1] };
+        [...fields].forEach((field, i) => {
+          const value = row[i + 3];
+          if (value === null || value === undefined) {
+            if (nulls.has(field)) partial[field] = null;
+          } else {
+            partial[field] = this.isBooleanField(field) && typeof value === 'number' ? value !== 0 : value;
+          }
+        });
+        for (const field of this.packed) if (typeof partial[field] === 'string') partial[field] = unpackNumbers(partial[field] as string);
+        const doc = reviveDates(this.schema, partial) as Doc;
+        if (matchesFilter(doc, residual)) out.push(doc);
+      }
+    };
+    const select = `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?`;
+    const and = (parts: Where[]) => parts.map((part) => ` AND (${part.sql})`).join('');
+
+    // Only the first `top` documents wanted, and the server can choose exactly those: each branch
+    // asks for its own first `top` in sort order, and the union of those holds the first `top` of
+    // the whole. A page of a long list then reads `top` lean rows per branch instead of all of them.
+    const order = top !== undefined && top > 0 && top <= LEAN_PAGE_ROWS ? this.sqlOrder(sort) : null;
+    const exactBranches = order ? this.exactBranches(residual) : null;
+    if (order && exactBranches) {
+      for (const branch of exactBranches) {
+        const parts = [branch, ...presenceSql].filter((part) => part.sql !== '');
         const { rows } = await this.client().queryValues(
           this.namespace,
-          `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?${pushed.map((part) => ` AND (${part.sql})`).join('')} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
-          [this.name, ...pushed.flatMap((part) => part.args), after]
+          `${select}${and(parts)} ORDER BY ${order} LIMIT ${top}`,
+          [this.name, ...parts.flatMap((part) => part.args)]
         );
-        for (const row of rows) {
-          const key = String(row[0]);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const nulls = new Set(Array.isArray(row[2]) ? (row[2] as string[]) : []);
-          const partial: Doc = { _id: row[1] };
-          [...fields].forEach((field, i) => {
-            const value = row[i + 3];
-            if (value === null || value === undefined) {
-              if (nulls.has(field)) partial[field] = null;
-            } else {
-              partial[field] = this.isBooleanField(field) && typeof value === 'number' ? value !== 0 : value;
-            }
-          });
-          for (const field of this.packed) if (typeof partial[field] === 'string') partial[field] = unpackNumbers(partial[field] as string);
-          const doc = reviveDates(this.schema, partial) as Doc;
-          if (matchesFilter(doc, residual)) out.push(doc);
+        take(rows);
+      }
+    } else {
+      const alternatives = unionBranches(pushable, isIndexedPath) ?? [pushable];
+      for (const alternative of alternatives) {
+        const pushed = [buildWhere(alternative), ...presenceSql].filter((part): part is Where => part !== null);
+        let after = '';
+        for (;;) {
+          const { rows } = await this.client().queryValues(
+            this.namespace,
+            `${select}${and(pushed)} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
+            [this.name, ...pushed.flatMap((part) => part.args), after]
+          );
+          take(rows);
+          if (rows.length < LEAN_PAGE_ROWS) break;
+          after = String(rows[rows.length - 1]![0]);
         }
-        if (rows.length < LEAN_PAGE_ROWS) break;
-        after = String(rows[rows.length - 1]![0]);
       }
     }
     out.sort((a, b) => (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0));
     return { docs: applySort(out, sort), approximate: present.length > 0 };
+  }
+
+  /**
+   * `sort` as a SQL ORDER BY that orders exactly as applySort does, ties broken by `_id` as the
+   * lean read breaks them - or null. Only on top-level Number and Date fields (dates are stored as
+   * fixed-width ISO strings, which order by instant) and `_id` (24 hex characters, which KDB and
+   * JavaScript order alike): KDB sorts numbers numerically, and missing and null together, first
+   * ascending and last descending, as the engine does. Not strings, which KDB may compare outside
+   * ASCII differently from JavaScript, nor arrays, which Mongo sorts by an element.
+   */
+  private sqlOrder(sort: FindOptions['sort']): string | null {
+    const keys = Object.entries(sort ?? {});
+    if (keys.length === 0) return null;
+    const parts: string[] = [];
+    for (const [path, direction] of keys) {
+      if (direction !== 1 && direction !== -1) return null;
+      if (path !== '_id') {
+        if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(path)) return null;
+        const instance = (this.schema.path(path) as unknown as { instance?: string } | undefined)?.instance;
+        if (instance !== 'Number' && instance !== 'Date') return null;
+      }
+      parts.push(`${path}${direction === -1 ? ' DESC' : ''}`);
+    }
+    if (!keys.some(([path]) => path === '_id')) parts.push('_id');
+    return parts.join(', ');
+  }
+
+  /** The filter as alternatives SQL matches exactly (one per union branch, see unionBranches), or
+   *  null when any of them cannot be promised exact (exactWhere). */
+  private exactBranches(filter: Filter): Where[] | null {
+    const kindOf = (path: string) => pathKind(this.schema, path);
+    const branches = (config.kdb.pushdown ? unionBranches(filter, isIndexedPath) : null) ?? [filter];
+    const exact = branches.map((branch) => exactWhere(branch, kindOf));
+    return exact.every((where): where is Where => where !== null) ? exact : null;
   }
 
   /** The packed fields `filter` names only at its top level, and only as `{$exists: true, $ne: []}`. */
@@ -498,7 +555,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     try {
       // An approximate choice is only safe without a skip: a wrong document among the skipped ones
       // would shift the page unseen, while one inside the page is caught below.
-      lean = await this.leanMatches(filter, options.sort, !options.skip);
+      lean = await this.leanMatches(filter, options.sort, !options.skip, (options.skip ?? 0) + options.limit!);
     } catch (error) {
       // A field SQL could not select (a reserved word, say) is not worth failing the read over.
       if ((error as { code?: string }).code === 'INVALID_ARGUMENT' || /parse|syntax/i.test((error as Error).message)) return null;
