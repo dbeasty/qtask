@@ -430,7 +430,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    * legacy unpacked `[]` passes it), so the result is `approximate` and its caller must re-check
    * whole documents - which is why a count never asks for it.
    */
-  private async leanMatches(filter: Filter, sort: FindOptions['sort'], presence = false): Promise<{ docs: Doc[]; approximate: boolean } | null> {
+  private async leanMatches(filter: Filter, sort: FindOptions['sort'], presence = false, top?: number): Promise<{ docs: Doc[]; approximate: boolean } | null> {
     const present = presence ? this.presenceOnly(filter) : [];
     const residual = present.length > 0 ? Object.fromEntries(Object.entries(filter).filter(([key]) => !present.includes(key))) : filter;
     const fields = topLevelFields(residual);
@@ -443,42 +443,99 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     fields.delete('_id');
     if (![...fields].every((field) => /^[A-Za-z][A-Za-z0-9_]*$/.test(field))) return null;
     const columns = ['_id', NULLS_FIELD, ...fields];
-    const alternatives = unionBranches(pushable, isIndexedPath) ?? [pushable];
     const seen = new Set<string>();
     const out: Doc[] = [];
-    for (const alternative of alternatives) {
-      const pushed = [buildWhere(alternative), ...presenceSql].filter((part): part is Where => part !== null);
-      let after = '';
-      for (;;) {
+    const take = (rows: unknown[][]) => {
+      for (const row of rows) {
+        const key = String(row[0]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const nulls = new Set(Array.isArray(row[2]) ? (row[2] as string[]) : []);
+        const partial: Doc = { _id: row[1] };
+        [...fields].forEach((field, i) => {
+          const value = row[i + 3];
+          if (value === null || value === undefined) {
+            if (nulls.has(field)) partial[field] = null;
+          } else {
+            partial[field] = this.isBooleanField(field) && typeof value === 'number' ? value !== 0 : value;
+          }
+        });
+        for (const field of this.packed) if (typeof partial[field] === 'string') partial[field] = unpackNumbers(partial[field] as string);
+        const doc = reviveDates(this.schema, partial) as Doc;
+        if (matchesFilter(doc, residual)) out.push(doc);
+      }
+    };
+    const select = `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?`;
+    const and = (parts: Where[]) => parts.map((part) => ` AND (${part.sql})`).join('');
+
+    // Only the first `top` documents wanted, and the server can choose exactly those: each branch
+    // asks for its own first `top` in sort order, and the union of those holds the first `top` of
+    // the whole. A page of a long list then reads `top` lean rows per branch instead of all of them.
+    const order = top !== undefined && top > 0 && top <= LEAN_PAGE_ROWS ? this.sqlOrder(sort) : null;
+    const exactBranches = order ? this.exactBranches(residual) : null;
+    if (order && exactBranches) {
+      for (const branch of exactBranches) {
+        const parts = [branch, ...presenceSql].filter((part) => part.sql !== '');
         const { rows } = await this.client().queryValues(
           this.namespace,
-          `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?${pushed.map((part) => ` AND (${part.sql})`).join('')} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
-          [this.name, ...pushed.flatMap((part) => part.args), after]
+          `${select}${and(parts)} ORDER BY ${order} LIMIT ${top}`,
+          [this.name, ...parts.flatMap((part) => part.args)]
         );
-        for (const row of rows) {
-          const key = String(row[0]);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const nulls = new Set(Array.isArray(row[2]) ? (row[2] as string[]) : []);
-          const partial: Doc = { _id: row[1] };
-          [...fields].forEach((field, i) => {
-            const value = row[i + 3];
-            if (value === null || value === undefined) {
-              if (nulls.has(field)) partial[field] = null;
-            } else {
-              partial[field] = this.isBooleanField(field) && typeof value === 'number' ? value !== 0 : value;
-            }
-          });
-          for (const field of this.packed) if (typeof partial[field] === 'string') partial[field] = unpackNumbers(partial[field] as string);
-          const doc = reviveDates(this.schema, partial) as Doc;
-          if (matchesFilter(doc, residual)) out.push(doc);
+        take(rows);
+      }
+    } else {
+      const alternatives = unionBranches(pushable, isIndexedPath) ?? [pushable];
+      for (const alternative of alternatives) {
+        const pushed = [buildWhere(alternative), ...presenceSql].filter((part): part is Where => part !== null);
+        let after = '';
+        for (;;) {
+          const { rows } = await this.client().queryValues(
+            this.namespace,
+            `${select}${and(pushed)} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
+            [this.name, ...pushed.flatMap((part) => part.args), after]
+          );
+          take(rows);
+          if (rows.length < LEAN_PAGE_ROWS) break;
+          after = String(rows[rows.length - 1]![0]);
         }
-        if (rows.length < LEAN_PAGE_ROWS) break;
-        after = String(rows[rows.length - 1]![0]);
       }
     }
     out.sort((a, b) => (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0));
     return { docs: applySort(out, sort), approximate: present.length > 0 };
+  }
+
+  /**
+   * `sort` as a SQL ORDER BY that orders exactly as applySort does, ties broken by `_id` as the
+   * lean read breaks them - or null. Only on top-level Number and Date fields (dates are stored as
+   * fixed-width ISO strings, which order by instant) and `_id` (24 hex characters, which KDB and
+   * JavaScript order alike): KDB sorts numbers numerically, and missing and null together, first
+   * ascending and last descending, as the engine does. Not strings, which KDB may compare outside
+   * ASCII differently from JavaScript, nor arrays, which Mongo sorts by an element.
+   */
+  private sqlOrder(sort: FindOptions['sort']): string | null {
+    const keys = Object.entries(sort ?? {});
+    if (keys.length === 0) return null;
+    const parts: string[] = [];
+    for (const [path, direction] of keys) {
+      if (direction !== 1 && direction !== -1) return null;
+      if (path !== '_id') {
+        if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(path)) return null;
+        const instance = (this.schema.path(path) as unknown as { instance?: string } | undefined)?.instance;
+        if (instance !== 'Number' && instance !== 'Date') return null;
+      }
+      parts.push(`${path}${direction === -1 ? ' DESC' : ''}`);
+    }
+    if (!keys.some(([path]) => path === '_id')) parts.push('_id');
+    return parts.join(', ');
+  }
+
+  /** The filter as alternatives SQL matches exactly (one per union branch, see unionBranches), or
+   *  null when any of them cannot be promised exact (exactWhere). */
+  private exactBranches(filter: Filter): Where[] | null {
+    const kindOf = (path: string) => pathKind(this.schema, path);
+    const branches = (config.kdb.pushdown ? unionBranches(filter, isIndexedPath) : null) ?? [filter];
+    const exact = branches.map((branch) => exactWhere(branch, kindOf));
+    return exact.every((where): where is Where => where !== null) ? exact : null;
   }
 
   /** The packed fields `filter` names only at its top level, and only as `{$exists: true, $ne: []}`. */
@@ -498,7 +555,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     try {
       // An approximate choice is only safe without a skip: a wrong document among the skipped ones
       // would shift the page unseen, while one inside the page is caught below.
-      lean = await this.leanMatches(filter, options.sort, !options.skip);
+      lean = await this.leanMatches(filter, options.sort, !options.skip, (options.skip ?? 0) + options.limit!);
     } catch (error) {
       // A field SQL could not select (a reserved word, say) is not worth failing the read over.
       if ((error as { code?: string }).code === 'INVALID_ARGUMENT' || /parse|syntax/i.test((error as Error).message)) return null;
@@ -716,9 +773,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (atomic) {
       const { rows } = await this.client().execReturning(this.namespace, atomic.sql, atomic.args);
       const body = rows[0]?.[1];
-      if (body !== undefined && body !== null) return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
-      // Nothing matched. Unless the statement narrowed the filter, that is the answer.
-      if (!atomic.narrowed) return null;
+      if (body === undefined || body === null) return null;
+      return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
     }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
@@ -752,16 +808,14 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    *  - the sort: one top-level Date or Number field (missing and null sort first ascending, last
    *    descending, in both);
    *  - the update: `$set` of strings, booleans, finite numbers or dates on top-level paths whose
-   *    schema type has no casting or validation beyond its enum, and `$inc` of a number field.
-   *    SQL's `x + 1` on a missing or null field stores null where Mongo stores 1, and KDB has
-   *    neither COALESCE nor CASE, so the field must be a number: either the filter requires it, or
-   *    the schema gives it a numeric default (every write the store or Mongoose makes includes it)
-   *    and the statement requires it too - `narrowed`, and an empty answer then falls back to the
-   *    read-then-write path, so a document missing the field is still found. No unique, packed or
-   *    expiry field, which the store derives other fields from;
+   *    schema type has no casting or validation beyond its enum, and `$inc` of a Number path as
+   *    `COALESCE(x, 0) + n` (KDB 0.9.2): a missing or null field counts from zero, as in Mongo,
+   *    where a bare `x + n` would store null. (A non-number would also come out null, but the
+   *    store casts a Number path on every write.) No unique, packed or expiry field, which the
+   *    store derives other fields from;
    *  - no upsert, and the document after the update.
    */
-  private atomicClaimSql(filter: Filter, update: Update, options: UpdateOptions): (Where & { narrowed: boolean }) | null {
+  private atomicClaimSql(filter: Filter, update: Update, options: UpdateOptions): Where | null {
     if (!config.kdb.atomicClaim || !config.kdb.pushdown || options.upsert || options.returnDocument === 'before') return null;
     const sortKeys = Object.entries(options.sort ?? {});
     if (sortKeys.length !== 1) return null;
@@ -771,7 +825,6 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (instanceOf(sortField) !== 'Date' && instanceOf(sortField) !== 'Number') return null;
 
     const where: Where[] = [];
-    const numericFields = new Set<string>();
     for (const [key, condition] of Object.entries(filter)) {
       if (/^[A-Za-z][A-Za-z0-9_]*$/.test(key) && instanceOf(key) === 'Number') {
         const conditions = isPlainObject(condition) ? Object.entries(condition as Doc) : [['$eq', condition] as [string, unknown]];
@@ -780,7 +833,6 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
           if (!sqlOperator || typeof operand !== 'number' || !Number.isFinite(operand)) return null;
           where.push({ sql: `${key} ${sqlOperator} ?`, args: [operand] });
         }
-        numericFields.add(key);
       } else {
         const exact = exactWhere({ [key]: condition }, (path) => pathKind(this.schema, path));
         if (!exact || !exact.sql) return null;
@@ -788,7 +840,6 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       }
     }
 
-    let narrowed = false;
     const derived = new Set<string>([...this.packed, ...this.unique.flatMap((constraint) => constraint.fields.map((field) => field.split('.')[0]!))]);
     if (this.ttl) derived.add(this.ttl.path.split('.')[0]!);
     const settable = (field: string) => /^[A-Za-z][A-Za-z0-9]*$/.test(field) && field !== '_id' && !derived.has(field);
@@ -802,14 +853,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
           if (stored === undefined) return null;
           sets.push({ sql: `${field} = ?`, args: [stored] });
         } else if (operator === '$inc') {
-          if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-          if (!numericFields.has(field)) {
-            const type = this.schema.path(field) as unknown as { instance?: string; options?: { default?: unknown } } | undefined;
-            if (type?.instance !== 'Number' || typeof type.options?.default !== 'number') return null;
-            where.push({ sql: `${field} IS NOT MISSING AND ${field} IS NOT NULL`, args: [] });
-            narrowed = true;
-          }
-          sets.push({ sql: `${field} = ${field} + ?`, args: [value] });
+          if (typeof value !== 'number' || !Number.isFinite(value) || instanceOf(field) !== 'Number') return null;
+          sets.push({ sql: `${field} = COALESCE(${field}, 0) + ?`, args: [value] });
         } else {
           return null;
         }
@@ -827,7 +872,6 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         ` WHERE _c = ?${where.map((part) => ` AND (${part.sql})`).join('')}` +
         ` ORDER BY ${sortField}${direction === -1 ? ' DESC' : ''} LIMIT 1 RETURNING kdb_id, _doc`,
       args: [...sets.flatMap((set) => set.args), this.name, ...where.flatMap((part) => part.args)],
-      narrowed,
     };
   }
 
@@ -1471,11 +1515,16 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
 /**
  * Single-field BTREEs declared for the `ORDER BY <field> LIMIT k` KDB 0.9 serves by walking one
  * (when the WHERE has an index of its own), stopping at the first rows that match instead of
- * sorting every match. Only where measured to help: the walk is in namespace-wide order, so it is
- * quick when matches come early in it and slow when it passes many documents first. Measured on
- * the benchmark's 517k documents (one-job pick): the embedding queue's oldest pending job by
- * `createdAt`, 33 ms without and 4.8 ms with; the vision queue's oldest by `updatedAt`, 4.7 ms
- * without and 24.6 ms with - so `updatedAt` is not declared.
+ * sorting every match. The walk is in namespace-wide order: quick when matches come early in it,
+ * and when they come late it passes documents until it gives up for a plain top-k (capped at
+ * 4 x candidates + 256 entries since KDB 0.9.2, dbeasty/kdb#318). Measured on the benchmark's
+ * 517k documents, one-job picks, KDB 0.9.2 (`EXPLAIN` shows which plan ran):
+ *  - `createdAt`, the embedding queue's oldest pending job: 33 ms without, 4.7 ms with (104 rows
+ *    examined instead of 15k). Never changes after insert, so the index costs a write only once.
+ *  - `updatedAt`, the vision queue's: 0.6 ms with against 5.8 ms without when the pending jobs
+ *    sort early, but 10.0 ms against 4.4 ms when they sort last - which is the normal case, a job
+ *    just queued being among the most recently updated documents. And `updatedAt` changes on
+ *    nearly every write of every document, so its index would be rewritten with each. Not declared.
  */
 const ORDER_INDEXES = ['createdAt'];
 

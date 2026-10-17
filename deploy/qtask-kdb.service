@@ -9,7 +9,7 @@ Type=simple
 User=qtask
 Group=qtask
 WorkingDirectory=/var/lib/qtask/kdb
-# Pinned: KDB v0.9.1, installed by deploy/install-kdb.sh from the release assets
+# Pinned: KDB v0.9.2, installed by deploy/install-kdb.sh from the release assets
 # (kdb-service-linux-<arch>, checked against the release's SHA256SUMS), never built on the host.
 # @limidus/kdb-client 0.8.0 refuses a server from another release line, so this pin and package.json's
 # move together. See docs/KDB_MIGRATION.md before changing anything here.
@@ -74,9 +74,9 @@ ExecStart=/opt/qtask/bin/kdb-service \
   --scrub-interval 24h \
   --log-format json \
   --log-level info
-# Opening reads every document to rebuild the unique-key registry (KDB 0.9.1): about 77 s at
-# 517k documents on 2 CPUs, and no connections are accepted meanwhile, so a restart is that long
-# an outage. Nothing here times the start out (Type=simple); /readyz says when it is open.
+# Opening takes 11 s at 517k documents on 2 CPUs (KDB 0.9.2; 77 s on 0.9.1), and no connections
+# are accepted meanwhile, so a restart is that long an outage, growing with the data. Nothing here
+# times the start out (Type=simple); /readyz says when it is open.
 Restart=on-failure
 RestartSec=5
 # Exit 75 is the supervisor contract for an orderly stop under sustained memory pressure.

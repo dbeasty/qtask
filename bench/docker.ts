@@ -85,7 +85,7 @@ function parseOptions(argv: string[]): Options {
     reuseData: flags.get('reuse-data') !== 'false',
     verifyLoad: flags.get('verify-load') !== undefined ? flags.get('verify-load') !== 'false' : scale !== 'prod',
     out: flags.get('out') ?? join(ROOT, 'bench/results', `${stamp}-${scale}`),
-    kdbVersion: flags.get('kdb-version') ?? '0.9.1',
+    kdbVersion: flags.get('kdb-version') ?? '0.9.2',
     reset: (flags.get('reset') ?? 'profile') as 'profile' | 'cell',
     reportOnly: flags.get('report-only'),
   };
