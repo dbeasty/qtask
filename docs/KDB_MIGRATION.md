@@ -18,7 +18,7 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 |---|---|
 | Backend abstraction, Mongo + KDB stores | Done |
 | Shadow writes (`DATA_SHADOW_WRITES`), shadow reads (`DATA_SHADOW_READS`) | Done |
-| **Pinned to the KDB v0.9.1 release** (from v0.8.0; see "What v0.9.1 changes") | Done. `@limidus/kdb-client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
+| **Pinned to the KDB v0.9.2 release** (from v0.8.0; see "What v0.9.1 changes" and "What v0.9.2 changes") | Done. `@limidus/kdb-client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
 | Filter pushdown to KDB SQL (`DATA_KDB_PUSHDOWN`) | Done, flagged off. Differential test against the in-process engine |
 | Server-side expiry replacing Mongo TTL indexes | Done (`_expireAt` + `--expire-field`) |
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done. Rehearsed at 552,552 documents (100,000 tasks) of **synthetic** data against an on-disk `kdb-service` (section 8). The rehearsal found and fixed: `appMeta` was never copied; a commit per document capped the backfill at the fsync rate; verify's count of a 100,000-document collection got `kdb-service` OOM-killed (B5) |
@@ -76,11 +76,35 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
   vision jobs in one statement (`DATA_KDB_ATOMIC_CLAIM`, default on, needs pushdown), 10–17 ms where
   the read-then-write claim took 125–230 ms at 15k pending jobs, and no claim loses a race: the
   benchmark's 32-worker claim profile went from 11 to 76 claims/s.
-- **A restart is an outage of about 77 s** at 517k documents on 2 CPUs: opening rebuilds the
-  unique-key registry by parsing every document whole, on one thread, and the node accepts no
-  connections meanwhile. The compose health check allows 5 minutes. To be fixed in KDB.
+- **A restart was an outage of about 77 s** at 517k documents on 2 CPUs: opening rebuilt the
+  unique-key registry by parsing every document whole, once per constraint. Fixed in v0.9.2.
 - Rolling back to v0.8.2 is safe for data (the on-disk format is unchanged), but needs the client
   back on `@kdb/client` 0.8.x and the atomic claim off (`DATA_KDB_ATOMIC_CLAIM=false`).
+
+### What v0.9.2 changes
+
+Three server fixes for issues qtask found on v0.9.1. There are no format or protocol changes;
+clients 0.9.0–0.9.2 all work with a v0.9.2 server.
+
+- **Opening is about 7x faster (dbeasty/kdb#316):** 11 s instead of 77 s at the benchmark's 517k
+  documents. The compose health check's start period went from 5 to 2 minutes.
+- **`COALESCE` and `CASE` (dbeasty/kdb#317).** The atomic claim's `$inc` is now
+  `COALESCE(x, 0) + n`, exact for a missing or null counter. Before, it required the field and fell
+  back to read-then-write when that found nothing.
+- **A bad BTREE walk gives up sooner, and `EXPLAIN` works (dbeasty/kdb#318).** Re-measured with it
+  (`ORDER_INDEXES` in the store):
+  - `createdAt` still pays: the embedding claim takes 4.7 ms instead of 33 ms.
+  - `updatedAt` stays undeclared. It still costs about 2x in the normal case, where a just-queued
+    job sorts last, and would be rewritten on nearly every write.
+- **Benchmark** (prod scale, KDB only, 2 CPUs / 4 GB, no errors in any run). Actions/s at
+  1 / 8 / 32 users:
+  - mixed: 29.1 / 64.2 / 48.6
+  - read-heavy: 28.9 / 60.6 / 39.4
+  - write-heavy: 35.7 / 91.2 / 96.7
+  - claims: 108 / 300 / 319 per second
+  - first answer after a restart: 21 s, including the harness's connect retries
+- **Rolling back to v0.9.1** is safe for data, but needs `DATA_KDB_ATOMIC_CLAIM=false`: v0.9.1 can't
+  parse `COALESCE`.
 
 ## 2. Blockers
 
