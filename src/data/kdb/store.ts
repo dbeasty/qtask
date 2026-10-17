@@ -1458,11 +1458,16 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
 /**
  * Single-field BTREEs declared for the `ORDER BY <field> LIMIT k` KDB 0.9 serves by walking one
  * (when the WHERE has an index of its own), stopping at the first rows that match instead of
- * sorting every match. Only where measured to help: the walk is in namespace-wide order, so it is
- * quick when matches come early in it and slow when it passes many documents first. Measured on
- * the benchmark's 517k documents (one-job pick): the embedding queue's oldest pending job by
- * `createdAt`, 33 ms without and 4.8 ms with; the vision queue's oldest by `updatedAt`, 4.7 ms
- * without and 24.6 ms with - so `updatedAt` is not declared.
+ * sorting every match. The walk is in namespace-wide order: quick when matches come early in it,
+ * and when they come late it passes documents until it gives up for a plain top-k (capped at
+ * 4 x candidates + 256 entries since KDB 0.9.2, dbeasty/kdb#318). Measured on the benchmark's
+ * 517k documents, one-job picks, KDB 0.9.2 (`EXPLAIN` shows which plan ran):
+ *  - `createdAt`, the embedding queue's oldest pending job: 33 ms without, 4.7 ms with (104 rows
+ *    examined instead of 15k). Never changes after insert, so the index costs a write only once.
+ *  - `updatedAt`, the vision queue's: 0.6 ms with against 5.8 ms without when the pending jobs
+ *    sort early, but 10.0 ms against 4.4 ms when they sort last - which is the normal case, a job
+ *    just queued being among the most recently updated documents. And `updatedAt` changes on
+ *    nearly every write of every document, so its index would be rewritten with each. Not declared.
  */
 const ORDER_INDEXES = ['createdAt'];
 
