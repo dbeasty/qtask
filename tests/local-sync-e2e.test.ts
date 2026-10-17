@@ -5,7 +5,7 @@
  * discovery by mDNS on a private port over loopback). Everything is checked through the
  * normal REST API, as the app sees it.
  *
- * Skips when kdb-service or @kdb/client is not available (as the KDB suites do).
+ * Skips when kdb-service or @limidus/kdb-client is not available (as the KDB suites do).
  */
 
 import { after, before, describe, it } from 'node:test';

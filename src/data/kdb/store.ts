@@ -53,7 +53,7 @@ import type {
 } from '../types.js';
 import { MODEL_BY_COLLECTION } from '../modelNames.js';
 
-/** The minimum of `@kdb/client` this store depends on. Declared here so the adapter
+/** The minimum of `@limidus/kdb-client` this store depends on. Declared here so the adapter
  *  boundary is explicit and the module can be loaded dynamically. */
 interface KdbClient {
   upsert(ns: string, docId: string, body: unknown): Promise<string>;
@@ -66,6 +66,9 @@ interface KdbClient {
    *  (the client has no paged form), so callers bound the rows themselves (see leanMatches). */
   queryValues(ns: string, sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: unknown[][] }>;
   exec(ns: string, sql: string, args?: unknown[]): Promise<void>;
+  /** A DML statement with RETURNING (KDB 0.9): the rows as they are after it, typed as queryValues
+   *  types them. An `UPDATE … ORDER BY … LIMIT 1 RETURNING` decides and commits in one step. */
+  execReturning(ns: string, sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: unknown[][]; rowsAffected: number }>;
   /** Keyed read. Rejects with an error named KdbNotFoundError when there is no such document. */
   get(ns: string, docId: string): Promise<{ body: unknown; commit: string }>;
   /** Keyed read plus the content hash a conditional write compares against. */
@@ -78,7 +81,13 @@ interface KdbClient {
   /** Keyed delete: a commit, not a scan, so it is not bounded by anything about the namespace. */
   delete(ns: string, docId: string): Promise<string>;
   /** Several writes in one commit. `baseVersion` must be a commit hash; a stale one is rebased. */
-  commit(tx: { namespace: string; baseVersion: string; writes: Array<{ docId: string; body: unknown; replace?: boolean }> }): Promise<string>;
+  commit(tx: {
+    namespace: string;
+    baseVersion: string;
+    writes: Array<{ docId: string; body: unknown; replace?: boolean }>;
+    deletes?: string[];
+    preconditions?: Array<{ opIndex: number; kind: 'EXPECT_CONTENT_HASH'; contentHashHex: string }>;
+  }): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -97,6 +106,12 @@ const LEAN_PAGE_ROWS = 5_000;
 
 /** The stored list of a document's explicitly-null top-level fields (see storedBody). */
 const NULLS_FIELD = '_nulls';
+
+/** An empty number array as packNumbers stores it. */
+const PACKED_EMPTY = 'f64:';
+
+/** Mongo's range operators as SQL, for the numeric conditions of an atomic claim. */
+const RANGE_SQL: Record<string, string> = { $gt: '>', $gte: '>=', $lt: '<', $lte: '<=' };
 
 /** Ids per keyed `kdb_id IN (...)` statement (see scan). */
 const KEYED_BATCH = 100;
@@ -166,6 +181,16 @@ class SerializedDmlClient implements KdbClient {
     const run = this.tail.then(
       () => this.inner.exec(ns, sql, args),
       () => this.inner.exec(ns, sql, args)
+    );
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+  execReturning(ns: string, sql: string, args?: unknown[]) {
+    // Through the same queue: the server refuses it while the session holds another statement's
+    // uncommitted writes.
+    const run = this.tail.then(
+      () => this.inner.execReturning(ns, sql, args),
+      () => this.inner.execReturning(ns, sql, args)
     );
     this.tail = run.catch(() => undefined);
     return run;
@@ -295,6 +320,8 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   /** Unique constraints the server enforces, each carried on a synthetic field only this
    *  collection's documents have (see declareConstraints). */
   private readonly serverKeys: Array<{ field: string; paths: string[]; arrayPrefix?: string }>;
+  /** Top-level number arrays stored packed (see packNumbers): the embeddings. */
+  private readonly packed: Set<string>;
 
   constructor(
     readonly name: CollectionName,
@@ -304,6 +331,11 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     private readonly client: () => KdbClient
   ) {
     this.unique = uniqueConstraints(schema);
+    this.packed = new Set(
+      Object.entries((schema as unknown as { paths: Record<string, { instance?: string; caster?: { instance?: string }; embeddedSchemaType?: { instance?: string } }> }).paths)
+        .filter(([path, type]) => !path.includes('.') && type.instance === 'Array' && (type.embeddedSchemaType ?? type.caster)?.instance === 'Number')
+        .map(([path]) => path)
+    );
     this.ttl = ttlSpec(schema);
     this.serverKeys = this.unique.flatMap((constraint) => {
       const field = serverKeyField(name, constraint.fields);
@@ -337,14 +369,15 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const keyed = keyedBatches !== null;
     // Otherwise a disjunction KDB cannot serve from an index is asked one branch at a time (see
     // unionBranches); a document matching several branches comes back once.
-    const alternatives = config.kdb.pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
+    const pushable = this.pushable(filter);
+    const alternatives = pushable ? (unionBranches(pushable, isIndexedPath) ?? [pushable]) : [filter];
     const seen = !keyed && alternatives.length > 1 ? new Set<string>() : null;
     const docs: T[] = [];
     const client = this.client();
     const queries = keyedBatches
       ? keyedBatches.map((where) => () => client.queryRawPages(this.namespace, `SELECT kdb_id, _doc FROM ${this.table} WHERE ${where.sql}`, where.args, SCAN_PAGE_ROWS))
       : alternatives.map((alternative) => () => {
-          const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
+          const pushed = pushable ? buildWhere(alternative) : null;
           return client.queryRawPages(
             this.namespace,
             `SELECT kdb_id, _doc FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''}`,
@@ -390,25 +423,37 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    * whole one: it only looks at those fields, each rebuilt as stored - booleans from the 0/1 SQL
    * returns, an explicit null told from an absent field by the stored null list (storedBody),
    * dates revived by the schema. Paged by id, since the typed query has no paged form.
+   *
+   * With `presence`, a packed field the filter names only as present and not empty (search's
+   * `embedding: {$exists: true, $ne: []}`) is checked on the server instead of read: selecting it
+   * shipped every candidate's 768 numbers to decide a yes/no. The server's check is a superset (a
+   * legacy unpacked `[]` passes it), so the result is `approximate` and its caller must re-check
+   * whole documents - which is why a count never asks for it.
    */
-  private async leanMatches(filter: Filter, sort: FindOptions['sort']): Promise<Doc[] | null> {
-    const fields = topLevelFields(filter);
-    if (fields === null) return null;
+  private async leanMatches(filter: Filter, sort: FindOptions['sort'], presence = false): Promise<{ docs: Doc[]; approximate: boolean } | null> {
+    const present = presence ? this.presenceOnly(filter) : [];
+    const residual = present.length > 0 ? Object.fromEntries(Object.entries(filter).filter(([key]) => !present.includes(key))) : filter;
+    const fields = topLevelFields(residual);
+    const pushable = this.pushable(residual);
+    if (fields === null || !pushable) return null;
+    // Packed: an empty array is stored as the bare prefix (packNumbers). Missing and that prefix
+    // are what Mongo's `$exists: true, $ne: []` excludes; null and every other value pass.
+    const presenceSql = present.map((field) => ({ sql: `${field} IS NOT MISSING AND NOT (${field} = ?)`, args: [PACKED_EMPTY] }));
     for (const key of Object.keys(sort ?? {})) fields.add(key.split('.')[0]!);
     fields.delete('_id');
     if (![...fields].every((field) => /^[A-Za-z][A-Za-z0-9_]*$/.test(field))) return null;
     const columns = ['_id', NULLS_FIELD, ...fields];
-    const alternatives = config.kdb.pushdown ? (unionBranches(filter, isIndexedPath) ?? [filter]) : [filter];
+    const alternatives = unionBranches(pushable, isIndexedPath) ?? [pushable];
     const seen = new Set<string>();
     const out: Doc[] = [];
     for (const alternative of alternatives) {
-      const pushed = config.kdb.pushdown ? buildWhere(alternative) : null;
+      const pushed = [buildWhere(alternative), ...presenceSql].filter((part): part is Where => part !== null);
       let after = '';
       for (;;) {
         const { rows } = await this.client().queryValues(
           this.namespace,
-          `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?${pushed ? ` AND (${pushed.sql})` : ''} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
-          [this.name, ...(pushed?.args ?? []), after]
+          `SELECT kdb_id, ${columns.join(', ')} FROM ${this.table} WHERE _c = ?${pushed.map((part) => ` AND (${part.sql})`).join('')} AND kdb_id > ? ORDER BY kdb_id LIMIT ${LEAN_PAGE_ROWS}`,
+          [this.name, ...pushed.flatMap((part) => part.args), after]
         );
         for (const row of rows) {
           const key = String(row[0]);
@@ -424,35 +469,76 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
               partial[field] = this.isBooleanField(field) && typeof value === 'number' ? value !== 0 : value;
             }
           });
+          for (const field of this.packed) if (typeof partial[field] === 'string') partial[field] = unpackNumbers(partial[field] as string);
           const doc = reviveDates(this.schema, partial) as Doc;
-          if (matchesFilter(doc, filter)) out.push(doc);
+          if (matchesFilter(doc, residual)) out.push(doc);
         }
         if (rows.length < LEAN_PAGE_ROWS) break;
         after = String(rows[rows.length - 1]![0]);
       }
     }
     out.sort((a, b) => (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0));
-    return applySort(out, sort);
+    return { docs: applySort(out, sort), approximate: present.length > 0 };
+  }
+
+  /** The packed fields `filter` names only at its top level, and only as `{$exists: true, $ne: []}`. */
+  private presenceOnly(filter: Filter): string[] {
+    return Object.entries(filter)
+      .filter(([key, condition]) => {
+        if (!this.packed.has(key) || !isPlainObject(condition)) return false;
+        const ops = Object.keys(condition).sort();
+        return ops.join() === '$exists,$ne' && condition.$exists === true && Array.isArray(condition.$ne) && condition.$ne.length === 0;
+      })
+      .map(([key]) => key);
   }
 
   /** One page of `find`, chosen on lean documents and then fetched whole by key. */
   private async leanPage(filter: Filter, options: FindOptions): Promise<T[] | null> {
-    let lean: Doc[] | null;
+    let lean: { docs: Doc[]; approximate: boolean } | null;
     try {
-      lean = await this.leanMatches(filter, options.sort);
+      // An approximate choice is only safe without a skip: a wrong document among the skipped ones
+      // would shift the page unseen, while one inside the page is caught below.
+      lean = await this.leanMatches(filter, options.sort, !options.skip);
     } catch (error) {
       // A field SQL could not select (a reserved word, say) is not worth failing the read over.
       if ((error as { code?: string }).code === 'INVALID_ARGUMENT' || /parse|syntax/i.test((error as Error).message)) return null;
       throw error;
     }
     if (lean === null) return null;
-    const ids = lean.slice(options.skip ?? 0, (options.skip ?? 0) + options.limit!).map((doc) => String(doc._id));
+    const ids = lean.docs.slice(options.skip ?? 0, (options.skip ?? 0) + options.limit!).map((doc) => String(doc._id));
     if (ids.length === 0) return [];
     const byId = new Map((await this.scan({ _id: { $in: ids } })).map((doc) => [String(doc._id), doc]));
     // A document changed between the two reads is judged as it is now.
     let docs = ids.map((id) => byId.get(id)).filter((doc): doc is T => doc !== undefined && matchesFilter(doc, filter));
+    // A page chosen approximately that lost a document may be short of one that belonged in it:
+    // decide it again on whole documents.
+    if (lean.approximate && docs.length < ids.length) return null;
     if (options.select) docs = docs.map((doc) => applyProjection(doc, options.select) as T);
     return docs;
+  }
+
+  /**
+   * Whether a filter may be pushed to the server. Not when it names a packed field: SQL sees the
+   * packed string, so a pushed condition on it could wrongly exclude a match. No query in qtask
+   * filters on an embedding; this keeps one from going wrong if it ever does.
+   */
+  private canPush(filter: Filter): boolean {
+    if (!config.kdb.pushdown) return false;
+    if (this.packed.size === 0) return true;
+    const fields = topLevelFields(filter);
+    return fields !== null && ![...fields].some((field) => this.packed.has(field));
+  }
+
+  /**
+   * The part of a filter a scan may push, or null when pushdown is off: the filter without its
+   * conditions on packed fields. Leaving a condition out only widens what the SQL matches, and the
+   * engine re-checks every row, so the rest still narrows the read. Refusing the whole filter
+   * instead turned search's "tasks with an embedding" into a read of every task (27 s at 100k).
+   * Exact counts still go through canPush: a count has nobody to re-check it.
+   */
+  private pushable(filter: Filter): Filter | null {
+    if (!config.kdb.pushdown) return null;
+    return this.packed.size === 0 ? filter : withoutFields(filter, this.packed);
   }
 
   private isBooleanField(field: string): boolean {
@@ -464,6 +550,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const { _c: _discriminator, [EXPIRE_FIELD]: _expireAt, [NULLS_FIELD]: _nulls, ...withKeys } = stored;
     // The synthetic fields that carry unique constraints are the store's, not the document's.
     const body = Object.fromEntries(Object.entries(withKeys).filter(([key]) => !key.startsWith('_u_')));
+    for (const field of this.packed) if (typeof body[field] === 'string') body[field] = unpackNumbers(body[field] as string);
     return reviveDates(this.schema, body) as T;
   }
 
@@ -530,13 +617,13 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     // matching document (each task carries a 768-number embedding) to count them here. A list
     // page's total is such a count, with the same access filter as the page; the whole collection
     // (an empty filter) is one too.
-    if (config.kdb.pushdown && typeof filter._id !== 'string') {
+    if (this.canPush(filter) && typeof filter._id !== 'string') {
       const counted = await this.countOnServer(filter);
       if (counted !== null) return counted;
     }
     if (typeof filter._id !== 'string') {
       const lean = await this.leanMatches(filter, undefined);
-      if (lean !== null) return lean.length;
+      if (lean !== null) return lean.docs.length;
     }
     return (await this.matching(filter)).length;
   }
@@ -625,6 +712,14 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async findOneAndUpdate(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<T | null> {
+    const atomic = this.atomicClaimSql(filter, update, options);
+    if (atomic) {
+      const { rows } = await this.client().execReturning(this.namespace, atomic.sql, atomic.args);
+      const body = rows[0]?.[1];
+      if (body !== undefined && body !== null) return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
+      // Nothing matched. Unless the statement narrowed the filter, that is the answer.
+      if (!atomic.narrowed) return null;
+    }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
       if (!candidate) {
@@ -640,6 +735,122 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       if (claimed.hit) return claimed.value;
     }
     return null;
+  }
+
+  /**
+   * A queue claim as one server statement, `UPDATE … WHERE … ORDER BY <field> LIMIT 1 RETURNING`,
+   * or null when it cannot be promised to do exactly what the read-then-write path does. The
+   * server picks, updates and returns the document at the front of its write gate, so two claims
+   * never take the same one and none fails for another having committed first. The read-then-write
+   * path read every pending job's lean row to find the oldest (125-230 ms at 15k pending jobs on
+   * KDB 0.9.1), and its conditional writes collided more the more workers claimed.
+   *
+   * Nothing re-checks the server's choice, so only what SQL evaluates exactly as Mongo does is
+   * accepted, and anything else falls back:
+   *  - the filter: exactWhere's equalities on text paths, plus equalities and ranges of finite
+   *    numbers on top-level Number paths (a missing or null field matches neither, in both);
+   *  - the sort: one top-level Date or Number field (missing and null sort first ascending, last
+   *    descending, in both);
+   *  - the update: `$set` of strings, booleans, finite numbers or dates on top-level paths whose
+   *    schema type has no casting or validation beyond its enum, and `$inc` of a number field.
+   *    SQL's `x + 1` on a missing or null field stores null where Mongo stores 1, and KDB has
+   *    neither COALESCE nor CASE, so the field must be a number: either the filter requires it, or
+   *    the schema gives it a numeric default (every write the store or Mongoose makes includes it)
+   *    and the statement requires it too - `narrowed`, and an empty answer then falls back to the
+   *    read-then-write path, so a document missing the field is still found. No unique, packed or
+   *    expiry field, which the store derives other fields from;
+   *  - no upsert, and the document after the update.
+   */
+  private atomicClaimSql(filter: Filter, update: Update, options: UpdateOptions): (Where & { narrowed: boolean }) | null {
+    if (!config.kdb.atomicClaim || !config.kdb.pushdown || options.upsert || options.returnDocument === 'before') return null;
+    const sortKeys = Object.entries(options.sort ?? {});
+    if (sortKeys.length !== 1) return null;
+    const [sortField, direction] = sortKeys[0]! as [string, unknown];
+    if ((direction !== 1 && direction !== -1) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(sortField)) return null;
+    const instanceOf = (path: string) => (this.schema.path(path) as unknown as { instance?: string } | undefined)?.instance;
+    if (instanceOf(sortField) !== 'Date' && instanceOf(sortField) !== 'Number') return null;
+
+    const where: Where[] = [];
+    const numericFields = new Set<string>();
+    for (const [key, condition] of Object.entries(filter)) {
+      if (/^[A-Za-z][A-Za-z0-9_]*$/.test(key) && instanceOf(key) === 'Number') {
+        const conditions = isPlainObject(condition) ? Object.entries(condition as Doc) : [['$eq', condition] as [string, unknown]];
+        for (const [operator, operand] of conditions) {
+          const sqlOperator = operator === '$eq' ? '=' : RANGE_SQL[operator];
+          if (!sqlOperator || typeof operand !== 'number' || !Number.isFinite(operand)) return null;
+          where.push({ sql: `${key} ${sqlOperator} ?`, args: [operand] });
+        }
+        numericFields.add(key);
+      } else {
+        const exact = exactWhere({ [key]: condition }, (path) => pathKind(this.schema, path));
+        if (!exact || !exact.sql) return null;
+        where.push(exact);
+      }
+    }
+
+    let narrowed = false;
+    const derived = new Set<string>([...this.packed, ...this.unique.flatMap((constraint) => constraint.fields.map((field) => field.split('.')[0]!))]);
+    if (this.ttl) derived.add(this.ttl.path.split('.')[0]!);
+    const settable = (field: string) => /^[A-Za-z][A-Za-z0-9]*$/.test(field) && field !== '_id' && !derived.has(field);
+    const sets: Where[] = [];
+    for (const [operator, fields] of Object.entries(update)) {
+      if (!isPlainObject(fields)) return null;
+      for (const [field, value] of Object.entries(fields as Doc)) {
+        if (!settable(field) || sets.some((set) => set.sql.startsWith(`${field} =`))) return null;
+        if (operator === '$set') {
+          const stored = this.claimSetValue(field, value);
+          if (stored === undefined) return null;
+          sets.push({ sql: `${field} = ?`, args: [stored] });
+        } else if (operator === '$inc') {
+          if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+          if (!numericFields.has(field)) {
+            const type = this.schema.path(field) as unknown as { instance?: string; options?: { default?: unknown } } | undefined;
+            if (type?.instance !== 'Number' || typeof type.options?.default !== 'number') return null;
+            where.push({ sql: `${field} IS NOT MISSING AND ${field} IS NOT NULL`, args: [] });
+            narrowed = true;
+          }
+          sets.push({ sql: `${field} = ${field} + ?`, args: [value] });
+        } else {
+          return null;
+        }
+      }
+    }
+    if (sets.length === 0) return null;
+    const stamped = touchUpdatedAt(this.schema, {});
+    if (stamped.updatedAt instanceof Date && !sets.some((set) => set.sql.startsWith('updatedAt ='))) {
+      sets.push({ sql: 'updatedAt = ?', args: [stamped.updatedAt.toISOString()] });
+    }
+
+    return {
+      sql:
+        `UPDATE ${this.table} SET ${sets.map((set) => set.sql).join(', ')}` +
+        ` WHERE _c = ?${where.map((part) => ` AND (${part.sql})`).join('')}` +
+        ` ORDER BY ${sortField}${direction === -1 ? ' DESC' : ''} LIMIT 1 RETURNING kdb_id, _doc`,
+      args: [...sets.flatMap((set) => set.args), this.name, ...where.flatMap((part) => part.args)],
+      narrowed,
+    };
+  }
+
+  /** A `$set` value as the store would write it, or undefined when only the schema walk can say:
+   *  a path with casting or validation beyond its type and enum, or a value of another type. */
+  private claimSetValue(field: string, value: unknown): unknown {
+    const type = this.schema.path(field) as unknown as
+      | { instance?: string; options?: Record<string, unknown>; enumValues?: unknown[] }
+      | undefined;
+    if (!type || !Object.keys(type.options ?? {}).every((option) => ['type', 'enum', 'default', 'required', 'index'].includes(option))) return undefined;
+    switch (type.instance) {
+      case 'String':
+        if (typeof value !== 'string') return undefined;
+        return type.enumValues && type.enumValues.length > 0 && !type.enumValues.includes(value) ? undefined : value;
+      case 'Number':
+        return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+      case 'Boolean':
+        return typeof value === 'boolean' ? value : undefined;
+      case 'Date':
+        return value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : undefined;
+      default:
+        return undefined;
+    }
   }
 
   async findByIdAndUpdate(id: string, update: Update, options: UpdateOptions = {}): Promise<T | null> {
@@ -886,9 +1097,16 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const key = toDocumentUuid(doc._id as string);
     const body = this.storedBody(doc);
     try {
-      const hash = guard
-        ? await this.client().replaceIf(this.namespace, key, body, guard.hash)
-        : await this.client().replace(this.namespace, key, body);
+      const hash = await this.rebasingOnConflict(
+        () => (guard ? this.client().replaceIf(this.namespace, key, body, guard.hash) : this.client().replace(this.namespace, key, body)),
+        (baseVersion) =>
+          this.client().commit({
+            namespace: this.namespace,
+            baseVersion,
+            writes: [{ docId: key, body, replace: true }],
+            ...(guard ? { preconditions: [{ opIndex: 0, kind: 'EXPECT_CONTENT_HASH' as const, contentHashHex: guard.hash }] } : {}),
+          })
+      );
       if (hash) lastCommit.set(this.namespace, hash);
     } catch (error) {
       // The server's unique constraint, which no in-process check can pre-empt, reports the same
@@ -905,6 +1123,7 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
    *  fields that carry server-held unique constraints, added to the application's fields. */
   private storedBody(doc: Doc): Doc {
     const body: Doc = { ...doc, _c: this.name, ...this.expiry(doc) };
+    for (const field of this.packed) if (Array.isArray(doc[field])) body[field] = packNumbers(doc[field] as unknown[]);
     // Which top-level fields hold an explicit null. A SQL read of a field returns NULL for null and
     // for absent alike, and Mongo tells them apart (`$exists`), so the lean read (leanMatches)
     // needs this to rebuild a field exactly.
@@ -927,7 +1146,41 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   private async removeById(id: string): Promise<void> {
-    await this.client().delete(this.namespace, toDocumentUuid(id));
+    const docId = toDocumentUuid(id);
+    await this.rebasingOnConflict(
+      () => this.client().delete(this.namespace, docId),
+      (baseVersion) => this.client().commit({ namespace: this.namespace, baseVersion, writes: [], deletes: [docId] })
+    );
+  }
+
+  /**
+   * Runs a single-document commit, and if the server reports a version conflict, commits the same
+   * operation again on the head the conflict names.
+   *
+   * The client bases each commit on the last head its own session saw. When another process
+   * (a second app instance, the migration tool) has since changed the same document, a delete is
+   * refused as a conflict - and the client does not move its head on a conflict, so retrying the
+   * same call conflicts for ever. The store's operations are already decided against the current
+   * document (a keyed read, or a hash precondition that the server checks), so re-basing them on
+   * the server's head is what was meant; a commit at that base also moves the client's head on.
+   * Bounded, because the head can keep moving under heavy contention.
+   */
+  private async rebasingOnConflict(first: () => Promise<string>, rebased: (baseVersion: string) => Promise<string>): Promise<string> {
+    try {
+      return await first();
+    } catch (error) {
+      let current = error;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const target = (current as { targetHash?: string }).targetHash;
+        if ((current as Error).constructor.name !== 'KdbConflictError' || !target) throw current;
+        try {
+          return await rebased(target);
+        } catch (next) {
+          current = next;
+        }
+      }
+      throw current;
+    }
   }
 
   /**
@@ -1211,7 +1464,39 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
       if (kind === 'BTREE' || !wanted.has(lead)) wanted.set(lead, kind);
     }
   }
+  for (const path of ORDER_INDEXES) wanted.set(path, 'BTREE');
   return wanted;
+}
+
+/**
+ * Single-field BTREEs declared for the `ORDER BY <field> LIMIT k` KDB 0.9 serves by walking one
+ * (when the WHERE has an index of its own), stopping at the first rows that match instead of
+ * sorting every match. Only where measured to help: the walk is in namespace-wide order, so it is
+ * quick when matches come early in it and slow when it passes many documents first. Measured on
+ * the benchmark's 517k documents (one-job pick): the embedding queue's oldest pending job by
+ * `createdAt`, 33 ms without and 4.8 ms with; the vision queue's oldest by `updatedAt`, 4.7 ms
+ * without and 24.6 ms with - so `updatedAt` is not declared.
+ */
+const ORDER_INDEXES = ['createdAt'];
+
+/**
+ * A number array as the server stores it: one string, `f64:` and the base64 of its IEEE 754
+ * doubles, so it round-trips exactly. An embedding is 768 numbers, and the server parses every
+ * document it examines - each candidate of a query, even one that selects three other fields:
+ * profiled at 517k documents, parsing those numbers (strconv.ParseFloat and the array around it)
+ * was about 40% of kdb-service's CPU under qtask's workload. A string is one token to skip.
+ * An array holding anything but finite numbers is left as it is.
+ */
+function packNumbers(values: unknown[]): unknown {
+  if (!values.every((value) => typeof value === 'number' && Number.isFinite(value))) return values;
+  return `f64:${Buffer.from(Float64Array.from(values as number[]).buffer).toString('base64')}`;
+}
+
+function unpackNumbers(packed: string): unknown {
+  if (!packed.startsWith('f64:')) return packed;
+  // Copied: a decoded Buffer may sit at an offset a Float64Array cannot start at.
+  const bytes = Uint8Array.from(Buffer.from(packed.slice(4), 'base64'));
+  return Array.from(new Float64Array(bytes.buffer, 0, bytes.byteLength >> 3));
 }
 
 /**
@@ -1232,6 +1517,25 @@ function topLevelFields(filter: Filter): Set<string> | null {
       return null;
     } else {
       out.add(key.split('.')[0]!);
+    }
+  }
+  return out;
+}
+
+/**
+ * The filter with every condition on the given top-level fields left out, at any depth of
+ * `$and`/`$or`, so it matches a superset of what the filter matches. A `$nor` is left out whole:
+ * dropping a condition inside one would narrow it instead.
+ */
+function withoutFields(filter: Filter, fields: Set<string>): Filter {
+  const out: Filter = {};
+  for (const [key, condition] of Object.entries(filter)) {
+    if ((key === '$and' || key === '$or') && Array.isArray(condition)) {
+      out[key] = (condition as Filter[]).map((sub) => withoutFields(sub, fields));
+    } else if (key === '$nor' || fields.has(key.split('.')[0]!)) {
+      continue;
+    } else {
+      out[key] = condition;
     }
   }
   return out;
@@ -1295,7 +1599,7 @@ function schemaFor(modelName: string): Schema {
 }
 
 async function loadClient(): Promise<{ connect: ConnectFn }> {
-  const specifier = process.env.KDB_CLIENT_MODULE ?? '@kdb/client';
+  const specifier = process.env.KDB_CLIENT_MODULE ?? '@limidus/kdb-client';
   try {
     const module = (await import(specifier)) as { connect: ConnectFn };
     if (typeof module.connect !== 'function') {
@@ -1305,7 +1609,7 @@ async function loadClient(): Promise<{ connect: ConnectFn }> {
   } catch (error) {
     throw new Error(
       `DATA_KDB=true requires the KDB client. Could not load "${specifier}": ${(error as Error).message}. ` +
-        'Set KDB_CLIENT_MODULE to its location, or install @kdb/client.'
+        'Set KDB_CLIENT_MODULE to its location, or install @limidus/kdb-client.'
     );
   }
 }

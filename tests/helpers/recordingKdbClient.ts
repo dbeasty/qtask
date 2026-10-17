@@ -1,5 +1,5 @@
 /**
- * A stand-in for @kdb/client that records how the store connects and the SQL it sends, and does
+ * A stand-in for @limidus/kdb-client that records how the store connects and the SQL it sends, and does
  * nothing else, for tests/data-kdb-connect.test.ts. Every call succeeds with an empty answer.
  */
 

@@ -19,7 +19,7 @@
 #                      app and is refused. Default: the newest ~/.gradle/nodejs/node-v*-darwin-arm64
 #   KDB_SERVICE_BIN    the kdb-service binary (default: the pinned release in
 #                      .kdb/<version>/kdb-service, from `npm run kdb:fetch`)
-#   KDB_CLIENT_SRC     @kdb/client's entry (default: the installed release package)
+#   KDB_CLIENT_SRC     @limidus/kdb-client's entry (default: the installed release package)
 #   KDB_ROOT           a kdb checkout, to bundle an unreleased build from source instead
 #
 # The default is the released KDB this checkout pins (package.json), the same one the
@@ -40,14 +40,14 @@ if [ -n "${KDB_ROOT:-}" ]; then
   KDB_SERVICE_BIN="${KDB_SERVICE_BIN:-$KDB_ROOT/go/bin/kdb-service}"
   KDB_CLIENT_SRC="${KDB_CLIENT_SRC:-$KDB_ROOT/packages/kdb-client/src/index.ts}"
 else
-  KDB_CLIENT_PKG="$ROOT/node_modules/@kdb/client"
-  [ -f "$KDB_CLIENT_PKG/package.json" ] || { echo "@kdb/client is not installed: run npm install" >&2; exit 1; }
+  KDB_CLIENT_PKG="$ROOT/node_modules/@limidus/kdb-client"
+  [ -f "$KDB_CLIENT_PKG/package.json" ] || { echo "@limidus/kdb-client is not installed: run npm install" >&2; exit 1; }
   KDB_VERSION="$(node -p "require('$KDB_CLIENT_PKG/package.json').version")"
   KDB_SERVICE_BIN="${KDB_SERVICE_BIN:-$ROOT/.kdb/$KDB_VERSION/kdb-service}"
   KDB_CLIENT_SRC="${KDB_CLIENT_SRC:-$KDB_CLIENT_PKG/dist/index.js}"
 fi
 [ -x "$KDB_SERVICE_BIN" ] || { echo "kdb-service not found at $KDB_SERVICE_BIN (run npm run kdb:fetch, or set KDB_SERVICE_BIN)" >&2; exit 1; }
-[ -f "$KDB_CLIENT_SRC" ] || { echo "@kdb/client not found at $KDB_CLIENT_SRC (run npm install, or set KDB_CLIENT_SRC)" >&2; exit 1; }
+[ -f "$KDB_CLIENT_SRC" ] || { echo "@limidus/kdb-client not found at $KDB_CLIENT_SRC (run npm install, or set KDB_CLIENT_SRC)" >&2; exit 1; }
 
 NODE_BIN="${QTASK_NODE_BIN:-}"
 if [ -z "$NODE_BIN" ]; then

@@ -24,7 +24,7 @@ services:
   # mount point root-owned and every backup fails with 503. This one-shot hands it to uid 10001
   # (the same for a bind mount), using the kdb image itself as root.
   kdb-backup-dir:
-    image: ghcr.io/dbeasty/kdb/kdb-service:v0.8.0
+    image: ghcr.io/dbeasty/kdb/kdb-service:v0.9.1
     platform: ${KDB_PLATFORM:-linux/amd64}
     user: "0:0"
     entrypoint: ["chown", "10001:10001", "/var/backups/kdb"]
@@ -34,7 +34,7 @@ services:
     restart: "no"
 
   kdb:
-    image: ghcr.io/dbeasty/kdb/kdb-service:v0.8.0
+    image: ghcr.io/dbeasty/kdb/kdb-service:v0.9.1
     platform: ${KDB_PLATFORM:-linux/amd64}
     depends_on:
       kdb-backup-dir:
@@ -68,11 +68,14 @@ services:
       - qtask_kdb_backups:/var/backups/kdb
     networks:
       - qtask_kdb
+    # /readyz answers once the namespace is open. Opening reads every document to rebuild the
+    # unique-key registry (KDB 0.9.1): about 77 s at the benchmark's 517k documents and 2 CPUs,
+    # growing with the data. The start period covers that; after it, 3 misses mark it unhealthy.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/readyz"]
       interval: 15s
       timeout: 3s
-      start_period: 30s
+      start_period: 5m
       retries: 3
 
   api:

@@ -26,7 +26,7 @@ contract here rather than changing it silently.**
 | `QTASK_DEVICE_TOKEN` | yes | Per-launch secret, at least 16 chars. The app uses 32 random bytes. |
 | `KDB_ADDR` | yes | `tcp://127.0.0.1:<port>` of this launch's `kdb-service` SQL listener. |
 | `QTASK_DATA_DIR` | no | Data directory; default `~/Library/Application Support/QTask`. Tests and the e2e harness always set it. |
-| `KDB_CLIENT_MODULE` | no | Path of the `@kdb/client` module (the app bundles one). |
+| `KDB_CLIENT_MODULE` | no | Path of the `@limidus/kdb-client` module (the app bundles one). |
 | `QTASK_EXIT_ON_STDIN_CLOSE=1` | no | Exit when the supervisor's stdin pipe closes (orphan protection). |
 
 `entry.ts` sets everything else (`NODE_ENV`, secrets, storage path, workers off) **before**

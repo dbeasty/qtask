@@ -117,6 +117,31 @@ describe('KDB atomicity across processes', { skip }, () => {
     assert.deepEqual(Object.keys(read).filter((k) => k.startsWith('_u_')), []);
   });
 
+  it('deletes and replaces a document another instance changed since this one last wrote', async () => {
+    // Two stores are two sessions, as two app instances are. Each commit is based on the head its
+    // own session last saw; a delete (or replace) of a document the other instance changed since
+    // was refused as a version conflict, and retrying it conflicted again (rebasingOnConflict).
+    const { KdbDataStore } = await import('../src/data/kdb/store.ts');
+    const other = new KdbDataStore();
+    await other.connect();
+    try {
+      const mine = store.collection('tasks');
+      const theirs = other.collection('tasks');
+      const a = await mine.create({ userId: 'two-instances', title: 'a' });
+      const b = await mine.create({ userId: 'two-instances', title: 'b' });
+      await theirs.updateOne({ _id: a._id }, { $set: { title: 'a, edited elsewhere' } });
+      await theirs.updateOne({ _id: b._id }, { $set: { title: 'b, edited elsewhere' } });
+      assert.equal((await mine.deleteOne({ _id: a._id })).deleted, 1);
+      assert.equal(await theirs.findById(String(a._id)), null);
+      await mine.updateOne({ _id: b._id }, { $set: { status: 'done' } });
+      const read = await theirs.findById(String(b._id));
+      assert.equal(read?.status, 'done');
+      assert.equal(read?.title, 'b, edited elsewhere', 'the other instance\'s edit is kept: the update was decided on the current document');
+    } finally {
+      await other.disconnect();
+    }
+  });
+
   it('scopes a constraint to its collection: a repeated clientId is fine on codes, not on clients', async () => {
     const clients = store.collection('mcpOAuthClients');
     const codes = store.collection('mcpOAuthAuthorizationCodes');

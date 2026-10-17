@@ -9,7 +9,7 @@
  *   QTASK_DEVICE_TOKEN   required, the per-launch secret
  *   QTASK_DATA_DIR       optional, defaults to ~/Library/Application Support/QTask
  *   KDB_ADDR             required, tcp://127.0.0.1:<port> of this launch's kdb-service
- *   KDB_CLIENT_MODULE    optional, path of the bundled @kdb/client
+ *   KDB_CLIENT_MODULE    optional, path of the bundled @limidus/kdb-client
  */
 
 import path from 'node:path';

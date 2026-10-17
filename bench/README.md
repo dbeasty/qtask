@@ -62,7 +62,7 @@ app side uses what docs/KDB_MIGRATION.md tells a deployment to use: `DATA_KDB_PU
 constraints and lookup indexes declared (`DATA_KDB_DECLARE_CONSTRAINTS`, `DATA_KDB_DECLARE_INDEXES`,
 both default on).
 
-**The KDB image.** `ghcr.io/dbeasty/kdb/kdb-service:v0.8.0` is published for linux/amd64 only.
+**The KDB image.** `ghcr.io/dbeasty/kdb/kdb-service:v0.9.1` is published for linux/amd64 only.
 On an arm64 Docker engine (Apple silicon) it would run under emulation and measure the emulator,
 so the harness builds an equivalent image (`docker/kdb-service.Dockerfile`: same alpine 3.20 base,
 user, entrypoint, volume and ports as the published one, checked with `docker history`) around the
@@ -287,7 +287,7 @@ halves it; `--duration 60` roughly halves it again. Building the dataset alone f
 ## Open issues and threats to validity
 
 - **KDB answers the access-filter disjunction with a full scan.** Measured on the smoke dataset
-  (8,465 documents) through @kdb/client against the container (`bench/probe-sql.ts`):
+  (8,465 documents) through @limidus/kdb-client against the container (`bench/probe-sql.ts`):
   `userId = ?` 8.6 ms, `collaborators.userId = ?` 0.8 ms, but
   `(userId = ? OR collaborators.userId = ?)` 338 ms; the task access filter
   (`userId = ? OR projectIds IN (...)`) 416 ms; `email = ?` (unique, but carried on a synthetic

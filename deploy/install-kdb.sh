@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the pinned KDB release's kdb-service and kdb-inspect for the systemd deployment.
 #
-#   sudo deploy/install-kdb.sh [--version 0.8.0] [--prefix /opt/qtask] [--no-units]
+#   sudo deploy/install-kdb.sh [--version 0.9.1] [--prefix /opt/qtask] [--no-units]
 #
 # - Downloads kdb-service-linux-<arch> and kdb-inspect-linux-<arch> from the GitHub release and
 #   refuses to install either unless it matches the release's SHA256SUMS. Never builds anything.
@@ -9,7 +9,7 @@
 # - Creates /var/lib/qtask/kdb/data and /var/lib/qtask/backups/kdb owned by the qtask user.
 # - Installs (does not enable or start) qtask-kdb.service and the qtask-kdb-backup timer.
 #
-# The version defaults to the @kdb/client version this checkout installs (package-lock.json): the
+# The version defaults to the @limidus/kdb-client version this checkout installs (package-lock.json): the
 # client refuses a server from another release line, so the two must move together.
 #
 # Environment: KDB_RELEASE_BASE overrides the download URL prefix (a mirror); QTASK_USER (qtask);
@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${VERSION}" ]]; then
-  VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["packages"]["node_modules/@kdb/client"]["version"])' "${APP_ROOT}/package-lock.json")"
+  VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["packages"]["node_modules/@limidus/kdb-client"]["version"])' "${APP_ROOT}/package-lock.json")"
 fi
 QTASK_USER="${QTASK_USER:-qtask}"
 QTASK_DATA="${QTASK_DATA:-/var/lib/qtask}"

@@ -18,7 +18,7 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 |---|---|
 | Backend abstraction, Mongo + KDB stores | Done |
 | Shadow writes (`DATA_SHADOW_WRITES`), shadow reads (`DATA_SHADOW_READS`) | Done |
-| **Pinned to the KDB v0.8.0 release** | Done. `@kdb/client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
+| **Pinned to the KDB v0.9.1 release** (from v0.8.0; see "What v0.9.1 changes") | Done. `@limidus/kdb-client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
 | Filter pushdown to KDB SQL (`DATA_KDB_PUSHDOWN`) | Done, flagged off. Differential test against the in-process engine |
 | Server-side expiry replacing Mongo TTL indexes | Done (`_expireAt` + `--expire-field`) |
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done. Rehearsed at 552,552 documents (100,000 tasks) of **synthetic** data against an on-disk `kdb-service` (section 8). The rehearsal found and fixed: `appMeta` was never copied; a commit per document capped the backfill at the fsync rate; verify's count of a 100,000-document collection got `kdb-service` OOM-killed (B5) |
@@ -61,6 +61,27 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 - The image `ghcr.io/dbeasty/kdb/kdb-service:v0.8.0` is published for **linux/amd64 only**; it
   runs on arm64 only under emulation. The release binaries cover linux/darwin arm64 and amd64.
 
+### What v0.9.1 changes
+
+- **The client is renamed `@limidus/kdb-client`**, and before 1.0 a client only accepts a server of
+  its own minor version: the tarball, `kdb-service` and the image move together (one pin, in
+  package.json). v0.9.1 is v0.9.0's server code republished with all of its release assets.
+- **`--control-open`** is required for a control plane on a non-loopback address without `--rbac`.
+  qtask's is on loopback in the unit and on the private network in compose, so nothing changes.
+- **Reads, counts and expiry no longer read every body**, and the image is published for arm64 too.
+  Measured with `npm run bench:docker` (prod scale, KDB only, 2 CPUs / 4 GB), the mixed workload went
+  from 0.07 / 0.7 / 0.8 actions/s at 1 / 8 / 32 users on v0.8.0, with timeouts and memory refusals,
+  to 0.5 / 2.1 / 2.4 with no errors; with the store changes below, 6.2 / 25.4 / 20.3.
+- **Atomic queue claim** (`UPDATE … ORDER BY … LIMIT 1 RETURNING`): the store claims embedding and
+  vision jobs in one statement (`DATA_KDB_ATOMIC_CLAIM`, default on, needs pushdown), 10–17 ms where
+  the read-then-write claim took 125–230 ms at 15k pending jobs, and no claim loses a race: the
+  benchmark's 32-worker claim profile went from 11 to 76 claims/s.
+- **A restart is an outage of about 77 s** at 517k documents on 2 CPUs: opening rebuilds the
+  unique-key registry by parsing every document whole, on one thread, and the node accepts no
+  connections meanwhile. The compose health check allows 5 minutes. To be fixed in KDB.
+- Rolling back to v0.8.2 is safe for data (the on-disk format is unchanged), but needs the client
+  back on `@kdb/client` 0.8.x and the atomic claim off (`DATA_KDB_ATOMIC_CLAIM=false`).
+
 ## 2. Blockers
 
 ### B1. Scans silently stopped at 10,000 documents - resolved; the guard is retired
@@ -100,7 +121,9 @@ sub-millisecond.
 
 **Indexes now created (`DATA_KDB_DECLARE_INDEXES`, default on).** On connect the store declares the
 lookup indexes the Mongoose schemas declare: 27 paths (HASH, or BTREE for dates/numbers; a compound
-Mongo index becomes an index on its leading field; text indexes stay in-app, TTL indexes became
+Mongo index becomes an index on its leading field, plus a `createdAt` BTREE that KDB 0.9 walks for
+the embedding queue's `ORDER BY createdAt LIMIT 1` (`ORDER_INDEXES` in the store: a walk only helps
+when matches come early in namespace-wide order, so each is measured); text indexes stay in-app, TTL indexes became
 server expiry, unique ones are constraints). Declaring is idempotent and they survive `kill -9`
 (`data-kdb-durability`). Reads: `find({userId})` on 2,000 tasks 6.2 ms to 0.4 ms.
 
@@ -506,7 +529,7 @@ Not tests but rehearsals, run by hand (section 8): `scripts/rehearsal/run-migrat
   cutover reconciled them. Documents keep their Mongo ids through the backfill as before.
 - **Load flakes in the test suite itself** (`socket hang up` from supertest) occur at about the same
   rate on MongoDB and on KDB (1 in 16 runs of `collaboration` under 8-way load on each).
-- **KDB comes from a release, never a source tree.** `@kdb/client` is a dependency at the
+- **KDB comes from a release, never a source tree.** `@limidus/kdb-client` is a dependency at the
   release's version (installed from the release tarball; it is not on npm), and the tests'
   `kdb-service` is the same release's binary, fetched by `npm run kdb:fetch` and checked against
   its `SHA256SUMS`. Production runs that release's image

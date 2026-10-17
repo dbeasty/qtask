@@ -10,7 +10,7 @@ WKWebView  (app://qtask/, content security policy: connect-src 'none')
 QTask (Swift/AppKit)  window, menus, Dock badge, supervisor
    │  loopback + per-launch device token
    ├─► Node  (bundled, src/local/entry.ts, QTASK_LOCAL=1)  the existing Express app
-   │       │ @kdb/client over loopback
+   │       │ @limidus/kdb-client over loopback
    └─► kdb-service (bundled)  file store in ~/Library/Application Support/QTask/kdb
 ```
 
@@ -32,7 +32,7 @@ node e2e/macos/perf.mjs             # measurements -> docs/perf/phase1.md
 ```
 
 The build needs a standalone Node (`QTASK_NODE_BIN`; Homebrew's cannot be bundled) and the
-KDB release this checkout pins: `@kdb/client` from `npm install` and `kdb-service` from
+KDB release this checkout pins: `@limidus/kdb-client` from `npm install` and `kdb-service` from
 `npm run kdb:fetch` (into `.kdb/<version>/`). Set `KDB_ROOT` to bundle an unreleased KDB
 from a source checkout instead. KDB is only read: its binary is copied and its client
 bundled as they are.

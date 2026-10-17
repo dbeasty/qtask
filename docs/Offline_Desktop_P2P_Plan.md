@@ -54,7 +54,7 @@ WKWebView (client/ SPA, unchanged UI)
 Swift app: windows, menus, Keychain, Bonjour, CoreBluetooth, supervisor
    │ loopback + per-launch token
    ├─► Node: the existing Express app, DATA_KDB=true, "local mode"
-   │        │ @kdb/client over loopback
+   │        │ @limidus/kdb-client over loopback
    └─► kdb-service (Go): file store + peer-sync listener
              ▲   ▲
    Wi-Fi/TLS │   │ BLE tunnel (framed, E2E-encrypted)

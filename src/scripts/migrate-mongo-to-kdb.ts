@@ -26,7 +26,7 @@
  * logs and the documents hold emails and task text.
  *
  * Needs MONGODB_URI, KDB_ADDR, KDB_NAMESPACE_PREFIX (and KDB_TOKEN if set) and the
- * KDB client (KDB_CLIENT_MODULE or @kdb/client), the same as the app.
+ * KDB client (KDB_CLIENT_MODULE or @limidus/kdb-client), the same as the app.
  */
 
 import mongoose from 'mongoose';

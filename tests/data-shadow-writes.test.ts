@@ -31,6 +31,7 @@ import type {
   UpdateOptions,
   UpdateResult,
 } from '../src/data/types.ts';
+import { OWN_BACKENDS } from './helpers/backend.ts';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-for-ci-only';
@@ -163,7 +164,9 @@ let primary: DataStore;
 let shadow: RecordingStore;
 let store: ShadowDataStore;
 
+// Root-level hooks run even when every suite below is skipped.
 before(async () => {
+  if (OWN_BACKENDS) return;
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
   process.env.DATA_MONGO = 'true';
@@ -178,15 +181,17 @@ before(async () => {
 });
 
 after(async () => {
+  if (OWN_BACKENDS) return;
   await store.disconnect();
   await mongo.stop();
 });
 
 beforeEach(async () => {
+  if (OWN_BACKENDS) return;
   await store.clear();
 });
 
-describe('shadow writes', () => {
+describe('shadow writes', { skip: OWN_BACKENDS }, () => {
   it('replays what the caller passed at the call, not what they edited afterwards', async () => {
     // The application reads a document, edits it, passes it to replaceOne, and may keep
     // editing it. The mirrored write runs later; it must replay the document the primary saw.
@@ -352,7 +357,7 @@ describe('shadow writes', () => {
   });
 });
 
-describe('shadow queue saturation', () => {
+describe('shadow queue saturation', { skip: OWN_BACKENDS }, () => {
   it('drops rather than growing without bound, and counts the drops', async () => {
     const queue = new ShadowQueue(2);
     let release: () => void = () => {};
@@ -390,7 +395,7 @@ describe('shadow queue saturation', () => {
   });
 });
 
-describe('shadow shutdown', () => {
+describe('shadow shutdown', { skip: OWN_BACKENDS }, () => {
   it('does not wait for ever on a shadow that has stopped answering', async () => {
     const stalledPrimary = new RecordingStore();
     const stalled = new RecordingStore();
@@ -421,7 +426,7 @@ describe('shadow shutdown', () => {
   });
 });
 
-describe('shadow availability', () => {
+describe('shadow availability', { skip: OWN_BACKENDS }, () => {
   it('starts on the primary alone when the shadow will not connect', async () => {
     const brokenShadow = new RecordingStore();
     brokenShadow.connectShouldFail = true;

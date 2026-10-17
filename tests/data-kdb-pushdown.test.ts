@@ -245,12 +245,189 @@ describe('pushdown against a real kdb-service', { skip }, () => {
       });
     }
 
+    // The queue claim as one server statement (atomicClaimSql). Project jobs keep it away from the
+    // task jobs above.
+    describe('atomic queue claim', () => {
+      const claimFilter = { entityType: 'project', status: 'pending', attempts: { $lt: 3 } };
+      const claimUpdate = { $set: { status: 'processing' }, $inc: { attempts: 1 } };
+      const seed = async (count: number) => {
+        const made: Doc[] = [];
+        for (let i = 0; i < count; i++) {
+          made.push(await jobs.create({ entityType: 'project', entityId: `claim${i}-${Date.now()}`, status: 'pending', attempts: i % 4 }));
+          await new Promise((resolve) => setTimeout(resolve, 2)); // distinct createdAt
+        }
+        return made;
+      };
+      const clear = () => jobs.deleteMany({ entityType: 'project' });
+
+      it('takes the oldest match, applies the update and returns the document after it', async () => {
+        await clear();
+        const made = await seed(6);
+        const eligible = made.filter((doc) => (doc.attempts as number) < 3);
+        const before = Date.now();
+        const job = await jobs.findOneAndUpdate(claimFilter, claimUpdate, { sort: { createdAt: 1 }, returnDocument: 'after' });
+        assert.equal(job?._id, eligible[0]!._id);
+        assert.equal(job?.status, 'processing');
+        assert.equal(job?.attempts, (eligible[0]!.attempts as number) + 1);
+        assert.ok(job?.updatedAt instanceof Date && job.updatedAt.getTime() >= before - 1000, 'updatedAt is stamped and revived');
+        assert.ok(job?.createdAt instanceof Date);
+        assert.deepEqual(await jobs.findById(String(job!._id)), job, 'what it returns is what it stored');
+        // Newest first, too.
+        const newest = await jobs.findOneAndUpdate(claimFilter, claimUpdate, { sort: { createdAt: -1 } });
+        assert.equal(newest?._id, eligible[eligible.length - 1]!._id);
+      });
+
+      it('claims the same sequence as the read-then-write path', async () => {
+        const { config } = await import('../src/config/index.ts');
+        const run = async (atomic: boolean) => {
+          await clear();
+          const made = await seed(8);
+          (config.kdb as { atomicClaim: boolean }).atomicClaim = atomic;
+          try {
+            const order: number[] = [];
+            for (;;) {
+              const job = await jobs.findOneAndUpdate(claimFilter, claimUpdate, { sort: { createdAt: 1 } });
+              if (!job) break;
+              order.push(made.findIndex((doc) => doc._id === job._id));
+            }
+            return order;
+          } finally {
+            (config.kdb as { atomicClaim: boolean }).atomicClaim = true;
+          }
+        };
+        assert.deepEqual(await run(true), await run(false));
+      });
+
+      it('never gives one job to two concurrent claims', async () => {
+        await clear();
+        await seed(12);
+        const claimed = await Promise.all(Array.from({ length: 30 }, () => jobs.findOneAndUpdate(
+          { entityType: 'project', status: 'pending' }, { $set: { status: 'processing' } }, { sort: { createdAt: 1 } }
+        )));
+        const ids = claimed.filter((job): job is Doc => job !== null).map((job) => String(job._id));
+        assert.equal(ids.length, 12);
+        assert.equal(new Set(ids).size, 12);
+      });
+
+      it('claims the vision queue (no attempts guard) exactly once each, concurrently', async () => {
+        // feedbackVisionQueue.ts's claim: nothing in the filter pins `attempts`, so the statement
+        // requires it (its schema default makes it present) rather than falling back.
+        const vision = store.collection('feedbackVisionJobs');
+        await vision.deleteMany({});
+        for (let i = 0; i < 10; i++) {
+          await vision.create({ feedbackId: `fb${i}`, status: 'pending' });
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+        const claimed = await Promise.all(Array.from({ length: 25 }, () => vision.findOneAndUpdate(
+          { status: 'pending' }, { $set: { status: 'processing' }, $inc: { attempts: 1 } }, { sort: { updatedAt: 1 }, returnDocument: 'after' }
+        )));
+        const got = claimed.filter((job): job is Doc => job !== null);
+        assert.equal(got.length, 10);
+        assert.equal(new Set(got.map((job) => String(job._id))).size, 10);
+        assert.ok(got.every((job) => job.attempts === 1 && job.status === 'processing'));
+        await vision.deleteMany({});
+      });
+
+      it('falls back where SQL would differ from Mongo, with the same answer', async () => {
+        await clear();
+        // A counter the filter does not pin may be missing (a document written before it had a
+        // default): Mongo's $inc makes it 1, where SQL would store null. The statement requires the
+        // field, so such a document is found by the read-then-write path once the rest are claimed.
+        const raw = await seed(1);
+        await (jobs as unknown as { importDocument(doc: Doc): Promise<void> }).importDocument({ ...raw[0]!, attempts: undefined, _id: '6c0000000000000000000001', entityId: 'no-attempts', createdAt: new Date(0) });
+        const claimNext = () => jobs.findOneAndUpdate({ entityType: 'project', status: 'pending' }, { $set: { status: 'processing' }, $inc: { attempts: 1 } }, { sort: { createdAt: 1 } });
+        const first = await claimNext();
+        assert.equal(first?._id, raw[0]!._id);
+        assert.equal(first?.attempts, (raw[0]!.attempts as number) + 1);
+        const legacy = await claimNext();
+        assert.equal(legacy?._id, '6c0000000000000000000001');
+        assert.equal(legacy?.attempts, 1);
+        assert.equal(await claimNext(), null);
+        await jobs.updateMany({ entityType: 'project' }, { $set: { status: 'pending' } });
+        // A value the schema refuses is refused, not written.
+        await assert.rejects(jobs.findOneAndUpdate({ entityType: 'project' }, { $set: { status: 'bogus' } }, { sort: { createdAt: 1 } }), /status/);
+        // The document before the update.
+        const before = await jobs.findOneAndUpdate({ entityType: 'project', status: 'pending' }, { $set: { status: 'processing' } }, { sort: { createdAt: 1 }, returnDocument: 'before' });
+        assert.equal(before?.status, 'pending');
+        await clear();
+      });
+    });
+
     it('returns whole documents for a lean page, projected when asked', async () => {
       const [page] = await jobs.find({ status: 'pending' }, { sort: { createdAt: 1 }, limit: 1 });
       assert.equal(typeof page!.entityId, 'string', 'a lean page is fetched whole, not returned as the partial document');
       const [projected] = await jobs.find({ status: 'pending' }, { sort: { createdAt: 1 }, limit: 1, select: 'status' });
       assert.deepEqual(Object.keys(projected!).sort(), ['_id', 'status']);
     });
+  });
+
+  it('stores an embedding packed, and returns exactly the numbers it was given', async () => {
+    // Packed because kdb-service parses every document a query examines, and 768 floats per task
+    // were ~40% of its CPU (packNumbers). Exact because similarity search compares them.
+    const embedding = [0, -0, 1, -1, 0.1, 1 / 3, Math.PI, -2.5e-300, 1.7976931348623157e308, Number.MIN_VALUE, ...Array.from({ length: 758 }, (_, i) => Math.sin(i) * 1e-3)];
+    const created = await tasks.create({ userId: 'emb-user', title: 'with embedding', embedding });
+    const read = (await tasks.findById(String(created._id)))!;
+    assert.equal((read.embedding as number[]).length, 768);
+    (read.embedding as number[]).forEach((value, i) => assert.ok(Object.is(value, embedding[i]), `element ${i}: ${value} vs ${embedding[i]}`));
+    // On the server it is one string, not 768 numbers.
+    const raw = (await import(CLIENT_MODULE)) as { connect(a: string, o: object): Promise<{ get(ns: string, id: string): Promise<{ body: Doc }>; close(): Promise<void> }> };
+    const client = await raw.connect(process.env.KDB_ADDR!, {});
+    try {
+      const { toDocumentUuid } = await import('../src/data/kdb/ids.ts');
+      const stored = (await client.get('qtaskpd/docs', toDocumentUuid(String(created._id)))).body;
+      assert.match(String(stored.embedding), /^f64:/);
+      // A document written before packing (a plain array) still reads back as it is.
+      const old = { ...stored, _id: '6b0000000000000000000001', embedding: [0.5, 0.25] };
+      await (client as unknown as { upsert(ns: string, id: string, body: unknown): Promise<unknown> }).upsert('qtaskpd/docs', toDocumentUuid(old._id), old);
+      assert.deepEqual((await tasks.findById(old._id))!.embedding, [0.5, 0.25]);
+      await tasks.deleteOne({ _id: old._id });
+    } finally {
+      await client.close();
+    }
+    // Lean pages, counts and projections are unaffected.
+    assert.equal(await tasks.countDocuments({ userId: 'emb-user' }), 1);
+    const [page] = await tasks.find({ userId: 'emb-user' }, { sort: { title: 1 }, limit: 1, select: '-embedding' });
+    assert.equal(page!.embedding, undefined);
+    assert.equal(((await tasks.find({ userId: 'emb-user' }, { limit: 1 }))[0]!.embedding as number[]).length, 768);
+    await tasks.deleteOne({ _id: created._id });
+  });
+
+  it('narrows by the rest of a filter that also names the packed embedding', async () => {
+    // Search's semantic candidates: an access filter plus "has an embedding". The embedding
+    // condition stays in process; the rest must still be answered right, paged or not.
+    const made = await Promise.all([
+      tasks.create({ userId: 'emb-a', title: 'a1', embedding: [0.5, 0.25] }),
+      tasks.create({ userId: 'emb-a', title: 'a2', embedding: [] }),
+      tasks.create({ userId: 'emb-a', title: 'a3' }),
+      tasks.create({ userId: 'emb-b', title: 'b1', embedding: [0.75] }),
+    ]);
+    const filter = { $or: [{ userId: 'emb-a' }, { projectIds: { $in: ['emb-p'] } }], embedding: { $exists: true, $ne: [] } };
+    const titles = (docs: Doc[]) => docs.map((d) => d.title).sort();
+    assert.deepEqual(titles(await tasks.find(filter)), ['a1']);
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, limit: 10 })), ['a1']);
+    assert.deepEqual(((await tasks.find(filter, { limit: 1 }))[0]!.embedding), [0.5, 0.25]);
+    assert.equal(await tasks.countDocuments(filter), 1);
+
+    // A page decides "present and not empty" on the server (presenceOnly). Every stored form must
+    // come out as Mongo has it: null passes, an empty array does not - packed, or a legacy unpacked
+    // one, which the server's check lets through and the whole-document re-check must catch even
+    // when it sorts first and the page is one document long.
+    const importer = tasks as unknown as { importDocument(doc: Doc): Promise<void> };
+    const legacy = { _id: '6c0000000000000000000002', userId: 'emb-a', title: 'a0 legacy empty', embedding: [], createdAt: new Date(), updatedAt: new Date() };
+    const raw = (await import(CLIENT_MODULE)) as { connect(a: string, o: object): Promise<{ upsert(ns: string, id: string, body: unknown): Promise<unknown>; close(): Promise<void> }> };
+    const client = await raw.connect(process.env.KDB_ADDR!, {});
+    const { toDocumentUuid } = await import('../src/data/kdb/ids.ts');
+    await client.upsert('qtaskpd/docs', toDocumentUuid(legacy._id), { ...legacy, _c: 'tasks', createdAt: legacy.createdAt.toISOString(), updatedAt: legacy.updatedAt.toISOString() });
+    await client.close();
+    await importer.importDocument({ _id: '6c0000000000000000000003', userId: 'emb-a', title: 'a4 null', embedding: null, createdAt: new Date(), updatedAt: new Date() });
+    const expected = ['a1', 'a4 null'];
+    assert.deepEqual(titles(await tasks.find(filter)), expected, 'whole-document path');
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, limit: 10 })), expected, 'lean page');
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, limit: 1 })), ['a1'], 'a one-document page behind the legacy empty array');
+    assert.deepEqual(titles(await tasks.find(filter, { sort: { title: 1 }, skip: 1, limit: 1 })), ['a4 null'], 'a skipped page');
+    await tasks.deleteOne({ _id: legacy._id });
+    await tasks.deleteOne({ _id: '6c0000000000000000000003' });
+    await Promise.all(made.map((doc) => tasks.deleteOne({ _id: doc._id })));
   });
 
   it('finds by a set of ids', async () => {

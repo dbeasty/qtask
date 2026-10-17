@@ -14,8 +14,8 @@ const mib = (b: number | undefined) => (b === undefined ? '-' : (b / 2 ** 20).to
 const BACKEND_LABEL: Record<string, string> = {
   mongo: 'MongoDB 7 (w:1, default journal commit)',
   'mongo-j': 'MongoDB 7 (w:1, j:true)',
-  kdb: 'KDB 0.8.0 (--durability sync: acknowledged writes are fsynced, group commit)',
-  'kdb-async': 'KDB 0.8.0 (--durability async: acknowledged once queued, synced every 5 ms)',
+  kdb: 'KDB 0.9.1 (--durability sync: acknowledged writes are fsynced, group commit)',
+  'kdb-async': 'KDB 0.9.1 (--durability async: acknowledged once queued, synced every 5 ms)',
 };
 
 function table(head: string[], rows: string[][]): string {

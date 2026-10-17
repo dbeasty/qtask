@@ -58,7 +58,7 @@ log() { echo "$*" | tee -a "${SUMMARY}"; }
 now() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
 
 # --- the KDB release binary for the container's platform ------------------------------------
-KDB_VERSION="$(node -p "require('${ROOT}/node_modules/@kdb/client/package.json').version")"
+KDB_VERSION="$(node -p "require('${ROOT}/node_modules/@limidus/kdb-client/package.json').version")"
 case "$(uname -m)" in arm64|aarch64) ARCH=arm64 ;; x86_64|amd64) ARCH=amd64 ;; *) echo "unsupported arch" >&2; exit 1 ;; esac
 BIN_DIR="${ROOT}/.kdb/${KDB_VERSION}/linux-${ARCH}"
 if [[ ! -x "${BIN_DIR}/kdb-service" ]]; then
