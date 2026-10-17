@@ -25,7 +25,7 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 | Keyed reads for `_id`, verified deletes; the scan-cap guard | Keyed reads and verified deletes stay; the guard is retired (B1 is fixed since KDB 0.7) |
 | Deployment configuration for v0.8.0 | Done and started locally: `docker-compose.kdb.yml` (release image, private network), `deploy/qtask-kdb.service`, `deploy/install-kdb.sh` (checksum-verified install). Section 3 |
 | Backups | Done: online backup through the control plane, verified, with retention (`deploy/kdb-backup.sh`, `qtask-kdb-backup.timer`). Restore drill passed on synthetic data (section 8); restoring takes a long index rebuild (B6) |
-| **Read cost and memory at scale on disk** | **Open blocker (B5).** At 100,000 tasks, queries that touch many large documents are refused, never answer, or take `kdb-service` past its memory limit; measured, partly worked around in the store, the rest needs KDB and store work |
+| **Read cost and memory at scale on disk** | **Narrowed (B5), still blocks Stage 4 for the heaviest accounts.** Re-run on KDB v0.9.2 (section 8.6): every query answers and nothing runs out of memory; a typical user is on par with MongoDB. The heaviest user (8,136 tasks) takes 3.7–9.8 s where MongoDB takes 25–740 ms - KDB issues dbeasty/kdb#325 and #326 - and needs a larger `--memory-budget-mb` than the 1536 the unit sets |
 | **KDB 0.7.0 candidate** (`main` at the time of writing) | The whole application passes on it: 133 of 133 test files on KDB, and the default Mongo suite is unchanged |
 | The application's own test suite on KDB (`npm run test:kdb`) | Done. A preload gives each test process a private `kdb-service`; the unchanged tests run against the real routes and services |
 | Shadow mode as a test run (`npm run test:shadow`) | Done. Mongo primary, KDB mirroring every write and comparing every read: **12,275 mirrored writes, 0 failed, 0 dropped; 23 divergences in 7,266 reads (0.3%)**, down from 729. What is left is races with un-awaited writes (a `lastActiveAt` touch, queue claims), tie ordering, and sub-document ids |
@@ -215,6 +215,16 @@ stemmed BM25 and vector search server-side. Using it would make rankings backend
 the conformance suite cannot catch. Decide after the migration, not during it.
 
 ### B5. Queries that touch many large documents fail or never answer (blocks Stage 4)
+
+**Status on KDB v0.9.2 (section 8.6): narrowed.** Every query now answers, and nothing runs out of
+memory. A typical user's list, count and search are within a few ms of MongoDB. What remains is
+the heaviest account (8,136 tasks): 3.7–9.8 s where MongoDB takes 25–740 ms.
+- **The KDB planner reads every document of one index.** It ignores the intersection with `_c`
+  (dbeasty/kdb#325), and it reads bodies to answer `staging IS MISSING` (dbeasty/kdb#326).
+- **The memory budget must leave room above the service's floor.** With 1536 MiB, the heaviest
+  user's full list was refused (see `deploy/qtask-kdb.service`).
+
+The original findings follow, as measured on v0.8.0.
 
 Found by the 100,000-task rehearsal (section 8), on the release binary in a Linux container
 (4 CPUs, 4 GiB), `--expire-field _expireAt` (qtask needs it). Tasks carry 768-dimension
@@ -692,6 +702,60 @@ through the store (`importMany`, 64 KiB commits) in 211 s, 152 MiB on disk. Run 
 One thing the 20,000-task run did not show: that a code still valid at restore time stays
 readable until it expires. Its 45-second window had passed during the 1,296 s re-declaration; the
 1,000-task run of the same drill showed it (10/10 readable before expiry, 0/10 after, all swept).
+
+### 8.6 The same rehearsal on KDB v0.9.2
+
+`scripts/rehearsal/run-migration-rehearsal.sh --tasks 100000` with `INDEX_ORDER=after`: the same
+generator and seed as 8.1–8.3, on `kdb-service` v0.9.2 with the store from qtask#12 (pushdown,
+sorted pages chosen by the server, atomic claims). It ran twice, and the second run repeated the
+first within 2%.
+
+**The migration path:**
+
+| step | v0.8.0 | v0.9.2 |
+|---|---|---|
+| backfill | 629 s | **201–204 s** |
+| declare (38 indexes + constraints) | 939 s | **405–407 s** |
+| verify | 44 s; three earlier runs OOM-killed | **36–37 s**, all 22 collections clean, no OOM |
+| `kdb-service` RSS | up to 1.4 GiB | backfill ≤ 532 MiB; declare ≤ 1.19 GiB; benches ≤ 1.36 GiB |
+
+**Read latency** (ms, p50 of 20). MongoDB's numbers repeated 8.3's.
+
+| query | MongoDB | KDB, budget 1536 | KDB, budget 3072 |
+|---|---|---|---|
+| `listTasks`, heaviest user, first page of 50 | 28.6 | 5,823–6,004 | 6,437 |
+| `listTasks`, heaviest user, all 8,394 | 739 | refused (`BUSY`, a ~510 MB grant) | 5,952 |
+| `listTasks`, heaviest user, `status=todo`, first page | 25.0 | refused | 9,815 |
+| `tasks.countDocuments({ userId })`, heaviest user | 2.1 | 3.0–3.4 | 2.6 |
+| `unreadCount`, heaviest user | 0.8 | 1.7–2.2 | 1.7 |
+| lexical search "invoice", heaviest user | 64.8 | refused | 3,710 |
+| `listTasks`, median user, first page of 50 | 5.6 | 16 when not starved (below) | **11.0** |
+| `listTasks`, median user, all 73 | 7.2 | 21 when not starved | **15.6** |
+| `listTasks`, median user, `status=todo`, first page | 3.5 | 13 when not starved | **6.4** |
+| lexical search, median user | 10.2 | 19.0–19.3 | 17.8 |
+| `tasks.findById` / `taskService.getTask` | 0.4 / 1.1 | 0.6 / 0.9–1.0 | 0.5 / 0.9 |
+
+**What the numbers mean:**
+
+- **Budget 1536 (the unit's setting).** The service's own floor (indexes and caches) was
+  0.7 GiB after a restart and 1.19 GiB after loading and querying. That left only a few hundred MB
+  for query grants.
+  - The heaviest user's full list was refused.
+  - In the 20-iteration run, the floor rose until even the median user's small reads were refused
+    as `BUSY`. Run alone, or with one iteration, they answer in 13–21 ms.
+  - Refused grants are released: outstanding grants went back to 0 between queries, so this is not
+    a leak.
+- **Budget 3072.** Every query answered, there were 0 capacity denials, and RSS stayed at 756 MiB.
+- **Heaviest user.** `EXPLAIN` shows where the time goes. For
+  `_c = 'tasks' AND userId = ? AND staging IS MISSING`, KDB serves the query from the `userId`
+  index and reads all 33,818 of that user's documents, across every collection: 1.4 s for a count
+  that takes 3 ms without the `staging` condition. Each branch of the access `$or` pays this, and
+  so do the page's sort and its total.
+  - Fixing it needs KDB to intersect the index id sets first (dbeasty/kdb#325) and to answer
+    `IS MISSING` from an index (dbeasty/kdb#326).
+- **Whole-collection counts.** `verify` still skips counting collections above 20,000 documents,
+  and `bench-reads` still skips `tasks.countDocuments({})`. Both are v0.8.0 guards (`--count-limit`)
+  that v0.9's index-answered counts should make unnecessary; that is a follow-up.
 
 ### 8.5 Smaller measurements behind B2 and B5
 

@@ -55,6 +55,8 @@ services:
       - --expire-field=_expireAt
       - --expire-interval=1m
       - --durability=sync
+      # Queries get what the budget leaves above the service's own floor (0.7-1.2 GiB at 100k tasks):
+      # raise both this and KDB_MEM_LIMIT for a large dataset (deploy/qtask-kdb.service).
       - --memory-budget-mb=${KDB_MEMORY_BUDGET_MB:-1536}
       - --scrub-interval=24h
       - --log-format=json

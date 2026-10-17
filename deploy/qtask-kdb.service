@@ -45,11 +45,14 @@ WorkingDirectory=/var/lib/qtask/kdb
 # KDB_BOUNDED_LIVE_BODIES=off.
 #
 # Resource limits: kdb-service governs its own memory against --memory-budget-mb (0 = 75% of the
-# host's RAM, too much on a box shared with Node and MongoDB). In the 100,000-task rehearsal
-# (docs/KDB_MIGRATION.md section 8) RSS was 0.7-1.0 GiB idle and 1.4 GiB at most while building
-# indexes - but collection-wide reads went past 4 GiB regardless of this budget (blocker B5), so
-# it is not a hard ceiling. Give the host room for that, or cap the unit with MemoryMax= and
-# accept that such a read restarts the service.
+# host's RAM, too much on a box shared with Node and MongoDB). Queries are granted what the budget
+# leaves above the "floor" the service already holds (indexes, caches: 0.7 GiB after a restart,
+# 1.2 GiB after loading and querying, in the 100,000-task rehearsal on KDB 0.9.2), so 1536 leaves
+# a few hundred MB: there, the heaviest user's full task list (a ~510 MB grant) was refused, and
+# under sustained load the floor rose until small reads were refused too. With 3072 everything
+# answered and RSS stayed at 0.76 GiB (docs/KDB_MIGRATION.md section 8.3). Size this to what the
+# host can spare, at least ~2.5 GiB at that scale; since 0.9 a read past its grant is refused
+# (RESOURCE_EXHAUSTED / BUSY), not left to run the service out of memory.
 # --scan-row-budget caps the rows one scan may examine (default 1,000,000): every collection lives
 # in this one namespace, so an unindexed scan examines all of it. Raise it before the namespace
 # approaches a million documents (`npm run migrate:kdb -- counts`).
