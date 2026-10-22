@@ -740,6 +740,15 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async updateOne(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<UpdateResult> {
+    // One server statement where the update is one SQL says exactly (atomicUpdateSql): one round
+    // trip instead of a find, a read and a conditional write. `modified` is then `matched`: the
+    // statement does not say whether the values were already what it set. No caller of updateOne
+    // reads it (notificationService reads updateMany's, which this does not change).
+    const atomic = this.atomicUpdateSql(filter, update, options);
+    if (atomic) {
+      const rows = await this.execAtomic(atomic);
+      if (rows) return { matched: rows.length, modified: rows.length };
+    }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
       if (!candidate) {
@@ -769,12 +778,14 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   async findOneAndUpdate(filter: Filter, update: Update, options: UpdateOptions = {}): Promise<T | null> {
-    const atomic = this.atomicClaimSql(filter, update, options);
+    const atomic = this.atomicUpdateSql(filter, update, options);
     if (atomic) {
-      const { rows } = await this.client().execReturning(this.namespace, atomic.sql, atomic.args);
-      const body = rows[0]?.[1];
-      if (body === undefined || body === null) return null;
-      return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
+      const rows = await this.execAtomic(atomic);
+      if (rows) {
+        const body = rows[0]?.[1];
+        if (body === undefined || body === null) return null;
+        return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
+      }
     }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
@@ -794,35 +805,44 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
   }
 
   /**
-   * A queue claim as one server statement, `UPDATE … WHERE … ORDER BY <field> LIMIT 1 RETURNING`,
-   * or null when it cannot be promised to do exactly what the read-then-write path does. The
-   * server picks, updates and returns the document at the front of its write gate, so two claims
-   * never take the same one and none fails for another having committed first. The read-then-write
-   * path read every pending job's lean row to find the oldest (125-230 ms at 15k pending jobs on
-   * KDB 0.9.1), and its conditional writes collided more the more workers claimed.
+   * An updateOne or findOneAndUpdate as one server statement, `UPDATE … [REMOVE …] WHERE …
+   * [ORDER BY <field>] LIMIT 1 RETURNING`, or null when it cannot be promised to do exactly what
+   * the read-then-write path does. The server picks, updates and returns the document at the front
+   * of its write gate, so two claims never take the same one and none fails for another having
+   * committed first. The read-then-write path read every pending job's lean row to find the oldest
+   * (125-230 ms at 15k pending jobs on KDB 0.9.1), its conditional writes collided more the more
+   * workers claimed, and an updateOne by id took three round trips (find, read, conditional
+   * write) where this takes one - most of what a queue's claim-complete-requeue cycle waited on.
    *
    * Nothing re-checks the server's choice, so only what SQL evaluates exactly as Mongo does is
    * accepted, and anything else falls back:
    *  - the filter: exactWhere's equalities on text paths, plus equalities and ranges of finite
    *    numbers on top-level Number paths (a missing or null field matches neither, in both);
-   *  - the sort: one top-level Date or Number field (missing and null sort first ascending, last
-   *    descending, in both);
+   *  - the sort: none (any one match, as the read-then-write path's `find(filter, limit 1)`), or
+   *    one top-level Date or Number field (missing and null sort first ascending, last descending,
+   *    in both);
    *  - the update: `$set` of strings, booleans, finite numbers or dates on top-level paths whose
    *    schema type has no casting or validation beyond its enum, and `$inc` of a Number path as
    *    `COALESCE(x, 0) + n` (KDB 0.9.2): a missing or null field counts from zero, as in Mongo,
    *    where a bare `x + n` would store null. (A non-number would also come out null, but the
-   *    store casts a Number path on every write.) No unique, packed or expiry field, which the
-   *    store derives other fields from;
+   *    store casts a Number path on every write.) `$unset` as `REMOVE` (KDB 0.9.3), which takes
+   *    the field out as Mongo does rather than storing a null. No unique, packed or expiry field,
+   *    which the store derives other fields from;
    *  - no upsert, and the document after the update.
    */
-  private atomicClaimSql(filter: Filter, update: Update, options: UpdateOptions): Where | null {
+  private atomicUpdateSql(filter: Filter, update: Update, options: UpdateOptions): Where | null {
     if (!config.kdb.atomicClaim || !config.kdb.pushdown || options.upsert || options.returnDocument === 'before') return null;
-    const sortKeys = Object.entries(options.sort ?? {});
-    if (sortKeys.length !== 1) return null;
-    const [sortField, direction] = sortKeys[0]! as [string, unknown];
-    if ((direction !== 1 && direction !== -1) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(sortField)) return null;
     const instanceOf = (path: string) => (this.schema.path(path) as unknown as { instance?: string } | undefined)?.instance;
-    if (instanceOf(sortField) !== 'Date' && instanceOf(sortField) !== 'Number') return null;
+    // No sort: any one matching document, as the read-then-write path's find(filter, limit 1) picks.
+    const sortKeys = Object.entries(options.sort ?? {});
+    if (sortKeys.length > 1) return null;
+    let orderBy = '';
+    if (sortKeys.length === 1) {
+      const [sortField, direction] = sortKeys[0]! as [string, unknown];
+      if ((direction !== 1 && direction !== -1) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(sortField)) return null;
+      if (instanceOf(sortField) !== 'Date' && instanceOf(sortField) !== 'Number') return null;
+      orderBy = ` ORDER BY ${sortField}${direction === -1 ? ' DESC' : ''}`;
+    }
 
     const where: Where[] = [];
     for (const [key, condition] of Object.entries(filter)) {
@@ -844,11 +864,18 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     if (this.ttl) derived.add(this.ttl.path.split('.')[0]!);
     const settable = (field: string) => /^[A-Za-z][A-Za-z0-9]*$/.test(field) && field !== '_id' && !derived.has(field);
     const sets: Where[] = [];
+    const removes: string[] = [];
+    const named = (field: string) => sets.some((set) => set.sql.startsWith(`${field} =`)) || removes.includes(field);
     for (const [operator, fields] of Object.entries(update)) {
       if (!isPlainObject(fields)) return null;
       for (const [field, value] of Object.entries(fields as Doc)) {
-        if (!settable(field) || sets.some((set) => set.sql.startsWith(`${field} =`))) return null;
-        if (operator === '$set') {
+        if (!settable(field) || named(field)) return null;
+        if (operator === '$unset') {
+          // REMOVE takes the field out, as $unset does (KDB 0.9.3); a server without it is
+          // remembered and the read-then-write path does these.
+          if (this.removeUnsupported) return null;
+          removes.push(field);
+        } else if (operator === '$set') {
           const stored = this.claimSetValue(field, value);
           if (stored === undefined) return null;
           sets.push({ sql: `${field} = ?`, args: [stored] });
@@ -860,19 +887,41 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         }
       }
     }
-    if (sets.length === 0) return null;
+    if (sets.length === 0 && removes.length === 0) return null;
     const stamped = touchUpdatedAt(this.schema, {});
-    if (stamped.updatedAt instanceof Date && !sets.some((set) => set.sql.startsWith('updatedAt ='))) {
+    if (stamped.updatedAt instanceof Date && !named('updatedAt')) {
       sets.push({ sql: 'updatedAt = ?', args: [stamped.updatedAt.toISOString()] });
     }
 
     return {
       sql:
-        `UPDATE ${this.table} SET ${sets.map((set) => set.sql).join(', ')}` +
+        `UPDATE ${this.table}` +
+        (sets.length > 0 ? ` SET ${sets.map((set) => set.sql).join(', ')}` : '') +
+        (removes.length > 0 ? ` REMOVE ${removes.join(', ')}` : '') +
         ` WHERE _c = ?${where.map((part) => ` AND (${part.sql})`).join('')}` +
-        ` ORDER BY ${sortField}${direction === -1 ? ' DESC' : ''} LIMIT 1 RETURNING kdb_id, _doc`,
+        `${orderBy} LIMIT 1 RETURNING kdb_id, _doc`,
       args: [...sets.flatMap((set) => set.args), this.name, ...where.flatMap((part) => part.args)],
     };
+  }
+
+  /** Set once a server refused REMOVE (before KDB 0.9.3): $unset then takes the read-then-write path. */
+  private removeUnsupported = false;
+
+  /**
+   * Runs an atomic update statement, or returns null when the server cannot parse its REMOVE
+   * clause - remembered, so the caller and every later update take the read-then-write path.
+   */
+  private async execAtomic(atomic: Where): Promise<unknown[][] | null> {
+    try {
+      const { rows } = await this.client().execReturning(this.namespace, atomic.sql, atomic.args);
+      return rows;
+    } catch (error) {
+      if (atomic.sql.includes(' REMOVE ') && /REMOVE|expected|unexpected|syntax/i.test((error as Error).message)) {
+        this.removeUnsupported = true;
+        return null;
+      }
+      throw error;
+    }
   }
 
   /** A `$set` value as the store would write it, or undefined when only the schema walk can say:

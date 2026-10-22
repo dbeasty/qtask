@@ -300,6 +300,21 @@ export function runDataStoreConformance(backend: BackendHarness): void {
         await tasks.updateOne({ _id: alpha!._id }, { $unset: { assigneeId: '' } });
         const found = await tasks.findById(alpha!._id as string);
         assert.equal(found?.assigneeId, undefined);
+        // Taken out, not stored as null: the two differ to $exists.
+        assert.equal((await tasks.find({ _id: alpha!._id, assigneeId: { $exists: false } })).length, 1);
+        assert.equal((await tasks.find({ _id: alpha!._id, assigneeId: null })).length, 1);
+      });
+
+      it('sets and unsets in one update, with the document after it returned', async () => {
+        const [alpha] = await seed();
+        const updated = await tasks.findOneAndUpdate(
+          { _id: alpha!._id },
+          { $set: { status: 'done' }, $unset: { assigneeId: '' } },
+          { returnDocument: 'after' }
+        );
+        assert.equal(updated?.status, 'done');
+        assert.strictEqual(updated?.assigneeId, undefined);
+        assert.equal((await tasks.find({ _id: alpha!._id, assigneeId: { $exists: false } })).length, 1);
       });
 
       it('returns the updated document from findOneAndUpdate', async () => {
