@@ -1366,6 +1366,18 @@ export class KdbDataStore implements DataStore {
         throw new Error(`KDB refused the index on ${path}: ${(error as Error).message}`);
       }
     }
+    for (const fields of COMPOSITE_INDEXES) {
+      const index = `qtask_c_${fields.join('_')}`;
+      try {
+        await this.client!.exec(config.kdb.namespacePrefix, `CREATE INDEX ${index} ON docs (${fields.join(', ')}) USING BTREE`);
+      } catch (error) {
+        const message = (error as Error).message;
+        if (/already registered|already exists/i.test(message)) continue;
+        // A server before composite BTREEs refuses them; the same queries are answered without.
+        if (/may cover several fields/i.test(message)) return;
+        throw new Error(`KDB refused the composite index on ${fields.join(', ')}: ${message}`);
+      }
+    }
   }
 
   async ping(): Promise<void> {
@@ -1527,6 +1539,25 @@ export function declaredIndexes(): Map<string, 'HASH' | 'BTREE'> {
  *    nearly every write of every document, so its index would be rewritten with each. Not declared.
  */
 const ORDER_INDEXES = ['createdAt'];
+
+/**
+ * Composite BTREEs - equality fields, then the field a query orders by - which KDB serves by
+ * walking the keys under the equality values in order, forwards or backwards, like a Cassandra
+ * clustering key (dbeasty/kdb, `sql/composite_topk.go`). `WHERE _c = ? AND status = ? ORDER BY
+ * updatedAt LIMIT 1` then reads the job it claims instead of every pending one, and a "latest 50"
+ * reads 50 documents instead of every one of the user's. Each serves only the collections whose
+ * queries name its fields, so `updatedAt` here is rewritten with a write of one of those documents
+ * only, unlike the namespace-wide single-field index ORDER_INDEXES leaves out.
+ *  - the two queue claims (embeddingQueue.ts, feedbackVisionQueue.ts);
+ *  - notifications, activities, comments and conversations, newest or oldest first per owner.
+ */
+export const COMPOSITE_INDEXES: ReadonlyArray<readonly string[]> = [
+  ['_c', 'status', 'updatedAt'],
+  ['_c', 'status', 'createdAt'],
+  ['_c', 'userId', 'createdAt'],
+  ['_c', 'taskId', 'createdAt'],
+  ['_c', 'userId', 'updatedAt'],
+];
 
 /**
  * A number array as the server stores it: one string, `f64:` and the base64 of its IEEE 754
