@@ -122,8 +122,8 @@ const KEYED_BATCH = 100;
  * concurrent deletes both buffer, the first commit takes both, and the second commit fails with
  * "no pending transaction to commit": a spurious error on the second caller, after its delete
  * has in fact been applied. The application deletes concurrently as a matter of course
- * (`Promise.all` over collections), so every DML statement goes through one queue here. Reads and
- * upserts are unaffected: they do not touch the session's pending buffer.
+ * (`Promise.all` over collections), so every `exec` goes through one queue here. Reads, upserts and
+ * `execReturning` (which only clients that order their own session have) are not queued.
  *
  * The right fix is in the client; this keeps the store correct against any client version, and
  * costs nothing where DML is already one-at-a-time.
@@ -186,14 +186,14 @@ class SerializedDmlClient implements KdbClient {
     return run;
   }
   execReturning(ns: string, sql: string, args?: unknown[]) {
-    // Through the same queue: the server refuses it while the session holds another statement's
-    // uncommitted writes.
-    const run = this.tail.then(
-      () => this.inner.execReturning(ns, sql, args),
-      () => this.inner.execReturning(ns, sql, args)
-    );
-    this.tail = run.catch(() => undefined);
-    return run;
+    // Not through the queue. Every client that has execReturning (KDB 0.9.0) also orders its own
+    // session (its SessionLock, 0.7.1): an exec's two messages hold the session, so nothing can
+    // land between them, and the server refuses nothing. The queue made a process run one write
+    // at a time - the claim, the complete and the re-enqueue of every worker in it, each waiting
+    // out the fsync of the one before: at 8 workers a process, a write waited ~14 ms here for a
+    // ~2 ms round trip. A client with a pool of write sessions (sessionsPerNamespace) runs them
+    // side by side; one without still orders them on its one session, as before.
+    return this.inner.execReturning(ns, sql, args);
   }
 }
 
