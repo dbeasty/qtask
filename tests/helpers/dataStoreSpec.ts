@@ -505,6 +505,88 @@ export function runDataStoreConformance(backend: BackendHarness): void {
       });
     });
 
+    describe('upsert on a unique key', () => {
+      // The queues' re-enqueue (feedbackVisionQueue.ts, embeddingQueue.ts): an updateOne whose
+      // filter is a unique key, with $set, $unset and $setOnInsert.
+      const requeue = (feedbackId: string) =>
+        store.collection('feedbackVisionJobs').updateOne(
+          { feedbackId },
+          { $set: { status: 'pending', feedbackId }, $unset: { lastError: '' }, $setOnInsert: { attempts: 0 } },
+          { upsert: true }
+        );
+
+      it('inserts with $setOnInsert, then updates without it', async () => {
+        const jobs = store.collection('feedbackVisionJobs');
+        const inserted = await requeue('f1');
+        assert.equal(inserted.matched, 0);
+        assert.equal(typeof inserted.upsertedId, 'string');
+        const created = (await jobs.findOne({ feedbackId: 'f1' }))!;
+        assert.equal(created._id, inserted.upsertedId);
+        assert.equal(created.status, 'pending');
+        assert.equal(created.attempts, 0);
+        assert.ok(created.createdAt instanceof Date && created.updatedAt instanceof Date);
+
+        await jobs.updateOne({ _id: created._id }, { $set: { status: 'failed', lastError: 'boom' }, $inc: { attempts: 3 } });
+        const again = await requeue('f1');
+        assert.equal(again.matched, 1);
+        assert.equal(again.upsertedId, undefined);
+        const updated = (await jobs.findOne({ feedbackId: 'f1' }))!;
+        assert.equal(updated._id, created._id);
+        assert.equal(updated.status, 'pending');
+        assert.equal(updated.attempts, 3, '$setOnInsert must not apply to a match');
+        assert.equal('lastError' in updated, false, '$unset takes the field out');
+        assert.ok((updated.updatedAt as Date).getTime() >= (created.updatedAt as Date).getTime());
+        assert.equal((updated.createdAt as Date).getTime(), (created.createdAt as Date).getTime());
+        assert.equal(await jobs.countDocuments({ feedbackId: 'f1' }), 1);
+      });
+
+      it('upserts a compound key, $inc counting from zero on insert', async () => {
+        const jobs = store.collection('embeddingJobs');
+        const enqueue = () =>
+          jobs.updateOne(
+            { entityType: 'task', entityId: 'e1' },
+            { $set: { entityType: 'task', entityId: 'e1', taskId: 'e1', status: 'pending' }, $inc: { attempts: 1 }, $setOnInsert: { dirty: false }, $unset: { lastError: '' } },
+            { upsert: true }
+          );
+        const first = await enqueue();
+        assert.equal(first.matched, 0);
+        await jobs.updateOne({ entityType: 'task', entityId: 'e1' }, { $set: { dirty: true, status: 'completed' } });
+        const second = await enqueue();
+        assert.equal(second.matched, 1);
+        const [job, ...rest] = await jobs.find({ entityId: 'e1' });
+        assert.equal(rest.length, 0);
+        assert.equal(job!.attempts, 2);
+        assert.equal(job!.dirty, true, '$setOnInsert must not apply to a match');
+        assert.equal(job!.status, 'pending');
+        assert.equal(job!.taskId, 'e1');
+        // Another key of the same collection is its own document.
+        await jobs.updateOne({ entityType: 'project', entityId: 'e1' }, { $set: { status: 'pending' } }, { upsert: true });
+        assert.equal(await jobs.countDocuments({ entityId: 'e1' }), 2);
+      });
+
+      it('returns the document from findOneAndUpdate with upsert, inserted or matched', async () => {
+        const jobs = store.collection('feedbackVisionJobs');
+        const upsert = () =>
+          jobs.findOneAndUpdate({ feedbackId: 'f2' }, { $inc: { attempts: 1 }, $setOnInsert: { status: 'pending' } }, { upsert: true, returnDocument: 'after' });
+        const inserted = await upsert();
+        assert.equal(inserted?.feedbackId, 'f2');
+        assert.equal(inserted?.attempts, 1);
+        const matched = await upsert();
+        assert.equal(matched?._id, inserted?._id);
+        assert.equal(matched?.attempts, 2);
+      });
+
+      it('creates one document when several upserts of a new key race', async () => {
+        const jobs = store.collection('feedbackVisionJobs');
+        const results = await Promise.allSettled(Array.from({ length: 8 }, () => requeue('race')));
+        // Mongo itself may report a racing upsert as a duplicate key (E11000); none may create a second document.
+        const fulfilled = results.filter((r) => r.status === 'fulfilled') as Array<PromiseFulfilledResult<{ upsertedId?: string }>>;
+        assert.ok(fulfilled.length >= 1);
+        assert.ok(fulfilled.filter((r) => r.value.upsertedId !== undefined).length <= 1);
+        assert.equal(await jobs.countDocuments({ feedbackId: 'race' }), 1);
+      });
+    });
+
     describe('concurrent writes', () => {
       it('lets exactly one of several concurrent conditional updates win', async () => {
         const doc = await tasks.create({ userId: 'u1', title: 'claim me' });
