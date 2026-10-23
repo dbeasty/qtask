@@ -749,6 +749,14 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       const rows = await this.execAtomic(atomic);
       if (rows) return { matched: rows.length, modified: rows.length };
     }
+    const upsert = await this.atomicUpsertSql(filter, update, options);
+    if (upsert) {
+      const rows = await this.execUpsert(upsert);
+      if (rows) {
+        if (rows.length === 0) return { matched: 1, modified: 0 }; // matched, and nothing to set
+        return rows[0]![0] === upsert.kdbId ? { matched: 0, modified: 0, upsertedId: upsert.id } : { matched: 1, modified: 1 };
+      }
+    }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
       if (!candidate) {
@@ -786,6 +794,12 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         if (body === undefined || body === null) return null;
         return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
       }
+    }
+    const upsert = await this.atomicUpsertSql(filter, update, options);
+    if (upsert && upsert.returnsDocument) {
+      const rows = await this.execUpsert(upsert);
+      const body = rows?.[0]?.[1];
+      if (body !== undefined && body !== null) return this.decode((typeof body === 'string' ? JSON.parse(body) : body) as Doc);
     }
     for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
       const [candidate] = await this.find(filter, { ...(options.sort ? { sort: options.sort } : {}), limit: 1 });
@@ -860,6 +874,30 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
       }
     }
 
+    const changes = this.atomicChanges(update);
+    if (!changes) return null;
+    const { sets, removes } = changes;
+
+    return {
+      sql:
+        `UPDATE ${this.table}` +
+        (sets.length > 0 ? ` SET ${sets.map((set) => set.sql).join(', ')}` : '') +
+        (removes.length > 0 ? ` REMOVE ${removes.join(', ')}` : '') +
+        ` WHERE _c = ?${where.map((part) => ` AND (${part.sql})`).join('')}` +
+        `${orderBy} LIMIT 1 RETURNING kdb_id, _doc`,
+      args: [...sets.flatMap((set) => set.args), this.name, ...where.flatMap((part) => part.args)],
+    };
+  }
+
+  /**
+   * An update's `$set`, `$inc` and `$unset` as SQL SET assignments and REMOVE paths, with
+   * `updatedAt` stamped, or null when they cannot be said exactly (see atomicUpdateSql). For an
+   * upsert, `keyed` is the filter's equalities on the conflict key: a `$set` of one of those fields
+   * to its filter value changes nothing on the matched document and is left out, and
+   * `$setOnInsert` applies only to the inserted row, so it is left out too.
+   */
+  private atomicChanges(update: Update, keyed?: Doc): { sets: Where[]; removes: string[] } | null {
+    const instanceOf = (path: string) => (this.schema.path(path) as unknown as { instance?: string } | undefined)?.instance;
     const derived = new Set<string>([...this.packed, ...this.unique.flatMap((constraint) => constraint.fields.map((field) => field.split('.')[0]!))]);
     if (this.ttl) derived.add(this.ttl.path.split('.')[0]!);
     const settable = (field: string) => /^[A-Za-z][A-Za-z0-9]*$/.test(field) && field !== '_id' && !derived.has(field);
@@ -868,7 +906,9 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
     const named = (field: string) => sets.some((set) => set.sql.startsWith(`${field} =`)) || removes.includes(field);
     for (const [operator, fields] of Object.entries(update)) {
       if (!isPlainObject(fields)) return null;
+      if (operator === '$setOnInsert' && keyed) continue;
       for (const [field, value] of Object.entries(fields as Doc)) {
+        if (operator === '$set' && keyed && Object.hasOwn(keyed, field) && valuesEqual(keyed[field], value)) continue;
         if (!settable(field) || named(field)) return null;
         if (operator === '$unset') {
           // REMOVE takes the field out, as $unset does (KDB 0.9.3); a server without it is
@@ -887,21 +927,134 @@ class KdbBackedCollection<T extends Doc> implements Collection<T> {
         }
       }
     }
-    if (sets.length === 0 && removes.length === 0) return null;
+    if (sets.length === 0 && removes.length === 0 && !keyed) return null;
     const stamped = touchUpdatedAt(this.schema, {});
     if (stamped.updatedAt instanceof Date && !named('updatedAt')) {
       sets.push({ sql: 'updatedAt = ?', args: [stamped.updatedAt.toISOString()] });
     }
 
+    return { sets, removes };
+  }
+
+  /**
+   * An upsert - updateOne or findOneAndUpdate with `upsert: true` - as one server statement,
+   * `INSERT … ON CONFLICT (<key>) DO UPDATE SET … [REMOVE …] RETURNING` (KDB 0.9.3), or null when
+   * it cannot be promised to do exactly what the find-then-write path does. A queue's re-enqueue
+   * is one: `updateOne({feedbackId}, {$set, $unset, $setOnInsert}, {upsert: true})`, which took a
+   * find and a conditional write or a create - and two re-enqueues of one key could both find
+   * nothing and race to create it. The server decides under its write gate whether a document
+   * holds the key, so this is one round trip and never both inserts.
+   *
+   * Accepted only where the conflict says what the filter says: the filter is exactly the
+   * equalities of a unique constraint the server holds (on its synthetic key, declareConstraints),
+   * each a string, finite number or boolean of a path SQL compares exactly (exactWhere), so the
+   * document holding the key is the one document the filter matches. Then, as in Mongo:
+   *  - none: the row inserted is what upsertFrom would create - the filter's equalities, the
+   *    update applied as an insert ($set, $inc from zero, $unset, $setOnInsert), defaults and
+   *    timestamps - written whole as `_doc` under the kdb_id of a fresh _id;
+   *  - one: the update applied to it, as atomicUpdateSql would (atomicChanges), with
+   *    `$setOnInsert` ignored and a `$set` of a key field to its filter value left out.
+   * The returned kdb_id tells which happened.
+   */
+  private async atomicUpsertSql(filter: Filter, update: Update, options: UpdateOptions): Promise<(Where & { kdbId: string; id: string; returnsDocument: boolean }) | null> {
+    if (!config.kdb.atomicClaim || !config.kdb.pushdown || !options.upsert || this.upsertUnsupported || !this.serverHoldsUnique()) return null;
+    if (options.returnDocument === 'before') return null;
+    const keys = Object.keys(filter);
+    const key = this.serverKeys.find(
+      (candidate) => !candidate.arrayPrefix && candidate.paths.length === keys.length && candidate.paths.every((path) => keys.includes(path))
+    );
+    if (!key) return null;
+    for (const path of key.paths) {
+      const value = filter[path];
+      if (typeof value !== 'string' && typeof value !== 'boolean' && !(typeof value === 'number' && Number.isFinite(value))) return null;
+      if (!exactWhere({ [path]: value }, (p) => pathKind(this.schema, p))?.sql) return null;
+    }
+    let complete = this.keysComplete.get(key.field);
+    if (!complete) {
+      // Checked once per key; a failed check is asked again next time.
+      complete = this.keysAreComplete(key).catch(() => {
+        this.keysComplete.delete(key.field);
+        return false;
+      });
+      this.keysComplete.set(key.field, complete);
+    }
+    if (!(await complete)) return null;
+    const changes = this.atomicChanges(update, filter);
+    if (!changes) return null;
+    const { sets, removes } = changes;
+
+    // The row, as upsertFrom and create build it.
+    let row: Doc;
+    try {
+      row = normalizeDocument(this.schema, applyUpdate({ ...filter }, update, true, filter), { isCreate: true });
+    } catch {
+      return null; // the find-then-write path reports it as it always has
+    }
+    if (row._id === undefined) row._id = generateObjectId();
+    const body = this.storedBody(row);
+    if (body[key.field] === undefined) return null;
+    const kdbId = toDocumentUuid(row._id as string);
+    const onConflict =
+      sets.length === 0 && removes.length === 0
+        ? 'DO NOTHING'
+        : 'DO UPDATE' +
+          (sets.length > 0 ? ` SET ${sets.map((set) => set.sql).join(', ')}` : '') +
+          (removes.length > 0 ? ` REMOVE ${removes.join(', ')}` : '');
     return {
-      sql:
-        `UPDATE ${this.table}` +
-        (sets.length > 0 ? ` SET ${sets.map((set) => set.sql).join(', ')}` : '') +
-        (removes.length > 0 ? ` REMOVE ${removes.join(', ')}` : '') +
-        ` WHERE _c = ?${where.map((part) => ` AND (${part.sql})`).join('')}` +
-        `${orderBy} LIMIT 1 RETURNING kdb_id, _doc`,
-      args: [...sets.flatMap((set) => set.args), this.name, ...where.flatMap((part) => part.args)],
+      sql: `INSERT INTO ${this.table} (kdb_id, _doc) VALUES (?, ?) ON CONFLICT (${key.field}) ${onConflict} RETURNING kdb_id, _doc`,
+      args: [kdbId, JSON.stringify(body), ...sets.flatMap((set) => set.args)],
+      kdbId,
+      id: row._id as string,
+      // DO NOTHING returns no row for a match, so findOneAndUpdate cannot read the document from it.
+      returnsDocument: onConflict !== 'DO NOTHING',
     };
+  }
+
+  /** Set once a server refused INSERT … ON CONFLICT (before KDB 0.9.3): upserts then take the
+   *  find-then-write path. */
+  private upsertUnsupported = false;
+
+  /** Per synthetic key: whether every stored document holding the key's fields carries the key
+   *  (keysAreComplete). */
+  private readonly keysComplete = new Map<string, Promise<boolean>>();
+
+  /**
+   * Whether the server's constraint sees every document an upsert's filter could match: a
+   * document written before its collection's key was declared holds the fields but not the key,
+   * so ON CONFLICT would not find it and the upsert would insert a second one where Mongo matches
+   * the first. Every write since carries the key (storedBody), so once none is missing none will be.
+   */
+  private async keysAreComplete(key: { field: string; paths: string[] }): Promise<boolean> {
+    const present = key.paths.map((path) => ` AND ${path} IS NOT NULL`).join('');
+    const { rows } = await this.client().queryRaw(
+      this.namespace,
+      `SELECT kdb_id FROM ${this.table} WHERE _c = ? AND ${key.field} IS MISSING${present} LIMIT 1`,
+      [this.name]
+    );
+    return rows.length === 0;
+  }
+
+  /**
+   * Runs an atomic upsert, or returns null when the server cannot - remembered when it does not
+   * know the statement. A row colliding on another unique constraint is a DuplicateKeyError, as
+   * Mongo's E11000 and the store's other writes report it.
+   */
+  private async execUpsert(upsert: Where): Promise<unknown[][] | null> {
+    try {
+      const { rows } = await this.client().execReturning(this.namespace, upsert.sql, upsert.args);
+      return rows;
+    } catch (error) {
+      const message = (error as Error).message;
+      if (/must be those of a unique constraint|ON CONFLICT is unavailable/i.test(message)) return null;
+      if ((error as { code?: string }).code === 'UNIQUE_VIOLATION' || /unique/i.test(message)) {
+        throw new DuplicateKeyError(`${this.name}: duplicate value for a unique field (${message})`);
+      }
+      if (/CONFLICT|kdb_id|expected|unexpected|syntax|trailing/i.test(message)) {
+        this.upsertUnsupported = true;
+        return null;
+      }
+      throw error;
+    }
   }
 
   /** Set once a server refused REMOVE (before KDB 0.9.3): $unset then takes the read-then-write path. */
