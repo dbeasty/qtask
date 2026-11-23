@@ -62,7 +62,7 @@ app side uses what docs/KDB_MIGRATION.md tells a deployment to use: `DATA_KDB_PU
 constraints and lookup indexes declared (`DATA_KDB_DECLARE_CONSTRAINTS`, `DATA_KDB_DECLARE_INDEXES`,
 both default on).
 
-**The KDB image.** `ghcr.io/dbeasty/kdb/kdb-service:v0.9.2` is published for linux/amd64 and,
+**The KDB image.** `ghcr.io/dbeasty/kdb/kdb-service:v0.9.3` is published for linux/amd64 and,
 since 0.9.0, linux/arm64. The harness still builds its own arm64 image, as it did when only amd64
 was published (where arm64 Docker would have run under emulation and measured the emulator), so
 results stay comparable across versions: an equivalent image (`docker/kdb-service.Dockerfile`: same alpine 3.20 base,

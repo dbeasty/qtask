@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the pinned KDB release's kdb-service and kdb-inspect for the systemd deployment.
 #
-#   sudo deploy/install-kdb.sh [--version 0.9.2] [--prefix /opt/qtask] [--no-units]
+#   sudo deploy/install-kdb.sh [--version 0.9.3] [--prefix /opt/qtask] [--no-units]
 #
 # - Downloads kdb-service-linux-<arch> and kdb-inspect-linux-<arch> from the GitHub release and
 #   refuses to install either unless it matches the release's SHA256SUMS. Never builds anything.

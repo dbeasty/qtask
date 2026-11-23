@@ -18,7 +18,7 @@ conformance suite runs against both backends, driving a real `kdb-service` over 
 |---|---|
 | Backend abstraction, Mongo + KDB stores | Done |
 | Shadow writes (`DATA_SHADOW_WRITES`), shadow reads (`DATA_SHADOW_READS`) | Done |
-| **Pinned to the KDB v0.9.2 release** (from v0.8.0; see "What v0.9.1 changes" and "What v0.9.2 changes") | Done. `@limidus/kdb-client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). Data suite 337/337; whole app on KDB 1,011 of 1,013 tests in the parallel run, the 2 being the supertest load flake (each file passes alone); shadow 1,018/1,018 with **12,306 mirrored writes, 0 failed; 11 divergences in 7,290 reads**; default Mongo suite 1,360/1,360 |
+| **Pinned to the KDB v0.9.3 release** (from v0.8.0; see "What v0.9.1 changes", "What v0.9.2 changes" and "What v0.9.3 changes") | Done. `@limidus/kdb-client` from the release tarball, `kdb-service` from the same release (`npm run kdb:fetch`, checksum-verified; fetched in CI). On 0.9.3: default suite 1,428/1,428 (including the kdb-service integration suites); whole app on KDB 1,305/1,306 with 1 skipped, pushdown on and off (`local-sync-e2e` timed out once on a saturated machine and passes in 1.4 s otherwise); shadow 1,428/1,428 with 28 diverged reads, against 32 for the same suite on 0.9.2 |
 | Filter pushdown to KDB SQL (`DATA_KDB_PUSHDOWN`) | Done, flagged off. Differential test against the in-process engine |
 | Server-side expiry replacing Mongo TTL indexes | Done (`_expireAt` + `--expire-field`) |
 | Backfill and verify tooling (`npm run migrate:kdb`) | Done. Rehearsed at 552,552 documents (100,000 tasks) of **synthetic** data against an on-disk `kdb-service` (section 8). The rehearsal found and fixed: `appMeta` was never copied; a commit per document capped the backfill at the fsync rate; verify's count of a 100,000-document collection got `kdb-service` OOM-killed (B5) |
@@ -105,6 +105,40 @@ clients 0.9.0–0.9.2 all work with a v0.9.2 server.
   - first answer after a restart: 21 s, including the harness's connect retries
 - **Rolling back to v0.9.1** is safe for data, but needs `DATA_KDB_ATOMIC_CLAIM=false`: v0.9.1 can't
   parse `COALESCE`.
+
+### What v0.9.3 changes
+
+The server and client release that cuts the CPU qtask costs per request (dbeasty/kdb#333-#339).
+The store's single-statement paths, which already fell back on older servers, now run:
+
+- **`$unset` as `UPDATE ... REMOVE`** and **upsert as `INSERT ... ON CONFLICT`** (dbeasty/kdb#336,
+  #338): an `updateOne`, and a queue's re-enqueue, are one statement each.
+- **Composite indexes** (dbeasty/kdb#334): the five the store declares (`qtask_c__c_status_updatedAt`,
+  `qtask_c__c_status_createdAt`, `qtask_c__c_taskId_createdAt`, `qtask_c__c_userId_updatedAt`,
+  `qtask_c__c_userId_createdAt`) are built, and queue claims and "latest N" reads walk them.
+- **The client's write-session pool** (dbeasty/kdb#337): together with the store's unqueued
+  `execReturning`, the claim, complete and re-enqueue of every worker in a process run side by side.
+- **The cache pool is sized from the machine** (an eighth of the memory limit, at most 4 GiB; set
+  `--cache-mb` to keep a smaller one), and the client asks for no compressed replies on loopback.
+
+Benchmark (prod scale, 2 CPUs / 4 GB, MongoDB `j:true` in the same run, 2026-10-24, actions/s at
+1 / 8 / 32 users, no errors). An unrelated local LLM job was running throughout, so every arm, MongoDB's
+included, ran with less CPU than usual; the 0.9.2-client arm is the same 0.9.3 server with this
+release's predecessor client, i.e. what this upgrade changes:
+
+| profile | KDB 0.9.3 | 0.9.2 client on the 0.9.3 server | MongoDB |
+|---|---:|---:|---:|
+| claim | 273 / 777 / 631 (repeated at 32: 868) | 253 / 511 / 53 (repeated at 32: 600, 676) | 384 / 2,092 / 2,603 |
+| mixed | 35 / 91 / 86 | 23 / 71 / 69 | 155 / 432 / 466 |
+
+The benchmark's store is freshly loaded by `migrate:kdb backfill`, which reads about a quarter slower in
+mixed than one that has been running since its import (`--document-copies` removes the difference).
+
+- **Rolling back to v0.9.2 is safe for data, but v0.9.2 will not open the namespace while any composite
+  index exists** (`opening indexes: a BTREE index on _c already exists`). On 0.9.3 first run
+  `DROP INDEX <name> ON docs` for each of the five indexes above, stop the server, then start v0.9.2.
+  Tried on the benchmark's data: v0.9.2 then opens it, does not keep the composites when the store
+  declares them again, and serves the app without them.
 
 ## 2. Blockers
 

@@ -9,7 +9,7 @@ Type=simple
 User=qtask
 Group=qtask
 WorkingDirectory=/var/lib/qtask/kdb
-# Pinned: KDB v0.9.2, installed by deploy/install-kdb.sh from the release assets
+# Pinned: KDB v0.9.3, installed by deploy/install-kdb.sh from the release assets
 # (kdb-service-linux-<arch>, checked against the release's SHA256SUMS), never built on the host.
 # @limidus/kdb-client 0.8.0 refuses a server from another release line, so this pin and package.json's
 # move together. See docs/KDB_MIGRATION.md before changing anything here.
